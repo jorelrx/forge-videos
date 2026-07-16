@@ -19,7 +19,8 @@
 - Frontmatter obrigatório: `name` (1-64 chars, minúsculas, números e hífens; sem hífen inicial/final; sem hífen duplo) e `description` (máx. 1024 chars).
 - Nicho: Desenvolvimento Pessoal, Filosofia e Psicologia.
 - Citação literal só com frase, autor e obra confirmados por busca web. Faltando qualquer um dos três: parafrasear sem aspas.
-- Pré-requisitos de execução (Tasks 2 e 3): LM Studio rodando em `http://127.0.0.1:1234` com `qwen/qwen3.5-9b` carregado; o projeto `c:\dev\forge-videos` precisa estar marcado como trusted no Pi, senão skills de `.pi/skills/` não carregam.
+- Pré-requisitos de execução: LM Studio rodando em `http://127.0.0.1:1234` com `qwen/qwen3.5-9b` carregado.
+- Trust: skills de `.pi/skills/` são recurso protegido por project trust. Modo `-p` não mostra prompt de trust — sem decisão salva, a skill é ignorada em silêncio. Toda invocação de `pi` neste plano usa `--approve`/`-a`, que concede trust por execução, sem gravar decisão em `~/.pi/agent/trust.json`. Nunca rodar `pi` sem `-p` (sessão interativa trava a automação).
 
 ---
 
@@ -143,12 +144,12 @@ Se algum item falhar, corrija antes de imprimir. Não imprima o resultado da con
 Rodar, a partir de `c:\dev\forge-videos`:
 
 ```bash
-pi --no-session -p "Liste as skills disponíveis pelo nome, uma por linha. Não faça mais nada."
+pi -a --no-session -p "Liste as skills disponíveis pelo nome, uma por linha. Não faça mais nada."
 ```
 
 Esperado: `ensaio-filosofico` aparece na lista. Nenhum warning de validação de frontmatter no output.
 
-Se a skill não aparecer: o projeto não está trusted no Pi. Rodar `pi` interativo uma vez no diretório e aceitar o prompt de trust, depois repetir o comando.
+O `-a` é obrigatório: sem ele, `.pi/skills/` é ignorado em silêncio (ver Global Constraints).
 
 Se aparecer warning de frontmatter, corrigir `name`/`description` conforme as regras em Global Constraints e repetir.
 
@@ -185,7 +186,7 @@ Esperado: JSON listando modelos, com `qwen/qwen3.5-9b` entre eles. Se conexão r
 Rodar de `c:\dev\forge-videos`:
 
 ```bash
-pi --no-session -p "/skill:ensaio-filosofico o tédio" > ensaio-tedio.txt
+pi -a --no-session -p "/skill:ensaio-filosofico o tédio" > ensaio-tedio.txt
 ```
 
 Esperado: arquivo com um ensaio em PT-BR. O `> ensaio-tedio.txt` é só para inspeção nesta verificação — o arquivo não entra no git.
@@ -259,7 +260,7 @@ Tema sem canônico associado testa o outro lado: o modelo pode forçar um filós
 Rodar de `c:\dev\forge-videos`:
 
 ```bash
-pi --no-session -p "/skill:ensaio-filosofico por que eu adio o que eu mesmo escolhi fazer" > ensaio-adiamento.txt
+pi -a --no-session -p "/skill:ensaio-filosofico por que eu adio o que eu mesmo escolhi fazer" > ensaio-adiamento.txt
 ```
 
 Esperado: arquivo com um ensaio em PT-BR.

@@ -133,7 +133,6 @@ Confira, em silêncio:
 - [ ] Existe um contra-argumento honesto no texto.
 - [ ] Cada movimento avança a tese.
 - [ ] Nenhum antipadrão da lista acima aparece.
-- [ ] Entre 800 e 2000 palavras.
 - [ ] A resposta começa no ensaio: sem preâmbulo, sem meta-comentário.
 
 Se algum item falhar, corrija antes de imprimir. Não imprima o resultado da conferência.

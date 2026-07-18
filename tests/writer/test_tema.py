@@ -1,0 +1,10 @@
+from forge.writer.tema import gerar_tema
+
+
+def test_tema_fornecido_nao_chama_modelo():
+    assert gerar_tema(None, "Sobre o tédio") == "Sobre o tédio"
+
+
+def test_tema_gerado(scripted):
+    model = scripted(invoke_texts=["O tédio é um alarme"])
+    assert gerar_tema(model) == "O tédio é um alarme"

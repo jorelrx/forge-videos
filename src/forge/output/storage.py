@@ -7,15 +7,26 @@ from forge.config import Settings
 from forge.writer.models import Roteiro
 
 
-def gravar_roteiro(roteiro: Roteiro, settings: Settings, rounds: int | None = None) -> Path:
+def gravar_roteiro(
+    roteiro: Roteiro,
+    settings: Settings,
+    rounds: int | None = None,
+    aprovado: bool | None = None,
+) -> Path:
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = settings.output_dir / f"{_slug(roteiro.tema)}-{ts}.md"
-    path.write_text(_render(roteiro, settings, rounds, ts), encoding="utf-8")
+    path.write_text(_render(roteiro, settings, rounds, aprovado, ts), encoding="utf-8")
     return path
 
 
-def _render(roteiro: Roteiro, settings: Settings, rounds: int | None, ts: str) -> str:
+def _render(
+    roteiro: Roteiro,
+    settings: Settings,
+    rounds: int | None,
+    aprovado: bool | None,
+    ts: str,
+) -> str:
     linhas = [
         "---",
         f"tema: {roteiro.tema}",
@@ -23,6 +34,7 @@ def _render(roteiro: Roteiro, settings: Settings, rounds: int | None, ts: str) -
         f"modelo: {settings.model}",
         f"timestamp: {ts}",
         f"rounds: {rounds if rounds is not None else 0}",
+        f"aprovado: {aprovado}",
         "---",
         "",
     ]

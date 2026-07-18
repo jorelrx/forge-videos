@@ -20,6 +20,9 @@ def main(argv: list[str] | None = None) -> int:
     graph = build_graph(model, settings)
 
     final = graph.invoke({"tema": args.tema, "rounds": 0})
-    path = gravar_roteiro(final["roteiro"], settings, rounds=final.get("rounds"))
+    aprovado = final["review"].aprovado if final.get("review") is not None else None
+    path = gravar_roteiro(
+        final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
+    )
     print(path)
     return 0

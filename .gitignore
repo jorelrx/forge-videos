@@ -1,2 +1,7 @@
 .vscode
 docs/superpowers
+.venv
+.env
+__pycache__/
+.pytest_cache/
+output/

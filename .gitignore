@@ -4,4 +4,4 @@ docs/superpowers
 .env
 __pycache__/
 .pytest_cache/
-output/
+/output/

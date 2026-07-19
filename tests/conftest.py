@@ -15,7 +15,10 @@ class ScriptedModel:
         return self
 
     def invoke(self, messages):
-        return AIMessage(content=self.invoke_texts.pop(0))
+        item = self.invoke_texts.pop(0)
+        if isinstance(item, AIMessage):
+            return item
+        return AIMessage(content=item)
 
     def with_structured_output(self, schema):
         queue = self.structured

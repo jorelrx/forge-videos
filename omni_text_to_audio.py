@@ -2,14 +2,15 @@ import time
 
 import torch
 
-torch.set_num_threads(8)  # ex.: 8 núcleos físicos
-
 import soundfile as sf
 from omnivoice import OmniVoice
 from omnivoice.models import omnivoice as omnivoice_module
 from tqdm import tqdm
 
-NUM_STEP = 16  # menos passos de difusão = mais rápido e qualidade reduzida; 32 é o padrão do OmniVoice, 16 é mais rápido e ainda razoável
+torch.set_num_threads(12)  # ex.: 8 núcleos físicos
+torch.set_num_interop_threads(12)  # ex.: 8 núcleos físicos
+
+NUM_STEP = 32  # menos passos de difusão = mais rápido e qualidade reduzida; 32 é o padrão do OmniVoice, 16 é mais rápido e ainda razoável
 
 progress = {"total_chunks": 1, "bar": None}
 
@@ -50,11 +51,11 @@ print(f"Modelo carregado em {time.perf_counter() - started:.1f}s", flush=True)
 # inference_mode remove a sobrecarga do autograd (mais rápido que no_grad)
 with torch.inference_mode():
     audio = model.generate(
-        text="""Você já se pegou pensando: 'Se ao menos eu tivesse mais tempo, mais dinheiro, mais controle...'? Mas e se o problema não fosse o que você tem, mas como você lida com isso? Os estoicos, há mais de 2 mil anos, descobriram algo revolucionário: a serenidade não depende das circunstâncias, mas da forma como você as enxerga. E hoje, vou te mostrar 10 práticas para organizar a vida a partir dessa sabedoria atemporal.""",
-        ref_audio="ref.wav",
+        text="""Eu começo com uma cena simples, mas contundente: alguém tenta agir como se fosse livre para escolher sem limites, mas as regras ao redor—normas sociais, expectativas de grupo, hábitos que já existem no corpo—ocupam o espaço da decisão.""",
+        ref_audio="ref1.mp3",
         ref_text="A vida moderna é um exercício de divisão que não começamos deliberadamente.",
         num_step=NUM_STEP,
-        speed=0.8
+        speed=1.0
     )
 
 if progress["bar"] is not None:

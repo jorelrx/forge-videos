@@ -4,7 +4,10 @@ from datetime import datetime
 from pathlib import Path
 
 from forge.config import Settings
+from forge.logging import get_logger
 from forge.writer.models import Roteiro
+
+logger = get_logger(__name__)
 
 
 def gravar_roteiro(
@@ -13,10 +16,15 @@ def gravar_roteiro(
     rounds: int | None = None,
     aprovado: bool | None = None,
 ) -> Path:
+    logger.info("Saving script", tema=roteiro.tema[:80] + "..." if len(roteiro.tema) > 80 else roteiro.tema)
+    
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = settings.output_dir / f"{_slug(roteiro.tema)}-{ts}.md"
-    path.write_text(_render(roteiro, settings, rounds, aprovado, ts), encoding="utf-8")
+    content = _render(roteiro, settings, rounds, aprovado, ts)
+    path.write_text(content, encoding="utf-8")
+    
+    logger.info("Script saved", path=str(path), secoes_count=len(roteiro.secoes), rounds=rounds, aprovado=aprovado)
     return path
 
 

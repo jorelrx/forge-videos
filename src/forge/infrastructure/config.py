@@ -9,12 +9,24 @@ from forge.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
+Provider = Literal["anthropic", "lm-studio", "openai"]
+
+MODELO_PADRAO: dict[str, str] = {
+    "anthropic": "claude-opus-4-8",
+    "openai": "gpt-5-nano",
+    "lm-studio": "qwen/qwen3.5-9b",
+}
+
+# LM Studio ignora o valor, mas o cliente OpenAI exige algo não-vazio.
+CHAVE_LOCAL = "lm-studio"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FORGE_", env_file=".env", extra="ignore", populate_by_name=True
     )
 
+    api_key: str | None = None
     anthropic_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("FORGE_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
@@ -23,20 +35,55 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("FORGE_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
-    model: str = "claude-opus-4-8"
+    model: str | None = None
     effort: str = "high"
     output_dir: Path = Path("output/roteiros")
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20
 
-    provider: Literal["anthropic", "lm-studio", "openai"] = "anthropic"
+    provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"
-    lm_studio_model: str = "qwen/qwen3.5-9b"
+
+    @property
+    def resolved_model(self) -> str:
+        """Modelo do provider ativo. `FORGE_MODEL` sobrepõe qualquer provider."""
+        return self.model or MODELO_PADRAO[self.provider]
+
+    @property
+    def resolved_api_key(self) -> str | None:
+        """Chave do provider ativo — nunca a de outro.
+
+        A chave genérica e as específicas são campos distintos de propósito:
+        cruzar as duas manda credencial de um provider para o endpoint de
+        outro, que chega como 401 opaco em vez de erro de configuração.
+        """
+        if self.provider == "lm-studio":
+            return CHAVE_LOCAL
+        if self.api_key:
+            return self.api_key
+        return {
+            "anthropic": self.anthropic_api_key,
+            "openai": self.openai_api_key,
+        }[self.provider]
+
+    def exigir_api_key(self) -> str:
+        chave = self.resolved_api_key
+        if not chave:
+            raise ValueError(
+                f"API key ausente para o provider '{self.provider}'. "
+                f"Defina FORGE_API_KEY ou FORGE_{self.provider.upper().replace('-', '_')}_API_KEY."
+            )
+        return chave
 
 
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    logger.info("Settings loaded", model=settings.model, provider=settings.provider, log_level=settings.log_level)
+    logger.info(
+        "Settings loaded",
+        model=settings.resolved_model,
+        provider=settings.provider,
+        log_level=settings.log_level,
+    )
     return settings

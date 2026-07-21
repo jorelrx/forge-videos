@@ -39,7 +39,7 @@ def _render(
         "---",
         f"tema: {roteiro.tema}",
         f"tese: {roteiro.tese}",
-        f"modelo: {settings.model}",
+        f"modelo: {settings.resolved_model}",
         f"timestamp: {ts}",
         f"rounds: {rounds if rounds is not None else 0}",
         f"aprovado: {aprovado}",

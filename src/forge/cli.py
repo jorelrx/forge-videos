@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = settings.model_copy(update={"provider": args.provider})
     setup_logging(settings.log_level)
     model = build_chat_model(settings)
-    logger.info("Model built", model=settings.model, provider=settings.provider)
+    logger.info("Model built", model=settings.resolved_model, provider=settings.provider)
 
     from forge.services.artefatos import carregar_run, criar_run_dir
 

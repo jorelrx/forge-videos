@@ -1,5 +1,5 @@
 from pathlib import Path
-from forge.config import Settings, get_settings
+from forge.infrastructure.config import Settings, get_settings
 
 def test_defaults():
     s = Settings(_env_file=None)

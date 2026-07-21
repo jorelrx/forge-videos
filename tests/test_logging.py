@@ -1,4 +1,4 @@
-from forge.logging import setup_logging, get_logger
+from forge.infrastructure.logging import setup_logging, get_logger
 
 def test_setup_idempotent_and_logger_usable():
     setup_logging("INFO")

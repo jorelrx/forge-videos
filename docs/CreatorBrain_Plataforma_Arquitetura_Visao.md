@@ -253,7 +253,7 @@ Atualizar memória narrativa.
 
 ## V1
 
-Fundação, orquestrador, skills, múltiplos LLMs.
+Fundação, orquestrador, skills, múltiplos LLMs, Agentes especificos para cada tarefa.
 
 ## V2
 
@@ -288,7 +288,7 @@ Plataforma Web completa.
 -   Celery ou Temporal
 -   Docker
 -   OpenTelemetry
--   Ollama/LM Studio/OpenAI/Anthropic
+-   LM Studio/OpenAI/Anthropic
 
 # Visão Final
 

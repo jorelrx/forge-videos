@@ -1,0 +1,137 @@
+from langgraph.graph import END, StateGraph
+from langgraph.types import Command
+
+from forge.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
+
+from forge.orchestration.state import RoteiroState
+from forge.agents import plan as plan_stage
+from forge.agents import research as research_stage
+from forge.agents import review as review_stage
+from forge.agents import tema as tema_stage
+from forge.agents import write as write_stage
+from forge.services.artefatos import gravar_artefato, gravar_bruto
+
+
+def com_wrapper(nome, fn, le):
+    """Estreita o state pelo LE do agente, grava o artefato, conta o passo."""
+    def wrapped(state):
+        entrada = {k: state[k] for k in le if k in state}
+        resultado = fn(entrada)
+        if isinstance(resultado, Command):
+            return resultado
+        bruto = resultado.pop("_raw", None)
+        gravar_artefato(state["run_dir"], nome, resultado)
+        if bruto is not None:
+            gravar_bruto(state["run_dir"], nome, bruto)
+        return {**resultado, "passos": state.get("passos", 0) + 1}
+    return wrapped
+
+
+def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
+    passos = state.get("passos", 0)
+    if passos >= max_passos:
+        logger.warning("Budget exhausted - stopping", passos=passos, max=max_passos)
+        return END
+
+    review = state.get("review")
+    rounds = state.get("rounds", 0)
+    if review is None:
+        return "write"
+
+    if review.verificar:
+        logger.info("Handoff to research", alegacoes=len(review.verificar))
+        return "research"
+
+    if review.aprovado:
+        logger.info("Review approved - stopping", round=rounds)
+        return END
+
+    if rounds >= max_rounds:
+        logger.warning("Max review rounds reached", round=rounds, max=max_rounds)
+        return END
+
+    logger.debug("Continuing to write phase", round=rounds)
+    return "write"
+
+
+def build_graph(model, settings, inicio: str = "tema"):
+    logger.info("Building graph", stages=["tema", "research", "plan", "write", "review"])
+
+    def node_tema(state):
+        logger.debug("Running tema generation", tema=state.get("tema"))
+        result = {"tema": tema_stage.gerar_tema(model, state.get("tema"))}
+        logger.info("Tema generated", tema=result["tema"])
+        return result
+
+    def node_research(state):
+        pedido = state.get("pedido")
+        logger.debug("Starting research phase", tema=state["tema"], reentrada=bool(pedido))
+        brief, fontes, raw = research_stage.pesquisar(
+            model, state["tema"], settings.provider, pedido
+        )
+        anterior = state.get("research_notes", "")
+        combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
+        logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))
+        return {
+            "research_notes": combinado,
+            "fontes": fontes,
+            "pedido": None,
+            "_raw": raw,
+        }
+
+    def node_plan(state):
+        logger.debug("Starting planning phase")
+        tese, esboco = plan_stage.planejar(model, state["tema"], state["research_notes"])
+        result = {"tese": tese, "esboco": esboco}
+        logger.info("Planning completed", tese=tese[:100] + "..." if len(tese) > 100 else tese)
+        return result
+
+    def node_write(state):
+        review = state.get("review")
+        notas = review.notas if review is not None else None
+        logger.debug("Starting write phase", tema=state["tema"])
+        roteiro, falta = write_stage.escrever(
+            model,
+            state["tema"],
+            state["tese"],
+            state["esboco"],
+            state["research_notes"],
+            state["fontes"],
+            notas,
+        )
+        if falta:
+            logger.info("Handoff to research from write", motivo=falta[:120])
+            return Command(goto="research", update={"roteiro": roteiro, "pedido": falta})
+        logger.debug("Write phase completed", secoes_count=len(roteiro.secoes))
+        return {"roteiro": roteiro}
+
+    def node_review(state):
+        logger.debug("Starting review phase")
+        result = review_stage.revisar(model, state["roteiro"])
+        rounds = state.get("rounds", 0) + 1
+        pedido = "\n".join(result.verificar) if result.verificar else None
+        logger.info("Review completed", aprovado=result.aprovado, round=rounds)
+        return {"review": result, "rounds": rounds, "pedido": pedido}
+
+    g = StateGraph(RoteiroState)
+    g.add_node("tema",     com_wrapper("tema",     node_tema,     tema_stage.LE))
+    g.add_node("research", com_wrapper("research", node_research, research_stage.LE))
+    g.add_node("plan",     com_wrapper("plan",     node_plan,     plan_stage.LE))
+    g.add_node("write",    com_wrapper("write",    node_write,    write_stage.LE),
+               destinations=("research",))
+    g.add_node("review",   com_wrapper("review",   node_review,   review_stage.LE))
+
+    g.set_entry_point(inicio)
+    g.add_edge("tema", "research")
+    g.add_edge("research", "plan")
+    g.add_edge("plan", "write")
+    g.add_edge("write", "review")
+    g.add_conditional_edges(
+        "review",
+        lambda s: rotear(s, settings.max_review_rounds, settings.max_passos),
+        {"write": "write", "research": "research", END: END},
+    )
+    logger.info("Graph compiled successfully")
+    return g.compile()

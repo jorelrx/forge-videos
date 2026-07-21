@@ -1,6 +1,6 @@
-from forge.config import Settings
-from forge.output.storage import gravar_roteiro
-from forge.writer.models import Roteiro, Secao, Fonte
+from forge.infrastructure.config import Settings
+from forge.services.storage import gravar_roteiro
+from forge.domain.models import Roteiro, Secao, Fonte
 
 def _roteiro():
     return Roteiro(

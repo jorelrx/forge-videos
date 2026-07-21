@@ -1,8 +1,8 @@
 from pathlib import Path
 
 import forge.cli as cli
-from forge.config import Settings
-from forge.writer.models import Roteiro, Secao
+from forge.infrastructure.config import Settings
+from forge.domain.models import Roteiro, Secao
 
 
 def test_main_roteiro(monkeypatch, tmp_path, capsys):
@@ -14,14 +14,16 @@ def test_main_roteiro(monkeypatch, tmp_path, capsys):
                       secoes=[Secao(nome="Hook", conteudo="c")])
 
     class FakeGraph:
-        def invoke(self, state):
+        def stream(self, state):
             assert state["tema"] == "meu tema"
-            return {"roteiro": roteiro, "rounds": 1, "review": None}
+            yield {"write": {"roteiro": roteiro}}
+            yield {"review": {"rounds": 1, "review": None}}
 
-    monkeypatch.setattr(cli, "build_graph", lambda model, s: FakeGraph())
+    monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
 
     rc = cli.main(["roteiro", "--tema", "meu tema"])
     assert rc == 0
-    out = capsys.readouterr().out.strip()
+    # structlog escreve no stdout junto; o path é a última linha impressa
+    out = capsys.readouterr().out.strip().splitlines()[-1].strip()
     assert Path(out).exists()
     assert out.endswith(".md")

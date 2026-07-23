@@ -160,10 +160,6 @@ anti padrões
 
 # Memória
 
-## Curto prazo
-
-Redis
-
 ## Longo prazo
 
 PostgreSQL

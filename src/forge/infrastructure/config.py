@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.infrastructure.logging import get_logger
@@ -10,6 +10,45 @@ from forge.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 Provider = Literal["anthropic", "lm-studio", "openai"]
+
+
+class KnowledgeSettings(BaseModel):
+    """Config da camada de conhecimento (RAG V2).
+
+    Stores externos (Qdrant/Neo4j/Postgres) sobem via docker-compose; os
+    defaults apontam para localhost, as portas padrão de cada imagem.
+    Override por env com o delimitador aninhado, ex:
+    `FORGE_KNOWLEDGE__QDRANT_URL=...`.
+    """
+
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "forge_chunks"
+
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "forge-neo4j"
+
+    postgres_dsn: str = "postgresql://forge:forge@localhost:5432/forge"
+
+    # Embeddings via sentence-transformers na CPU, modelo local. Modelo e
+    # dimensão têm que casar — ver embed.py.
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_dim: int = 1024
+    embedding_batch: int = 32
+
+    ocr_enabled: bool = False
+    chunk_size: int = 800
+    chunk_overlap: int = 120
+
+    # Aquisição de fontes remotas
+    remote_top_n: int = 3
+    remote_rate_delay: float = 1.0
+    remote_timeout: float = 30.0
+    wikisource_langs: list[str] = ["pt", "en"]
+    cache_dir: str = "output/knowledge_cache"
+    # Teto de páginas percorridas por fonte ao paginar/pular já-ingeridos
+    # (evita varredura infinita quando a fonte não pagina de verdade).
+    remote_max_pages: int = 10
 
 MODELO_PADRAO: dict[str, str] = {
     "anthropic": "claude-opus-4-8",
@@ -23,7 +62,11 @@ CHAVE_LOCAL = "lm-studio"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="FORGE_", env_file=".env", extra="ignore", populate_by_name=True
+        env_prefix="FORGE_",
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+        env_nested_delimiter="__",
     )
 
     api_key: str | None = None
@@ -44,6 +87,11 @@ class Settings(BaseSettings):
 
     provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"
+
+    # Liga a camada de conhecimento no fluxo de roteiro. Off por padrão: sem os
+    # stores no ar (docker-compose), o research segue só com web_search.
+    knowledge_enabled: bool = False
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
 
     @property
     def resolved_model(self) -> str:

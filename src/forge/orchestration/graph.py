@@ -13,7 +13,6 @@ from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
 from forge.services.artefatos import gravar_artefato, gravar_bruto
 
-
 def com_wrapper(nome, fn, le):
     """Estreita o state pelo LE do agente, grava o artefato, conta o passo."""
     def wrapped(state):
@@ -27,7 +26,6 @@ def com_wrapper(nome, fn, le):
             gravar_bruto(state["run_dir"], nome, bruto)
         return {**resultado, "passos": state.get("passos", 0) + 1}
     return wrapped
-
 
 def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
     passos = state.get("passos", 0)
@@ -55,7 +53,6 @@ def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
     logger.debug("Continuing to write phase", round=rounds)
     return "write"
 
-
 def build_graph(model, settings, inicio: str = "tema"):
     logger.info("Building graph", stages=["tema", "research", "plan", "write", "review"])
 
@@ -73,6 +70,9 @@ def build_graph(model, settings, inicio: str = "tema"):
         )
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
+        if settings.knowledge_enabled:
+            from forge.knowledge.integration import consultar_e_aprender
+            combinado = consultar_e_aprender(state["tema"], combinado, settings)
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))
         return {
             "research_notes": combinado,

@@ -71,3 +71,14 @@ def test_chave_faltando_falha_claro(monkeypatch, provider):
     s = Settings(_env_file=None, provider=provider)
     with pytest.raises(ValueError, match="API key ausente"):
         s.exigir_api_key()
+
+
+def test_knowledge_tem_defaults_de_fontes_remotas():
+    from forge.infrastructure.config import KnowledgeSettings
+
+    k = KnowledgeSettings()
+    assert k.remote_top_n == 3
+    assert k.remote_rate_delay == 1.0
+    assert k.remote_timeout == 30.0
+    assert k.wikisource_langs == ["pt", "en"]
+    assert k.cache_dir == "output/knowledge_cache"

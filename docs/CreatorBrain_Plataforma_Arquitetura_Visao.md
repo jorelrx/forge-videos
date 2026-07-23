@@ -174,6 +174,8 @@ Neo4j
 
 Tipos: - Filosófica - Psicológica - Científica - Narrativa - Performance
 
+No Neo4j, mantenha um único grafo contendo entidades como Document, Author, Concept, Topic, Organization e Source, ligadas por relacionamentos (AUTHORED, MENTIONS, PART_OF, CITES, etc.).
+
 # Pipeline RAG
 
 Documentos → Chunking → Embeddings → Qdrant → Recuperação → Contexto →

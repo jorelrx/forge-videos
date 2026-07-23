@@ -12,7 +12,7 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from forge.infrastructure.logging import get_logger
-from forge.knowledge.domain.models import Documento, id_deterministico
+from forge.knowledge.domain.models import Documento
 
 logger = get_logger(__name__)
 
@@ -26,8 +26,14 @@ class Referencia(BaseModel):
     idioma: str | None = None
 
     @property
+    def chave_externa(self) -> str:
+        """Identidade da obra na fonte. Conhecida antes do download, ao contrário
+        do hash — é o que permite pular o que já está na base."""
+        return f"{self.fonte}::{self.id_externo}"
+
+    @property
     def chave(self) -> str:
-        return id_deterministico(self.fonte, self.id_externo)
+        return self.chave_externa
 
 
 class FonteRemota(Protocol):

@@ -1,7 +1,12 @@
 """Internet Archive: advancedsearch para candidatos, metadata para o arquivo
 de texto (*_djvu.txt / *.txt), download do texto. Parse puro; rede via http."""
 from forge.infrastructure.logging import get_logger
-from forge.knowledge.domain.models import Documento, Proveniencia, id_deterministico
+from forge.knowledge.domain.models import (
+    Documento,
+    Proveniencia,
+    hash_texto,
+    id_deterministico,
+)
 from forge.knowledge.sources.remote.base import Referencia
 
 logger = get_logger(__name__)
@@ -81,6 +86,10 @@ class InternetArchive:
         )
         logger.info("Internet Archive baixado", id=ref.id_externo, chars=len(texto))
         return Documento(
-            id=id_deterministico("internet_archive", ref.id_externo),
-            titulo=ref.titulo, texto=texto, proveniencia=prov,
+            id=id_deterministico("documento", ref.chave_externa),
+            hash_sha256=hash_texto(texto),
+            titulo=ref.titulo,
+            texto=texto,
+            proveniencia=prov,
+            chave_externa=ref.chave_externa,
         )

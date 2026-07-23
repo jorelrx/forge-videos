@@ -1,79 +1,51 @@
-"""Arquivo de livro -> Documento(tipo=livro).
+"""Arquivo de livro -> (Documento de Nível 1, TextoExtraido).
 
-Responsabilidade única: bytes do arquivo -> texto limpo + metadados. A quebra
-em capítulos/subcapítulos é do estágio `pipeline.structure`, não daqui. Imports
-de pypdf/ebooklib são preguiçosos: quem só ingere .txt não precisa deles
-instalados.
+Responsabilidade única: montar o registro do documento original. A extração por
+formato é de `sources.extract`; a árvore é de `pipeline.arvore`. Aqui não se
+interpreta estrutura nenhuma.
+
+O id vem da chave_externa (caminho absoluto do arquivo), não do hash do texto:
+`chave_externa` é a identidade estável da obra, com índice UNIQUE no Postgres,
+e reprocessar o mesmo arquivo precisa reaproveitar a linha de documento já
+existente — nada do que já foi acumulado sobre ela (anotações semânticas de
+K2-K4) pode ser perdido. `hash_sha256` continua sendo a coluna que revela se o
+conteúdo mudou entre processamentos; ela não participa do id.
 """
 from pathlib import Path
 
 from forge.infrastructure.logging import get_logger
-from forge.knowledge.domain.models import Documento, Proveniencia, id_deterministico
+from forge.knowledge.domain.models import (
+    Documento,
+    Proveniencia,
+    hash_texto,
+    id_deterministico,
+)
+from forge.knowledge.sources.extract import (
+    EXTENSOES_SUPORTADAS,
+    TextoExtraido,
+    extrair_arquivo,
+)
 
 logger = get_logger(__name__)
 
-EXTENSOES_SUPORTADAS = {".txt", ".md", ".pdf", ".epub"}
+__all__ = ["EXTENSOES_SUPORTADAS", "carregar_livro"]
 
 
-def carregar_livro(path: Path, *, ocr_enabled: bool = False) -> Documento:
+def carregar_livro(
+    path: Path, *, ocr_enabled: bool = False
+) -> tuple[Documento, TextoExtraido]:
     path = Path(path)
-    sufixo = path.suffix.lower()
-    if sufixo not in EXTENSOES_SUPORTADAS:
-        raise ValueError(
-            f"Formato {sufixo!r} não suportado; suporta {sorted(EXTENSOES_SUPORTADAS)}"
-        )
+    extraido = extrair_arquivo(path, ocr_enabled=ocr_enabled)
+    digest = hash_texto(extraido.texto)
+    chave_externa = f"arquivo::{path.resolve()}"
 
-    if sufixo in {".txt", ".md"}:
-        texto = path.read_text(encoding="utf-8")
-    elif sufixo == ".pdf":
-        texto = _extrair_pdf(path, ocr_enabled=ocr_enabled)
-    else:
-        texto = _extrair_epub(path)
-
-    doc_id = id_deterministico("livro", path.name, str(path.stat().st_size))
-    logger.info("Livro carregado", fonte=path.name, chars=len(texto))
-    return Documento(
-        id=doc_id,
+    doc = Documento(
+        id=id_deterministico("documento", chave_externa),
+        hash_sha256=digest,
         titulo=path.stem,
-        texto=texto,
-        proveniencia=Proveniencia.de_livro(fonte=path.name),
+        texto=extraido.texto,
+        proveniencia=Proveniencia.de_livro(fonte=path.name, idioma=extraido.idioma),
+        chave_externa=chave_externa,
     )
-
-
-def _extrair_pdf(path: Path, *, ocr_enabled: bool) -> str:
-    from pypdf import PdfReader
-
-    leitor = PdfReader(str(path))
-    paginas = [pagina.extract_text() or "" for pagina in leitor.pages]
-    texto = "\n\n".join(paginas).strip()
-    if texto:
-        return texto
-    if ocr_enabled:
-        logger.info("PDF sem camada de texto, caindo para OCR", fonte=path.name)
-        return _ocr_pdf(path)
-    logger.warning(
-        "PDF sem texto extraível e OCR desabilitado", fonte=path.name
-    )
-    return ""
-
-
-def _ocr_pdf(path: Path) -> str:
-    """OCR opcional, atrás de `ocr_enabled`. Requer pytesseract + tesseract no SO."""
-    import pytesseract
-    from pdf2image import convert_from_path
-
-    paginas = convert_from_path(str(path))
-    return "\n\n".join(pytesseract.image_to_string(img, lang="por") for img in paginas).strip()
-
-
-def _extrair_epub(path: Path) -> str:
-    import ebooklib
-    from bs4 import BeautifulSoup
-    from ebooklib import epub
-
-    livro = epub.read_epub(str(path))
-    partes: list[str] = []
-    for item in livro.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        sopa = BeautifulSoup(item.get_content(), "html.parser")
-        partes.append(sopa.get_text(separator="\n"))
-    return "\n\n".join(partes).strip()
+    logger.info("Livro carregado", fonte=path.name, chars=len(extraido.texto), doc=doc.id)
+    return doc, extraido

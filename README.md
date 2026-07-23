@@ -152,18 +152,15 @@ Os testes cobrem cada estágio do writer, o grafo, storage, config e logging —
 
 ```
 src/forge/
-├── cli.py              # entrypoint `forge`
-├── config.py           # Settings (pydantic-settings)
-├── logging.py          # structlog
-├── llm/model.py        # fábrica de chat model por provider
-├── orchestrator/
-│   ├── graph.py        # StateGraph + loop de review
-│   └── state.py        # RoteiroState (TypedDict)
-├── writer/
-│   ├── tema.py plan.py research.py write.py review.py
-│   ├── models.py       # schemas Pydantic
-│   └── prompts/*.md
-└── output/storage.py   # render Markdown + frontmatter
+  agents/          tema, research, plan, write, review
+  orchestration/   grafo LangGraph e estado compartilhado
+  llms/            providers (anthropic, openai, lm-studio) e parsing
+  knowledge/       camada Knowledge — ver docs/knowledge.md
+  prompts/         markdown carregado por nome
+  skills/          markdown com frontmatter, injetado nos prompts
+  services/        artefatos de run e escrita do roteiro final
+  domain/          modelos do roteiro
+  infrastructure/  config e logging
 ```
 
 Detalhes de logging em [`docs/logging.md`](docs/logging.md).

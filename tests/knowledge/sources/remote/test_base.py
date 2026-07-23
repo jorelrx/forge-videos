@@ -1,4 +1,4 @@
-from forge.knowledge.domain.models import Documento, Proveniencia
+from forge.knowledge.domain.models import Documento, Proveniencia, hash_texto
 from forge.knowledge.sources.remote.base import Referencia, buscar_e_baixar
 
 
@@ -8,8 +8,9 @@ def _ref(id_externo, fonte="pag"):
 
 def _doc(ref):
     return Documento(
-        id=ref.chave, titulo=ref.titulo, texto="t",
+        id=ref.chave, hash_sha256=hash_texto("t"), titulo=ref.titulo, texto="t",
         proveniencia=Proveniencia.de_fonte_remota(fonte=ref.fonte, autoridade=1.0),
+        chave_externa=ref.chave_externa,
     )
 
 
@@ -139,8 +140,9 @@ def test_documento_vazio_e_descartado():
 
         def baixar(self, ref, *, http):
             return Documento(
-                id=ref.chave, titulo=ref.titulo, texto="   ",
+                id=ref.chave, hash_sha256=hash_texto("   "), titulo=ref.titulo, texto="   ",
                 proveniencia=Proveniencia.de_fonte_remota(fonte=ref.fonte, autoridade=1.0),
+                chave_externa=ref.chave_externa,
             )
 
     boa = FontePaginada([[_ref("1"), _ref("2")]])
@@ -238,8 +240,8 @@ def test_ingerir_busca_remota_sem_docs_retorna_zero(monkeypatch):
         knowledge=SimpleNamespace(
             wikisource_langs=["pt"], remote_top_n=3, remote_rate_delay=0,
             remote_timeout=5, cache_dir="x", remote_max_pages=10,
+            postgres_dsn="postgresql://forge:forge@localhost:5432/forge",
         )
     )
-    # sobrescrever=True evita montar o CatalogStore (sem Postgres no teste unitário)
-    total = ing.ingerir_busca_remota(["gutenberg"], "tema", settings, sobrescrever=True)
+    total = ing.ingerir_busca_remota(["gutenberg"], "tema", settings)
     assert total == 0

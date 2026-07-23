@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import forge.cli as cli
 from forge.infrastructure.config import Settings
 from forge.domain.models import Roteiro, Secao
@@ -41,11 +43,10 @@ def test_ingest_source_chama_ingerir_busca_remota(monkeypatch):
 
     capturado = {}
 
-    def fake(nomes, query, settings, *, limite=None, sobrescrever=False):
+    def fake(nomes, query, settings, *, limite=None):
         capturado["nomes"] = nomes
         capturado["query"] = query
         capturado["limite"] = limite
-        capturado["sobrescrever"] = sobrescrever
         return 7
 
     monkeypatch.setattr("forge.knowledge.ingest.ingerir_busca_remota", fake)
@@ -54,19 +55,91 @@ def test_ingest_source_chama_ingerir_busca_remota(monkeypatch):
     assert capturado["nomes"] == ["all"]
     assert capturado["query"] == "estoicismo"
     assert capturado["limite"] == 2
-    assert capturado["sobrescrever"] is False  # default não sobrescreve
 
 
-def test_ingest_source_sobrescrever_repassa_flag(monkeypatch):
-    import forge.cli as cli
+def test_ingest_nao_tem_mais_flag_sobrescrever():
+    """Write-once: uma obra já na base nunca é reingerida, então o flag que
+    forçava isso deixou de existir."""
+    from forge import cli
 
-    capturado = {}
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["ingest", "--source", "sep", "--query", "x", "--sobrescrever"])
+    assert exc.value.code == 2  # argparse: argumento desconhecido
 
-    def fake(nomes, query, settings, *, limite=None, sobrescrever=False):
-        capturado["sobrescrever"] = sobrescrever
-        return 1
 
-    monkeypatch.setattr("forge.knowledge.ingest.ingerir_busca_remota", fake)
-    rc = cli.main(["ingest", "--source", "sep", "--query", "stoicism", "--sobrescrever"])
+def test_comando_buscar_nao_existe_mais():
+    """Retriever dormente até K5."""
+    from forge.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["buscar", "--query", "virtude"])
+
+
+def test_confirmar_reset_recusa_stdin_fechado(monkeypatch):
+    """Guarda de operação destrutiva: sem terminal, aborta em vez de prosseguir."""
+    from forge import cli
+
+    def sem_stdin(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", sem_stdin)
+    assert cli._confirmar_reset() is False
+
+
+def test_confirmar_reset_so_aceita_a_palavra_exata(monkeypatch):
+    from forge import cli
+
+    for resposta, esperado in [
+        ("apagar", True), ("  APAGAR  ", True),
+        ("", False), ("y", False), ("sim", False), ("apagar tudo", False),
+    ]:
+        monkeypatch.setattr("builtins.input", lambda _p, r=resposta: r)
+        assert cli._confirmar_reset() is esperado, resposta
+
+
+def test_reset_exige_confirmacao_e_aborta_quando_negada(monkeypatch):
+    from forge import cli
+
+    chamou = []
+    monkeypatch.setattr(cli, "_confirmar_reset", lambda: False)
+    monkeypatch.setattr(
+        "forge.knowledge.ingest.resetar_stores", lambda s: chamou.append(s)
+    )
+    assert cli.main(["ingest", "--reset"]) == 1
+    assert chamou == []
+
+
+def test_reset_confirmado_chama_resetar_stores(monkeypatch):
+    from forge import cli
+
+    chamou = []
+    monkeypatch.setattr(cli, "_confirmar_reset", lambda: True)
+    monkeypatch.setattr(
+        "forge.knowledge.ingest.resetar_stores", lambda s: chamou.append(s)
+    )
+    assert cli.main(["ingest", "--reset", "--sim"]) == 0
+    assert len(chamou) == 1
+
+
+def test_reset_com_status_imprime_contagens(monkeypatch, capsys):
+    """Fix 7: `--reset --status` sem --path/--source não pode parar no aviso de
+    reset — tem que cair no ramo de status e imprimir as contagens."""
+    from forge import cli
+
+    class FakeStores:
+        vector = type("V", (), {"contar": lambda self: 1})()
+        catalog = type("C", (), {"contar_chunks": lambda self: 2})()
+        graph = type("G", (), {"contar_entidades": lambda self: 3})()
+
+    monkeypatch.setattr(cli, "_confirmar_reset", lambda: True)
+    monkeypatch.setattr("forge.knowledge.ingest.resetar_stores", lambda s: None)
+    monkeypatch.setattr(
+        "forge.knowledge.ingest._montar", lambda s: (object(), FakeStores())
+    )
+
+    rc = cli.main(["ingest", "--reset", "--sim", "--status"])
     assert rc == 0
-    assert capturado["sobrescrever"] is True
+    out = capsys.readouterr().out
+    assert "qdrant vetores: 1" in out
+    assert "postgres chunks: 2" in out
+    assert "neo4j entidades: 3" in out

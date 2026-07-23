@@ -37,8 +37,9 @@ class KnowledgeSettings(BaseModel):
     embedding_batch: int = 32
 
     ocr_enabled: bool = False
-    chunk_size: int = 800
-    chunk_overlap: int = 120
+    # Parágrafo abaixo disso é mesclado no seguinte: índice, número de página
+    # solto e artefato de EPUB não merecem chunk próprio.
+    paragrafo_min_chars: int = 40
 
     # Aquisição de fontes remotas
     remote_top_n: int = 3
@@ -88,8 +89,8 @@ class Settings(BaseSettings):
     provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"
 
-    # Liga a camada de conhecimento no fluxo de roteiro. Off por padrão: sem os
-    # stores no ar (docker-compose), o research segue só com web_search.
+    # Inerte durante K1-K4: a ponte com o fluxo de roteiro foi removida (retriever
+    # dormente até K5, quando o retrieval volta a ler esta flag).
     knowledge_enabled: bool = False
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
 

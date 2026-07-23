@@ -1,10 +1,13 @@
-"""Retriever fino: vetorial + léxico com fusão RRF.
+"""DORMENTE ATÉ K5. Nenhum chamador em K1-K4.
 
-Reciprocal Rank Fusion combina duas listas ranqueadas sem precisar normalizar
-scores de escalas diferentes (cosseno do Qdrant vs ts_rank do Postgres): cada
-item vale 1/(k+rank) em cada lista, somado. É a fusão robusta padrão. O
-retriever de 8 sinais (KG, recência, autoridade ponderada, re-ranking) fica para
-o próximo plano — aqui provamos a camada com as duas pernas essenciais.
+Retriever fino: vetorial + léxico com fusão RRF. A fusão RRF está correta e é
+reaproveitada em K5 — por isso o módulo fica no repositório em vez de ser
+apagado. O resto (query planner, perna de KG, metadados, recência, autoridade,
+confiança, re-ranking por cross-encoder) é escopo de K5, depois que K1-K4
+tiverem gravado esses sinais.
+
+`retrieve` e `consultar` referenciam o schema anterior a K1 e não funcionam como
+estão. Não chame nada daqui antes de K5.
 """
 from forge.infrastructure.logging import get_logger
 

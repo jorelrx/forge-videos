@@ -5,7 +5,6 @@ Entidade é MERGE por nome (idempotente); relacionamento vira aresta genérica
 `params_documento` é puro e testável sem servidor.
 """
 from forge.infrastructure.logging import get_logger
-from forge.knowledge.domain.models import Documento
 
 logger = get_logger(__name__)
 
@@ -19,13 +18,21 @@ _CYPHER_RELACAO = (
     "SET r.documento_id = $documento_id"
 )
 
-def params_documento(doc: Documento) -> tuple[list[dict], list[dict]]:
-    entidades = [{"nome": e.nome, "tipo": e.tipo} for e in doc.entidades]
-    relacoes = [
-        {"origem": r.origem, "destino": r.destino, "tipo": r.tipo, "documento_id": doc.id}
-        for r in doc.relacionamentos
+def params_documento(
+    documento_id: str, entidades: list, relacionamentos: list
+) -> tuple[list[dict], list[dict]]:
+    """Dormente até K3: o grafo semântico só passa a ser escrito lá.
+
+    Recebe listas explícitas em vez de um Documento — a árvore estrutural não
+    carrega entidade nem relação, elas são da camada semântica.
+    """
+    nos = [{"nome": e.nome, "tipo": e.tipo} for e in entidades]
+    arestas = [
+        {"origem": r.origem, "destino": r.destino, "tipo": r.tipo,
+         "documento_id": documento_id}
+        for r in relacionamentos
     ]
-    return entidades, relacoes
+    return nos, arestas
 
 class GraphStore:
     def __init__(self, uri: str, user: str, password: str):
@@ -41,14 +48,23 @@ class GraphStore:
             )
         logger.info("Schema Neo4j garantido")
 
-    def upsert_documento(self, doc: Documento) -> None:
-        entidades, relacoes = params_documento(doc)
+    def resetar(self) -> None:
         with self._driver.session() as s:
-            for e in entidades:
-                s.run(_CYPHER_ENTIDADE, **e)
-            for r in relacoes:
-                s.run(_CYPHER_RELACAO, **r)
-        logger.info("KG atualizado", doc=doc.id, entidades=len(entidades), relacoes=len(relacoes))
+            s.run("MATCH (n) DETACH DELETE n")
+        logger.warning("Grafo Neo4j esvaziado")
+        self.garantir_schema()
+
+    def upsert_semantica(
+        self, documento_id: str, entidades: list, relacionamentos: list
+    ) -> None:
+        """Dormente até K3. Nenhum chamador em K1."""
+        nos, arestas = params_documento(documento_id, entidades, relacionamentos)
+        with self._driver.session() as s:
+            for no in nos:
+                s.run(_CYPHER_ENTIDADE, **no)
+            for aresta in arestas:
+                s.run(_CYPHER_RELACAO, **aresta)
+        logger.info("KG atualizado", doc=documento_id, entidades=len(nos), relacoes=len(arestas))
 
     def contar_entidades(self) -> int:
         with self._driver.session() as s:

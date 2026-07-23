@@ -53,51 +53,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     ing.add_argument("--query", default=None, help="Tema para a busca remota")
     ing.add_argument("--limite", type=int, default=None, help="Máximo de obras NOVAS por fonte")
-    ing.add_argument(
-        "--sobrescrever",
-        action="store_true",
-        help="Reingere obras já na base (padrão: pula já ingeridas e pega a próxima)",
-    )
 
-    b = sub.add_parser("buscar", help="Consulta a base de conhecimento (retrieval híbrido)")
-    b.add_argument("--query", required=True, help="Frase/tema para buscar nos dados salvos")
-    b.add_argument("--limite", type=int, default=8, help="Máximo de trechos (default 8)")
+    ing.add_argument(
+        "--reset",
+        action="store_true",
+        help="APAGA todos os dados dos três stores e recria o schema",
+    )
+    ing.add_argument(
+        "--sim",
+        action="store_true",
+        help="Pula a confirmação de --reset (para automação)",
+    )
 
     args = parser.parse_args(argv)
 
     if args.cmd == "ingest":
         return _cmd_ingest(args)
-    if args.cmd == "buscar":
-        return _cmd_buscar(args)
     return _cmd_roteiro(args)
 
 
-def _cmd_buscar(args) -> int:
-    from forge.knowledge.retriever.hybrid import consultar
+def _confirmar_reset() -> bool:
+    """Confirmação interativa de operação destrutiva.
 
-    settings = get_settings()
-    setup_logging(settings.log_level)
+    --reset apaga Postgres, Qdrant e Neo4j de forma irreversível. Exige que o
+    usuário digite a palavra, para que não seja acionado por engano.
+    """
+    print("--reset APAGA todos os dados de Postgres, Qdrant e Neo4j.")
+    print("Esta ação é irreversível.")
     try:
-        resultados = consultar(args.query, settings, limite=args.limite)
-    except Exception as e:
-        logger.error("Busca falhou", error=str(e), exc_info=True)
-        return 1
-
-    if not resultados:
-        print("nenhum resultado")
-        return 0
-
-    for r in resultados:
-        obra = r.get("obra") or r.get("fonte") or "?"
-        autor = r.get("autor") or "—"
-        cap = r.get("capitulo") or r.get("secao")
-        trecho = " ".join((r.get("texto") or "").split())[:160]
-        cabecalho = f"[{r.get('rrf', 0):.4f}] {autor} — {obra}"
-        if cap:
-            cabecalho += f" ({cap})"
-        print(cabecalho)
-        print(f"    {trecho}")
-    return 0
+        resposta = input("Digite 'apagar' para confirmar: ")
+    except EOFError:
+        return False
+    return resposta.strip().lower() == "apagar"
 
 
 def _cmd_ingest(args) -> int:
@@ -105,6 +92,22 @@ def _cmd_ingest(args) -> int:
 
     settings = get_settings()
     setup_logging(settings.log_level)
+
+    if args.reset:
+        from forge.knowledge.ingest import resetar_stores
+
+        if not args.sim and not _confirmar_reset():
+            logger.warning("Reset cancelado pelo usuário")
+            print("cancelado")
+            return 1
+        try:
+            resetar_stores(settings)
+        except Exception as e:
+            logger.error("Reset falhou", error=str(e), exc_info=True)
+            return 1
+        print("stores resetados")
+        if not args.path and not args.source and not args.status:
+            return 0
 
     if args.source:
         if not args.query:
@@ -114,8 +117,7 @@ def _cmd_ingest(args) -> int:
 
         try:
             total = ingerir_busca_remota(
-                [args.source], args.query, settings,
-                limite=args.limite, sobrescrever=args.sobrescrever,
+                [args.source], args.query, settings, limite=args.limite,
             )
         except Exception as e:
             logger.error("Busca remota falhou", error=str(e), exc_info=True)
@@ -125,13 +127,9 @@ def _cmd_ingest(args) -> int:
         return 0
 
     if args.status:
-        _, _, stores = _montar(settings)
-        logger.info(
-            "Knowledge status",
-            chunks_qdrant=stores.vector.contar(),
-            entidades_neo4j=stores.graph.contar_entidades(),
-        )
-        print(f"qdrant chunks: {stores.vector.contar()}")
+        _, stores = _montar(settings)
+        print(f"qdrant vetores: {stores.vector.contar()}")
+        print(f"postgres chunks: {stores.catalog.contar_chunks()}")
         print(f"neo4j entidades: {stores.graph.contar_entidades()}")
         return 0
 

@@ -178,8 +178,7 @@ No Neo4j, mantenha um único grafo contendo entidades como Document, Author, Con
 
 # Pipeline RAG
 
-Documentos → Chunking → Embeddings → Qdrant → Recuperação → Contexto →
-Agentes
+Ver [knowledge.md](knowledge.md) — fonte de verdade da camada Knowledge.
 
 # Fluxo Editorial
 
@@ -255,7 +254,14 @@ Fundação, orquestrador, skills, múltiplos LLMs, Agentes especificos para cada
 
 ## V2
 
-RAG, ingestão, embeddings, banco vetorial.
+Camada Knowledge, decomposta em seis sub-projetos:
+
+- **K1** — Documento original e chunking hierárquico (Níveis 1-2)
+- **K2** — Estudo do chunk por agentes especializados (Nível 3)
+- **K3** — Extração de conhecimento: ontologia, proposições, argumentos (Nível 4)
+- **K4** — Conceitos refinados e grafo hierárquico (Nível 5)
+- **K5** — Retriever híbrido completo
+- **K6** — Conhecimento global: contradições, confiança, sínteses (Nível 6)
 
 ## V3
 

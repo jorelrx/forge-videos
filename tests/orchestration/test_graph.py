@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from langgraph.graph import END
 from forge.infrastructure.config import Settings
 from forge.orchestration.graph import rotear, build_graph
@@ -126,3 +128,11 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path):
         "tema": None, "rounds": 0, "passos": 0, "run_dir": tmp_path,
     })
     assert final["passos"] <= 13, f"orçamento furou: {final['passos']} passos"
+
+def test_research_nao_chama_a_camada_de_conhecimento():
+    """Retriever fica dormente até K5: nada no fluxo de roteiro pode tocá-lo."""
+    import forge.orchestration.graph as modulo
+
+    fonte = Path(modulo.__file__).read_text(encoding="utf-8")
+    assert "knowledge" not in fonte
+    assert "consultar_e_aprender" not in fonte

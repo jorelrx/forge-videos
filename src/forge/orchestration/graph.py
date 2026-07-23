@@ -70,9 +70,6 @@ def build_graph(model, settings, inicio: str = "tema"):
         )
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
-        if settings.knowledge_enabled:
-            from forge.knowledge.integration import consultar_e_aprender
-            combinado = consultar_e_aprender(state["tema"], combinado, settings)
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))
         return {
             "research_notes": combinado,

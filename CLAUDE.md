@@ -20,6 +20,7 @@ uv run forge roteiro --retomar output/runs/<ts>-<slug>   # resume a prior run fr
 
 uv run forge ingest --path <file|dir>    # ingest books into the knowledge base
 uv run forge ingest --status             # count what is indexed
+uv run forge ingest --reset              # WIPES all three stores and recreates the schema
 
 docker compose up -d                     # bring up Qdrant/Neo4j/Postgres for knowledge layer
 
@@ -71,14 +72,32 @@ Three providers: `anthropic`, `openai`, `lm-studio`. `settings.resolved_model` /
 - **Prompts** ([prompts/](src/forge/prompts/)) are markdown loaded by name via `load_prompt()`. Editing a prompt needs no Python change.
 - **Skills** ([skills/](src/forge/skills/)) are markdown with frontmatter (`nome`, `dono`, `dominio`) and sections `Critérios` / `Anti-padrões` / `Procedimento`. `load_skills()` injects them into prompts. Key rule: the **`Procedimento` section is only shown to the owning agent** (`dono`) — it's the boundary between what a *producer* agent sees and what a *reviewer* must not. An unrecognized section title raises rather than passing silently.
 
-### Knowledge layer / RAG ([knowledge/](src/forge/knowledge/), optional, off by default)
+### Knowledge layer ([knowledge/](src/forge/knowledge/), optional, off by default)
 
-Enabled by `FORGE_KNOWLEDGE_ENABLED=true`; requires the docker-compose stores. When on, research calls `consultar_e_aprender()` ([knowledge/integration.py](src/forge/knowledge/integration.py)) to (a) pull library context into the brief and (b) ingest the brief back as a web document (continuous learning). It is **best-effort**: any store failure is logged and research proceeds without it — knowledge problems must never break script generation.
+Fonte de verdade do design: [docs/knowledge.md](docs/knowledge.md). Seis níveis,
+implementados como seis sub-projetos K1-K6.
 
-- Ingest pipeline: source → `enriquecer` (chunk, summarize, extract entities/relations/concepts) → `persistir` across three stores: Qdrant (vectors), Neo4j (graph), Postgres (catalog + lexical search).
-- Retriever ([knowledge/retriever/hybrid.py](src/forge/knowledge/retriever/hybrid.py)): vector + lexical fused with Reciprocal Rank Fusion (RRF), no score normalization needed.
-- Testability: `enriquecer`/`persistir`/`ingerir_documentos` take `model`, `embed_fn`, and `stores` by injection, so the whole pipeline runs with fakes — no LLM, no Docker. The `_montar()` / `ingerir_*` top-level functions build the real dependencies from `Settings`. Follow this injection pattern when extending the pipeline.
-- Embeddings run locally on CPU (sentence-transformers, `BAAI/bge-m3`, dim 1024). `sonda_semantica()` gates ingestion before touching any store.
+**Duas árvores que nunca se misturam.** A estrutural (Postgres) é imutável,
+derivada só do texto, sem LLM: Livro > Capítulo > Subcapítulo > Seção > Parágrafo
+> Sentença, com `pai_id` e caminho materializado. O grafo semântico (Neo4j) é
+evolutivo, referencia `chunk_id` e é escrito a partir de K3. Regenerar a camada
+semântica nunca exige reingerir a estrutural.
+
+- **Identidade de chunk vem do conteúdo**, não da posição:
+  `id_deterministico(documento_id, sha256(texto), ocorrencia)`. A camada semântica
+  acumula anotações sobre `chunk_id`; id posicional invalidaria tudo a cada
+  reingestão.
+- **Texto nunca é alterado.** `documentos.texto` é a extração crua; o texto de um
+  chunk é fatia por offset. Normalização só como entrada transitória de tsvector e
+  embedding.
+- **Só a folha-parágrafo é embedada** (small-to-big): vetor preciso, entrega sobe
+  pelo `pai_id`. Só ela tem coluna `texto`; os outros níveis derivam por offset.
+- **Ingestão de K1 não faz nenhuma chamada de LLM.** A única que resta na camada é
+  a tradução do termo de busca em fontes remotas, que não toca o conteúdo.
+- **Retriever dormente até K5.** `retriever/hybrid.py` não tem chamador; o comando
+  `forge buscar` não existe; o fluxo de roteiro não toca a camada.
+- Testabilidade: `embed_fn` e `stores` entram por injeção — o pipeline roda com
+  fakes, sem Docker. `_montar()` monta as reais a partir de `Settings`.
 
 ## Response style
 

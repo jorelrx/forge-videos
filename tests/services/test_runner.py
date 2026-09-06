@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 
+import pytest
+
 from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
 from forge.services.manifesto import carregar, criar_ou_carregar
 from forge.services.runner import executar
@@ -103,3 +105,18 @@ def test_grupo_sem_pendente_nao_toma_o_slot(tmp_path):
     executar(tmp_path, m, {"audio": _ok, "imagem": _ok}, broker)
 
     assert broker.slots == ["imagem"]
+
+
+def test_so_com_grupo_desconhecido_falha_alto(tmp_path):
+    """"imagens" (plural) é o typo que o CLI --so vai cometer um dia; sem essa
+    checagem o loop faria continue em silêncio e devolveria o manifesto intacto,
+    indistinguível de um run que não tinha nada pendente."""
+    m = criar_ou_carregar(tmp_path, _plano())
+
+    with pytest.raises(ValueError) as exc:
+        executar(tmp_path, m, {"audio": _ok, "imagem": _ok}, BrokerFalso(), so="imagens")
+
+    mensagem = str(exc.value)
+    assert "imagens" in mensagem
+    assert "audio" in mensagem
+    assert "imagem" in mensagem

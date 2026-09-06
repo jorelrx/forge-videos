@@ -35,6 +35,15 @@ def executar(
     *,
     so: str | None = None,
 ) -> Manifesto:
+    # Um valor de `so` fora de ORDEM não bate com nenhum tipo do loop, então o
+    # loop inteiro faria `continue` em silêncio: nenhum pendentes(), nenhum log,
+    # broker nunca aberto, manifesto devolvido intacto — indistinguível de um
+    # run que legitimamente não tinha nada a fazer. Isso é erro de programador
+    # ou de CLI (ex.: "imagens" no lugar de "imagem"), não condição de runtime,
+    # então falha alto na fronteira em vez de devolver silêncio indepurável.
+    if so is not None and so not in ORDEM:
+        raise ValueError(f"grupo desconhecido: {so!r} (válidos: {ORDEM})")
+
     for tipo in ORDEM:
         if so is not None and tipo != so:
             continue

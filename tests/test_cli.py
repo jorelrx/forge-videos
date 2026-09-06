@@ -67,6 +67,43 @@ def test_roteiro_grava_o_plano_de_midia(monkeypatch, tmp_path, capsys):
     assert carregar_plano(runs[0]) == plano
 
 
+def test_falha_no_plano_de_midia_nao_derruba_o_roteiro(monkeypatch, tmp_path, capsys):
+    """A garantia que o try/except em torno do plano de mídia existe para dar:
+    o roteiro aprovado já está em disco quando o plano é tentado, e uma falha
+    ali não pode apagar esse entregável nem mudar o rc de `forge roteiro`."""
+    from forge.agents import midia as midia_mod
+
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros",
+                        anthropic_api_key="sk-test")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+
+    roteiro = Roteiro(tema="tema", tese="tese",
+                      secoes=[Secao(nome="Hook", conteudo="c")])
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": roteiro}}
+
+    monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
+
+    def _explode(*a, **k):
+        raise RuntimeError("modelo indisponível")
+
+    monkeypatch.setattr(midia_mod, "planejar_midia", _explode)
+
+    rc = cli.main(["roteiro", "--tema", "meu tema"])
+
+    assert rc == 0
+    out = capsys.readouterr().out.strip().splitlines()[-1].strip()
+    assert Path(out).exists()
+    assert out.endswith(".md")
+
+    runs = list((tmp_path / "runs").iterdir())
+    assert len(runs) == 1
+    assert not (runs[0] / "video" / "midia.json").exists()
+
+
 def test_ingest_nao_e_mais_um_subcomando():
     """A ingestão de livros é do acervo (POST /books/{id}/ingest), não do forge."""
     with pytest.raises(SystemExit) as exc:

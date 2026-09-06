@@ -30,5 +30,7 @@ bloco em que a imagem entra e traz o prompt de geração, em inglês, concreto e
 visual: cena, luz, composição, atmosfera. Nada de texto na imagem, nada de
 rosto de pessoa real, nada abstrato demais para desenhar.
 
-Os ids que você escrever são ignorados e renumerados — não gaste esforço neles,
-mas mantenha `bloco_id` apontando para um bloco que existe na sua lista.
+Os ids que você escrever são renumerados depois, então a forma exata deles não
+importa — mas eles precisam ser distintos entre si dentro da sua lista de
+blocos, porque `bloco_id` é resolvido através deles: um id repetido faz o beat
+apontar para o bloco errado.

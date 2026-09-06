@@ -56,6 +56,27 @@ def test_beat_orfao_e_descartado(scripted):
     assert len(plano.beats) == 2
 
 
+def test_id_repetido_pelo_modelo_resolve_para_o_primeiro_bloco(scripted):
+    """prompts/midia.md convida a repetir ids ("a forma exata não importa").
+
+    Se dois blocos chegarem com o mesmo id original, o mapa não pode sobrescrever
+    a primeira entrada: um beat destinado ao primeiro bloco iria silenciosamente
+    parar no segundo.
+    """
+    cru = PlanoMidia(
+        blocos=[
+            BlocoNarracao(id="x", secao="Hook", texto="Primeira frase."),
+            BlocoNarracao(id="x", secao="Problema", texto="Segunda frase."),
+        ],
+        beats=[Beat(id="i", bloco_id="x", prompt="uma ampulheta")],
+    )
+    model = scripted(structured=[cru])
+
+    plano = planejar_midia(model, _roteiro())
+
+    assert plano.beats[0].bloco_id == "b001"
+
+
 def test_plano_faz_round_trip_no_disco(tmp_path, scripted):
     plano = planejar_midia(scripted(structured=[_plano_cru()]), _roteiro())
 

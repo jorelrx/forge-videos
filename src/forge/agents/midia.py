@@ -49,7 +49,17 @@ def _normalizar(cru: PlanoMidia) -> PlanoMidia:
     blocos: list[BlocoNarracao] = []
     for i, bloco in enumerate(cru.blocos, 1):
         novo = f"b{i:03d}"
-        mapa[bloco.id] = novo
+        if bloco.id in mapa:
+            # O prompt diz ao modelo que o id não importa, o que convida a
+            # repeti-lo. Sobrescrever a entrada mandaria um beat destinado ao
+            # primeiro bloco silenciosamente para o segundo; first-wins é
+            # arbitrário mas determinístico, avisado, e segue a ordem de leitura.
+            logger.warning(
+                "Id de bloco repetido pelo modelo; mantendo o primeiro",
+                id_repetido=bloco.id, bloco_perdido=novo,
+            )
+        else:
+            mapa[bloco.id] = novo
         texto, removidas = sanear_texto(bloco.texto)
         if removidas:
             logger.warning("Tags inválidas removidas", bloco=novo, tags=removidas)

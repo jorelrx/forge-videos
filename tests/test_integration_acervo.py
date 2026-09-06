@@ -16,5 +16,9 @@ def test_acervo_real_responde_e_devolve_caminho_citavel():
     passagens = acervo.buscar("livre-arbítrio e determinismo", top=3)
 
     assert passagens, "acervo no ar mas sem passagens; confira se há livros ingeridos"
-    assert all(p.path for p in passagens)
-    assert all(p.book_title for p in passagens)
+
+    paths = [p.path for p in passagens]
+    assert all(paths), f"passagem sem path canônico; paths recebidos: {paths}"
+
+    titulos = [p.book_title for p in passagens]
+    assert all(titulos), f"passagem sem book_title; titulos recebidos: {titulos}"

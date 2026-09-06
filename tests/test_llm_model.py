@@ -32,3 +32,13 @@ def test_openai_usa_a_propria_chave_e_modelo():
 def test_openai_respeita_override_de_modelo():
     s = Settings(_env_file=None, provider="openai", model="gpt-5", openai_api_key="sk-oai")
     assert build_chat_model(s).model_name == "gpt-5"
+
+
+def test_modelo_local_recebe_prazo():
+    """Sem prazo, uma chamada que pendura trava o pipeline inteiro — foi o que
+    aconteceu no primeiro run real, duas vezes."""
+    s = Settings(_env_file=None, provider="lm-studio", llm_timeout=30.0)
+    model = build_chat_model(s)
+
+    assert model.request_timeout == 30.0
+    assert model.max_retries == 1

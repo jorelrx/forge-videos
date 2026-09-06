@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     lms_bin: str = str(Path.home() / ".lmstudio" / "bin" / "lms.exe")
     gpu_liberacao_timeout: float = 60.0
 
+    # Chamada de modelo sem prazo pendura o pipeline: no primeiro run real o
+    # LM Studio ficou 12 min sem responder e sem erro.
+    llm_timeout: float = 600.0
+    llm_max_retries: int = 1
+
     @property
     def resolved_model(self) -> str:
         """Modelo do provider ativo. `FORGE_MODEL` sobrepõe qualquer provider."""

@@ -98,3 +98,11 @@ def test_liberadores_tem_defaults():
     assert s.comfy_vram_livre_min == 6_000_000_000
     assert s.gpu_liberacao_timeout == 60.0
     assert s.lms_bin.endswith("lms.exe")
+
+
+def test_llm_tem_prazo():
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.llm_timeout == 600.0
+    assert s.llm_max_retries == 1

@@ -76,6 +76,24 @@ Acervo fora do ar levanta `AcervoIndisponivel`. Não existe fallback para busca
 web: um fallback silencioso reintroduziria exatamente a fonte não-citável que
 este desenho elimina.
 
+### Vídeo: broker, plano de mídia e manifesto
+
+`forge roteiro` grava, além do roteiro, `<run>/video/midia.json` — os blocos de
+narração com tags de controle do TTS e um prompt de imagem por beat visual. É o
+último artefato que exige LLM.
+
+[gpu/broker.py](src/forge/gpu/broker.py) mantém **um** consumidor de GPU
+residente por vez (`llm`, `tts`, `imagem`), com lock de arquivo em
+`output/.gpu.lock`. A troca acontece por fase, nunca por item. Os liberadores
+reais estão em [gpu/liberadores.py](src/forge/gpu/liberadores.py) e confirmam a
+VRAM de volta antes de devolver o slot.
+
+[services/manifesto.py](src/forge/services/manifesto.py) dá estado próprio a cada
+bloco e cada beat; [services/runner.py](src/forge/services/runner.py) consome os
+pendentes agrupados por tipo, tomando o slot uma vez por grupo e regravando o
+manifesto depois de cada item. Os executores de áudio e imagem entram por
+injeção.
+
 ## Response style
 
 - **Always keep caveman mode active** in your responses to the user (terse, drop articles/filler/pleasantries/hedging; fragments OK). This holds even while a Superpowers skill (brainstorming, systematic-debugging, TDD, etc.) is driving the workflow — run the skill's process *and* keep the caveman voice; they stack, one does not disable the other.

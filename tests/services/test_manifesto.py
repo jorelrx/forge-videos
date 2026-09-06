@@ -95,7 +95,7 @@ def test_escrita_interrompida_nao_corrompe_o_manifesto(tmp_path):
     def replace_com_erro(src, dst):
         raise OSError("Simulação de corte de energia durante escrita")
 
-    with mock.patch("forge.services.manifesto.os.replace", side_effect=replace_com_erro):
+    with mock.patch("forge.services.persistencia.os.replace", side_effect=replace_com_erro):
         # Mutate o manifesto e tenta gravar
         m.itens[0].estado = "falhou"
         m.itens[0].erro = "erro de teste"

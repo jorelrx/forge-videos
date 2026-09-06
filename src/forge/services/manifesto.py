@@ -7,8 +7,6 @@ estado e o arquivo é regravado depois de cada um.
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from forge.domain.midia import PlanoMidia
 from forge.infrastructure.logging import get_logger
+from forge.services.persistencia import carregar_modelo, gravar_modelo
 
 logger = get_logger(__name__)
 
@@ -96,20 +95,13 @@ def criar_ou_carregar(run_dir: Path, plano: PlanoMidia) -> Manifesto:
 
 
 def carregar(run_dir: Path) -> Manifesto:
-    return Manifesto(**json.loads(caminho(run_dir).read_text(encoding="utf-8")))
+    return carregar_modelo(caminho(run_dir), Manifesto)
 
 
 def gravar(run_dir: Path, manifesto: Manifesto) -> None:
-    destino = caminho(run_dir)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    # Escrita atômica: um corte de energia no meio da gravação deixaria um JSON
-    # truncado no lugar do progresso de horas.
-    temporario = destino.with_suffix(".json.tmp")
-    temporario.write_text(
-        json.dumps(manifesto.model_dump(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(temporario, destino)
+    # Escrita atômica (ver services/persistencia.py): um corte de energia no
+    # meio da gravação deixaria um JSON truncado no lugar do progresso de horas.
+    gravar_modelo(caminho(run_dir), manifesto)
 
 
 def pendentes(manifesto: Manifesto, tipo: str | None = None) -> list[Item]:

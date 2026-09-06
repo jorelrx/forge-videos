@@ -6,7 +6,6 @@ GPU não precise recarregar o modelo só para pedir prompts de imagem.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
@@ -16,10 +15,15 @@ from forge.domain.models import Roteiro
 from forge.infrastructure.logging import get_logger
 from forge.narracao.tags import sanear_texto
 from forge.prompts.loader import load_prompt
+from forge.services.persistencia import carregar_modelo, gravar_modelo
 
 logger = get_logger(__name__)
 
 LE = ["tema", "roteiro"]
+
+
+class PlanoJaExiste(FileExistsError):
+    """Já há um plano em disco e ninguém pediu para refazê-lo."""
 
 
 def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
@@ -82,14 +86,23 @@ def caminho_plano(run_dir: Path) -> Path:
     return Path(run_dir) / "video" / "midia.json"
 
 
-def gravar_plano(run_dir: Path, plano: PlanoMidia) -> Path:
+def gravar_plano(run_dir: Path, plano: PlanoMidia, *, forcar: bool = False) -> Path:
+    """Grava o plano, recusando sobrescrever um que já existe.
+
+    Os ids dos blocos são posicionais (`b001..`), então um plano refeito com um
+    fatiamento diferente renumera tudo. A regra de entrada-mudou do manifesto
+    então reseta quase todo item para `pendente` e uma noite inteira de áudio e
+    imagem já gerados vira lixo. Refazer o plano tem que ser um ato explícito.
+    """
     caminho = caminho_plano(run_dir)
-    caminho.parent.mkdir(parents=True, exist_ok=True)
-    caminho.write_text(
-        json.dumps(plano.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return caminho
+    if caminho.exists() and not forcar:
+        raise PlanoJaExiste(
+            f"plano de mídia já existe em {caminho}; sobrescrevê-lo renumeraria "
+            f"os blocos e descartaria o áudio e as imagens já gerados. "
+            f"Use gravar_plano(..., forcar=True) para refazê-lo de propósito."
+        )
+    return gravar_modelo(caminho, plano)
 
 
 def carregar_plano(run_dir: Path) -> PlanoMidia:
-    return PlanoMidia(**json.loads(caminho_plano(run_dir).read_text(encoding="utf-8")))
+    return carregar_modelo(caminho_plano(run_dir), PlanoMidia)

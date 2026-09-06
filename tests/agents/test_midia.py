@@ -84,3 +84,49 @@ def test_plano_faz_round_trip_no_disco(tmp_path, scripted):
 
     assert caminho == tmp_path / "video" / "midia.json"
     assert carregar_plano(tmp_path) == plano
+
+
+def test_gravar_plano_recusa_sobrescrever(tmp_path, scripted):
+    """Ids de bloco são posicionais: um plano refeito renumera tudo, a regra de
+    entrada-mudou do manifesto reseta quase todo item para pendente, e uma noite
+    de áudio e imagem gerados vira lixo. Refazer tem que ser explícito."""
+    import pytest
+
+    from forge.agents.midia import PlanoJaExiste
+
+    plano = planejar_midia(scripted(structured=[_plano_cru()]), _roteiro())
+    caminho = gravar_plano(tmp_path, plano)
+
+    outro = PlanoMidia(
+        blocos=[BlocoNarracao(id="b001", secao="Hook", texto="Outro corte.")],
+        beats=[],
+    )
+    with pytest.raises(PlanoJaExiste) as exc:
+        gravar_plano(tmp_path, outro)
+
+    assert str(caminho) in str(exc.value)
+    assert "forcar" in str(exc.value)
+    assert carregar_plano(tmp_path) == plano
+
+    gravar_plano(tmp_path, outro, forcar=True)
+    assert carregar_plano(tmp_path) == outro
+
+
+def test_escrita_interrompida_nao_corrompe_o_plano(tmp_path, scripted):
+    """midia.json é o artefato mais caro do run (uma chamada de LLM no fim de
+    horas) e a entrada de tudo o que vem depois. Escrita direta o deixaria
+    truncado se a máquina caísse no meio."""
+    from unittest import mock
+
+    import pytest
+
+    plano = planejar_midia(scripted(structured=[_plano_cru()]), _roteiro())
+    gravar_plano(tmp_path, plano)
+
+    outro = PlanoMidia(blocos=[], beats=[])
+    with mock.patch("forge.services.persistencia.os.replace",
+                    side_effect=OSError("corte de energia")):
+        with pytest.raises(OSError):
+            gravar_plano(tmp_path, outro, forcar=True)
+
+    assert carregar_plano(tmp_path) == plano

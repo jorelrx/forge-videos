@@ -2,7 +2,13 @@ import httpx
 import pytest
 
 from forge.gpu.broker import LiberacaoFalhou
-from forge.gpu.liberadores import liberar_imagem, liberar_llm, liberar_tts
+from forge.gpu.liberadores import (
+    liberar_imagem,
+    liberar_llm,
+    liberar_tts,
+    montar_broker,
+    montar_liberadores,
+)
 from forge.infrastructure.config import Settings
 
 
@@ -107,3 +113,29 @@ def test_liberar_imagem_com_comfy_fora_do_ar_apenas_avisa():
 def test_liberar_tts_e_no_op():
     """O audiocpp_cli morre sozinho ao terminar o trecho; não há o que descarregar."""
     liberar_tts(_settings())
+
+
+def test_montar_liberadores_tem_as_tres_chaves_e_sao_chamaveis():
+    liberadores = montar_liberadores(_settings())
+
+    assert set(liberadores) == {"llm", "tts", "imagem"}
+    assert all(callable(f) for f in liberadores.values())
+    # llm e imagem batem em serviço real — não invocar aqui. tts é no-op, seguro.
+    liberadores["tts"]()
+
+
+def test_montar_broker_vulkan_disputa_o_slot(tmp_path):
+    broker = montar_broker(_settings(tts_backend="vulkan"), base=tmp_path)
+
+    assert broker.sem_gpu == frozenset()
+    assert broker.timeout_lock == _settings().gpu_lock_timeout
+    assert broker.lock_path == tmp_path / ".gpu.lock"
+    assert broker.estado_path == tmp_path / ".gpu-residente.json"
+
+
+def test_montar_broker_cpu_nao_disputa_o_slot(tmp_path):
+    """tts_backend=cpu tira o TTS da disputa pela GPU — regressão aqui vira
+    contenção silenciosa em produção, não uma falha de teste."""
+    broker = montar_broker(_settings(tts_backend="cpu"), base=tmp_path)
+
+    assert broker.sem_gpu == frozenset({"tts"})

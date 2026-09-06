@@ -8,7 +8,6 @@ dependencies = [
     "langchain-core>=1.4,<2",
     "langchain-anthropic>=1.4,<2",
     "langchain-openai>=0.3",
-    "ddgs>=9.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "structlog>=24.1",

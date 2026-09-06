@@ -11,6 +11,7 @@ from forge.agents import research as research_stage
 from forge.agents import review as review_stage
 from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
+from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
 
 def com_wrapper(nome, fn, le):
@@ -56,6 +57,10 @@ def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
 def build_graph(model, settings, inicio: str = "tema"):
     logger.info("Building graph", stages=["tema", "research", "plan", "write", "review"])
 
+    # Um cliente por grafo: `research` é reentrado pelo reviewer e pelo write,
+    # e abrir conexão nova a cada passagem não paga nada.
+    acervo = Acervo(settings.acervo_url, timeout=settings.acervo_timeout)
+
     def node_tema(state):
         logger.debug("Running tema generation", tema=state.get("tema"))
         result = {"tema": tema_stage.gerar_tema(model, state.get("tema"))}
@@ -65,9 +70,7 @@ def build_graph(model, settings, inicio: str = "tema"):
     def node_research(state):
         pedido = state.get("pedido")
         logger.debug("Starting research phase", tema=state["tema"], reentrada=bool(pedido))
-        brief, fontes, raw = research_stage.pesquisar(
-            model, state["tema"], settings.provider, pedido
-        )
+        brief, fontes, raw = research_stage.pesquisar(model, state["tema"], acervo, pedido)
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))

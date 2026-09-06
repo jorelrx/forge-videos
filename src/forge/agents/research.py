@@ -1,10 +1,23 @@
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.tools import tool
+"""Pesquisa contra o acervo.
 
+Três fases, nesta ordem: o LLM formula as queries, o cliente HTTP busca, o LLM
+sintetiza o brief a partir do que voltou. As fontes NÃO passam pelo modelo —
+são construídas das passagens. A extração por LLM que existia aqui antes era a
+origem das citações inventadas: o modelo relia o próprio brief e reconstruía
+referências de memória.
+"""
+
+from __future__ import annotations
+
+import re
+
+from langchain_core.messages import HumanMessage
+
+from forge.domain.models import Fonte
 from forge.infrastructure.logging import get_logger
-from forge.prompts.loader import load_prompt
-from forge.domain.models import Fonte, FonteList
 from forge.llms.parsing import _texto
+from forge.prompts.loader import load_prompt
+from forge.services.acervo import Acervo, Candidato, Passagem
 from forge.skills.loader import load_skills
 
 logger = get_logger(__name__)
@@ -12,28 +25,124 @@ logger = get_logger(__name__)
 SKILLS = ["fact_check"]
 LE = ["tema", "pedido", "research_notes"]
 
-WEB_SEARCH_TOOL: dict = {"type": "web_search_20260209", "name": "web_search"}
-MAX_SEARCH_ROUNDS = 5
+MAX_QUERIES = 5
+
+# Marcador de lista que o modelo insiste em emitir mesmo quando o prompt pede
+# uma linha limpa.
+_MARCADOR = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 
-@tool
-def buscar_web(query: str) -> str:
-    """Busca na web e retorna um resumo dos resultados mais relevantes para a query."""
-    from ddgs import DDGS
+def pesquisar(
+    model, tema: str, acervo: Acervo, pedido: str | None = None
+) -> tuple[str, list[Fonte], str]:
+    queries = formular_queries(model, tema, pedido)
+    passagens = colher(acervo, queries)
+    bruto = _bruto(queries, passagens)
 
-    logger.debug("Web search", query=query)
-    resultados = DDGS().text(query, max_results=5)
-    if not resultados:
-        result_text = "Nenhum resultado encontrado."
-        logger.warning("No search results", query=query)
-        return result_text
-    
-    formatted_results = "\n\n".join(
-        f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}"
-        for r in resultados
+    if not passagens:
+        candidatos = acervo.descobrir(tema)
+        logger.warning("Acervo gap", tema=tema, sugestoes=len(candidatos))
+        return _brief_lacuna(tema, candidatos), [], bruto
+
+    brief = _sintetizar(model, tema, pedido, passagens)
+    logger.info("Research completed", queries=len(queries), passagens=len(passagens))
+    return brief, _fontes(passagens), bruto
+
+
+def formular_queries(model, tema: str, pedido: str | None = None) -> list[str]:
+    prompt = load_prompt("queries").format(tema=tema, pedido=_fmt_pedido(pedido))
+    resp = model.invoke([HumanMessage(content=prompt)])
+    queries = _parse_queries(_texto(resp))
+    logger.debug("Queries formuladas", queries=queries)
+    return queries
+
+
+def _parse_queries(texto: str) -> list[str]:
+    """Uma query por linha, sem marcador e sem aspas, deduplicadas."""
+    queries: list[str] = []
+    for linha in texto.splitlines():
+        q = _MARCADOR.sub("", linha).strip().strip('"')
+        if q and q not in queries:
+            queries.append(q)
+    return queries[:MAX_QUERIES]
+
+
+def colher(acervo: Acervo, queries: list[str], *, top: int = 8) -> list[Passagem]:
+    """Busca cada query e funde os resultados.
+
+    A mesma passagem costuma responder a mais de uma query. Deduplicar por
+    `path` e guardar o maior score preserva a ordenação por relevância; guardar
+    o último visto a destruiria.
+    """
+    por_path: dict[str, Passagem] = {}
+    for q in queries:
+        for p in acervo.buscar(q, top=top):
+            atual = por_path.get(p.path)
+            if atual is None or p.score > atual.score:
+                por_path[p.path] = p
+    return sorted(por_path.values(), key=lambda p: p.score, reverse=True)
+
+
+def _sintetizar(model, tema: str, pedido: str | None, passagens: list[Passagem]) -> str:
+    prompt = load_prompt("research").format(
+        tema=tema,
+        skills=load_skills(SKILLS, "research"),
+        pedido=_fmt_pedido(pedido),
+        passagens=_fmt_passagens(passagens),
     )
-    logger.info("Search completed", num_results=len(resultados))
-    return formatted_results
+    return _texto(model.invoke([HumanMessage(content=prompt)]))
+
+
+def _fmt_passagens(passagens: list[Passagem]) -> str:
+    blocos = []
+    for p in passagens:
+        autores = ", ".join(p.authors) or "autor não identificado"
+        blocos.append(f"[{p.path}] {p.book_title} — {autores}\n{p.breadcrumb}\n\n{p.text}")
+    return "\n\n---\n\n".join(blocos)
+
+
+def _fontes(passagens: list[Passagem]) -> list[Fonte]:
+    return [
+        Fonte(
+            titulo=p.book_title,
+            autor=", ".join(p.authors) or None,
+            url=p.url or None,
+            frase=p.text,
+            path=p.path,
+            book_id=p.book_id,
+        )
+        for p in passagens
+    ]
+
+
+def _brief_lacuna(tema: str, candidatos: list[Candidato]) -> str:
+    """Brief de acervo vazio.
+
+    Relatar a lacuna é o comportamento correto: o modelo não é chamado, então
+    não tem como preencher o vazio de memória.
+    """
+    linhas = [
+        "## Lacuna no acervo",
+        "",
+        f"Nenhuma passagem do acervo cobre: {tema}",
+        "",
+        "Sem fonte, o roteiro não pode afirmar nada sobre este ponto.",
+        "Ingira uma destas obras no acervo e rode de novo:",
+        "",
+    ]
+    if not candidatos:
+        linhas.append("- (o /discover do acervo não sugeriu nenhuma obra)")
+    for c in candidatos:
+        autores = ", ".join(c.authors) or "autor não identificado"
+        linhas.append(f"- [{c.id}] {c.title} — {autores}")
+    return "\n".join(linhas)
+
+
+def _bruto(queries: list[str], passagens: list[Passagem]) -> str:
+    """Sidecar `.raw.md`: o que foi perguntado e o que voltou, sem síntese."""
+    cabeca = "\n".join(f"- {q}" for q in queries) or "(nenhuma)"
+    corpo = _fmt_passagens(passagens) if passagens else "(nenhuma passagem)"
+    return f"## Queries\n\n{cabeca}\n\n## Passagens\n\n{corpo}"
 
 
 def _fmt_pedido(pedido: str | None) -> str:
@@ -44,86 +153,3 @@ def _fmt_pedido(pedido: str | None) -> str:
         "Verifique apenas os pontos abaixo e devolva o que confirmou ou não:\n"
         f"{pedido}"
     )
-
-
-def pesquisar(
-    model, tema: str, provider: str = "anthropic", pedido: str | None = None
-) -> tuple[str, list[Fonte], str]:
-    if provider == "anthropic":
-        brief, raw = _pesquisar_server_side(model, tema, pedido)
-    else:
-        brief, raw = _pesquisar_client_side(model, tema, pedido)
-    fontes = _extrair_fontes(model, brief)
-    return brief, fontes, raw
-
-
-def _pesquisar_server_side(model, tema: str, pedido: str | None) -> tuple[str, str]:
-    search = model.bind_tools([WEB_SEARCH_TOOL])
-    resp = search.invoke([HumanMessage(content=load_prompt("research").format(
-        tema=tema, skills=load_skills(SKILLS, "research"), pedido=_fmt_pedido(pedido)
-    ))])
-    brief = _texto(resp)
-    return brief, str(resp.content)
-
-
-def _pesquisar_client_side(model, tema: str, pedido: str | None) -> tuple[str, str]:
-    """Busca alternativa (DuckDuckGo) para providers sem web_search server-side."""
-    tool_model = model.bind_tools([buscar_web])
-    messages = [HumanMessage(content=load_prompt("research").format(
-        tema=tema, skills=load_skills(SKILLS, "research"), pedido=_fmt_pedido(pedido)
-    ))]
-    bruto: list[str] = []
-    for _ in range(MAX_SEARCH_ROUNDS):
-        resp = tool_model.invoke(messages)
-        if not getattr(resp, "tool_calls", None):
-            return _texto(resp), "\n\n".join(bruto)
-        messages.append(resp)
-        for call in resp.tool_calls:
-            resultado = buscar_web.invoke(call["args"])
-            bruto.append(f"### query: {call['args']}\n{resultado}")
-            messages.append(ToolMessage(content=resultado, tool_call_id=call["id"]))
-    resp = tool_model.invoke(messages)
-    return _texto(resp), "\n\n".join(bruto)
-
-
-def _extrair_fontes(model, notes: str) -> list[Fonte]:
-    logger.debug("Extracting sources from research notes", notes_length=len(notes))
-    prompt = load_prompt("fontes").format(notes=notes)
-    try:
-        # Tenta usar with_structured_output primeiro
-        result = model.with_structured_output(FonteList).invoke([HumanMessage(content=prompt)])
-        fontes_resultado = result.fontes
-        logger.info("Sources extracted (via structured output)", num_fontes=len(fontes_resultado))
-        return fontes_resultado
-    except (ValueError, AttributeError) as e:
-        logger.debug("Structured output not supported, falling back to JSON parsing", error=str(e))
-        # Fallback para parsing manual se o modelo não suportar with_structured_output
-        prompt_json = f"""
-Extraia as fontes citáveis destas notas de pesquisa. Inclua apenas fontes com
-título e autor identificáveis. Não invente. Se as notas não trazem fontes
-confirmadas, retorne uma lista vazia.
-
-Retorne **exclusivamente** um JSON válido no formato:
-{{
-  "fontes": [
-    {{
-      "titulo": "Título da fonte",
-      "autor": "Autor da fonte",
-      "url": "Link da fonte (url)"
-    }}
-  ]
-}}
-
-Notas:
-{notes}
-"""
-        resp = model.invoke([HumanMessage(content=prompt_json)])
-        import json
-        try:
-            data = json.loads(resp.content)
-            fontes_resultado = [Fonte(**fonte) for fonte in data.get("fontes", [])]
-            logger.info("Sources extracted (via JSON parsing)", num_fontes=len(fontes_resultado))
-            return fontes_resultado
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse sources from model response", error=str(e))
-            return []

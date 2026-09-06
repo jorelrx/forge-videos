@@ -1,10 +1,11 @@
 from pathlib import Path
 
+import pytest
 from langgraph.graph import END
 from forge.infrastructure.config import Settings
 from forge.orchestration.graph import rotear, build_graph
 from forge.domain.models import (
-    ReviewResult, Nota, Plano, RoteiroDraft, Secao, FonteList, Fonte,
+    ReviewResult, Nota, Plano, RoteiroDraft, Secao, Fonte,
 )
 
 # --- rotear (puro) ---
@@ -57,13 +58,34 @@ def test_rotear_reprovado_volta_para_write():
 def _draft():
     return RoteiroDraft(secoes=[Secao(nome="Hook", conteudo="c")])
 
-def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path):
-    # sequência de structured: fontes, plano, draft(v1), review(reprovado),
-    #                          draft(v2), review(aprovado)
+def _passagem():
+    from forge.services.acervo import Passagem
+
+    return Passagem(
+        path="4363/ch2/p7", book_id=4363, book_title="Obra",
+        authors=["Autor"], breadcrumb="Cap 2", text="trecho",
+        url="http://acervo.test/books/4363", score=0.9,
+    )
+
+@pytest.fixture
+def grafo_com_acervo(monkeypatch, acervo_fake):
+    """Troca o cliente real do grafo por um falso que sempre acha uma passagem.
+
+    `build_graph` constrói o `Acervo` a partir de `Settings`; sem esta troca o
+    teste tentaria falar com 127.0.0.1:8000.
+    """
+    import forge.orchestration.graph as graph_mod
+
+    fake = acervo_fake(padrao=[_passagem()])
+    monkeypatch.setattr(graph_mod, "Acervo", lambda *a, **k: fake)
+    return fake
+
+def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo):
+    # invoke_texts: tema, queries(research), brief(research)
+    # structured:   plano, draft(v1), review(reprovado), draft(v2), review(aprovado)
     model = scripted(
-        invoke_texts=["tema gerado", "notas de pesquisa"],
+        invoke_texts=["tema gerado", "busca sobre o tema", "notas de pesquisa"],
         structured=[
-            FonteList(fontes=[Fonte(titulo="Obra", autor="Autor")]),
             Plano(tese="tese", esboco="esboço"),
             _draft(),
             ReviewResult(aprovado=False, notas=[Nota(dimensao="clareza", problema="p", sugestao="s")]),
@@ -77,12 +99,12 @@ def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path):
     assert final["review"].aprovado is True
     assert final["rounds"] == 2
     assert final["roteiro"].secoes[0].nome == "Hook"
+    assert final["fontes"][0].path == "4363/ch2/p7"
 
-def test_grafo_para_no_teto(scripted, tmp_path):
+def test_grafo_para_no_teto(scripted, tmp_path, grafo_com_acervo):
     model = scripted(
-        invoke_texts=["tema", "notas"],
+        invoke_texts=["tema", "busca", "notas"],
         structured=[
-            FonteList(),
             Plano(tese="t", esboco="e"),
             _draft(), ReviewResult(aprovado=False),
             _draft(), ReviewResult(aprovado=False),
@@ -94,40 +116,33 @@ def test_grafo_para_no_teto(scripted, tmp_path):
     assert final["rounds"] == 2
     assert final["review"].aprovado is False
 
-def test_grafo_termina_com_modelo_patologico(scripted, tmp_path):
+def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acervo):
     """Model que sempre pede verificação não pode rodar para sempre.
 
-    O handoff `review -> research` faz `node_research` rodar de novo a cada
-    volta, e cada passagem por `research` consome um `FonteList` do queue
-    estruturado (via `_extrair_fontes`), não só a primeira. Um queue com
-    `FonteList`/`Plano` só no início dessincroniza a partir da segunda volta
-    — o item errado (um `RoteiroDraft`) cai em `_extrair_fontes`, que engole
-    o `AttributeError` e cai para parsing de JSON (consumindo mais um
-    `invoke_texts`), e o próximo `plan` recebe um `ReviewResult` no lugar de
-    um `Plano`, estourando com `AttributeError: 'ReviewResult' object has no
-    attribute 'tese'` — não o orçamento. Por isso cada ciclo abaixo repete
-    `FonteList, Plano, Draft, Review` inteiro, igual ao que `node_research`
-    de fato consome em cada volta.
+    O handoff `review -> research` faz `node_research` rodar a cada volta, e
+    cada volta consome dois `invoke_texts` (queries e brief) mais um `Plano`,
+    um `RoteiroDraft` e um `ReviewResult` da fila estruturada. As filas abaixo
+    repetem esse ciclo muito além do necessário: quem tem de encerrar o grafo é
+    `max_passos`, não uma fila esgotada.
     """
     n_ciclos = 40  # bem mais que o necessário para estourar max_passos=12
+    textos = ["tema"]
     estruturados = []
     for _ in range(n_ciclos):
+        textos += ["busca", "notas"]
         estruturados += [
-            FonteList(),
             Plano(tese="t", esboco="e"),
             _draft(),
             ReviewResult(aprovado=False, verificar=["x"]),
         ]
-    model = scripted(
-        invoke_texts=["tema"] + ["notas"] * n_ciclos,
-        structured=estruturados,
-    )
-    settings = Settings(_env_file=None, max_review_rounds=99, max_passos=12)
+
+    model = scripted(invoke_texts=textos, structured=estruturados)
+    settings = Settings(_env_file=None, max_review_rounds=100, max_passos=12)
     graph = build_graph(model, settings)
-    final = graph.invoke({
-        "tema": None, "rounds": 0, "passos": 0, "run_dir": tmp_path,
-    })
-    assert final["passos"] <= 13, f"orçamento furou: {final['passos']} passos"
+
+    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+
+    assert 12 <= final["passos"] <= 13, f"orçamento furou: {final['passos']} passos"
 
 def test_research_nao_chama_a_camada_de_conhecimento():
     """Retriever fica dormente até K5: nada no fluxo de roteiro pode tocá-lo."""

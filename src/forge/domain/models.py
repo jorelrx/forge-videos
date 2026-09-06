@@ -45,10 +45,6 @@ class ReviewResult(BaseModel):
     )
 
 
-class FonteList(BaseModel):
-    fontes: list[Fonte] = Field(default_factory=list)
-
-
 class Plano(BaseModel):
     tese: str
     esboco: str

@@ -1,7 +1,7 @@
 import pytest
 from forge.prompts.loader import load_prompt
 
-@pytest.mark.parametrize("name", ["tema", "research", "fontes", "plan", "write", "review"])
+@pytest.mark.parametrize("name", ["tema", "research", "queries", "plan", "write", "review"])
 def test_load_prompt(name):
     text = load_prompt(name)
     assert isinstance(text, str) and text.strip()

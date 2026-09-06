@@ -1,42 +1,86 @@
-from langchain_core.messages import AIMessage
-
-from forge.domain.models import Fonte, FonteList
-from forge.agents.research import pesquisar, WEB_SEARCH_TOOL
+from forge.agents.research import colher, formular_queries, pesquisar
+from forge.services.acervo import Passagem
 
 
-def test_pesquisar_retorna_notas_e_fontes(scripted):
-    model = scripted(
-        invoke_texts=["notas densas sobre o tema"],
-        structured=[FonteList(fontes=[Fonte(titulo="Ética a Nicômaco", autor="Aristóteles")])],
+def _passagem(path, score, titulo="Beyond Good and Evil"):
+    return Passagem(
+        path=path, book_id=4363, book_title=titulo,
+        authors=["Friedrich Nietzsche"], breadcrumb="Cap 2",
+        text=f"texto de {path}", url="http://acervo.test/books/4363", score=score,
     )
-    notes, fontes, raw = pesquisar(model, "virtude")
-    assert notes == "notas densas sobre o tema"
-    assert fontes[0].autor == "Aristóteles"
-    assert model.bound_tools == [WEB_SEARCH_TOOL]
 
 
-def test_pesquisar_client_side_usa_ferramenta_local(scripted, monkeypatch):
-    import forge.agents.research as research_mod
+def test_formular_queries_limpa_bullets_e_numeracao(scripted):
+    model = scripted(invoke_texts=[
+        "1. o que é livre-arbítrio\n- determinismo causal\n* vontade em Nietzsche"
+    ])
 
-    class FakeTool:
-        def invoke(self, args):
-            assert args == {"query": "estoicismo"}
-            return "resultado da busca local"
+    queries = formular_queries(model, "livre-arbítrio")
 
-    monkeypatch.setattr(research_mod, "buscar_web", FakeTool())
+    assert queries == [
+        "o que é livre-arbítrio",
+        "determinismo causal",
+        "vontade em Nietzsche",
+    ]
 
-    model = scripted(
-        invoke_texts=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "buscar_web", "args": {"query": "estoicismo"}, "id": "call_1", "type": "tool_call"}
-                ],
-            ),
-            "notas finais a partir da busca local",
-        ],
-        structured=[FonteList(fontes=[])],
-    )
-    notes, fontes, raw = research_mod.pesquisar(model, "estoicismo", provider="lm-studio")
-    assert notes == "notas finais a partir da busca local"
+
+def test_formular_queries_corta_no_maximo(scripted):
+    model = scripted(invoke_texts=["\n".join(f"query {i}" for i in range(20))])
+
+    assert len(formular_queries(model, "x")) == 5
+
+
+def test_colher_deduplica_por_path_e_ordena_por_score(acervo_fake):
+    acervo = acervo_fake(por_query={
+        "a": [_passagem("p1", 0.5), _passagem("p2", 0.9)],
+        "b": [_passagem("p1", 0.8), _passagem("p3", 0.2)],
+    })
+
+    passagens = colher(acervo, ["a", "b"])
+
+    assert [p.path for p in passagens] == ["p2", "p1", "p3"]
+    # p1 apareceu nas duas queries; fica com o maior score, não com o último.
+    assert passagens[1].score == 0.8
+
+
+def test_pesquisar_devolve_brief_e_fontes_estruturadas(scripted, acervo_fake):
+    acervo = acervo_fake(por_query={"vontade": [_passagem("4363/ch2/p7", 0.81)]})
+    model = scripted(invoke_texts=["vontade", "notas densas sobre a vontade"])
+
+    brief, fontes, bruto = pesquisar(model, "vontade de potência", acervo)
+
+    assert brief == "notas densas sobre a vontade"
+    assert len(fontes) == 1
+    assert fontes[0].titulo == "Beyond Good and Evil"
+    assert fontes[0].autor == "Friedrich Nietzsche"
+    assert fontes[0].path == "4363/ch2/p7"
+    assert fontes[0].book_id == 4363
+    assert "4363/ch2/p7" in bruto
+
+
+def test_pesquisar_sem_passagens_relata_lacuna_e_nao_chama_o_modelo(scripted, acervo_fake):
+    from forge.services.acervo import Candidato
+
+    acervo = acervo_fake(candidatos=[
+        Candidato(id=37358, title="Determinism or Free-Will?",
+                  authors=["Chapman Cohen"]),
+    ])
+    # Só uma resposta na fila: a das queries. Se o agente tentar sintetizar um
+    # brief sem material, o modelo falso estoura — que é o comportamento que
+    # este teste tranca.
+    model = scripted(invoke_texts=["determinismo"])
+
+    brief, fontes, _ = pesquisar(model, "determinismo", acervo)
+
     assert fontes == []
+    assert "Lacuna no acervo" in brief
+    assert "Determinism or Free-Will?" in brief
+
+
+def test_pedido_dirigido_entra_na_formulacao_das_queries(scripted, acervo_fake):
+    acervo = acervo_fake(por_query={"kant sobre dever": [_passagem("p1", 0.5)]})
+    model = scripted(invoke_texts=["kant sobre dever", "verificação"])
+
+    pesquisar(model, "ética", acervo, pedido="Kant disse que o dever é X?")
+
+    assert acervo.chamadas == ["kant sobre dever"]

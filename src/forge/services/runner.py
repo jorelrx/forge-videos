@@ -11,6 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+# Import de tipo, não de implementação: o runner continua recebendo o broker
+# por injeção e nunca constrói um.
+from forge.gpu.broker import GPUOcupada, LiberacaoFalhou
 from forge.infrastructure.logging import get_logger
 from forge.services.manifesto import Item, Manifesto, gravar, pendentes
 
@@ -53,14 +56,50 @@ def executar(
             continue
         executor = executores.get(tipo)
         if executor is None:
-            logger.warning("Sem executor para o tipo", tipo=tipo)
+            # Só logar deixaria os itens `pendente` com tentativas 0 e erro
+            # vazio — em disco, idênticos a um grupo que ainda nem chegou a
+            # rodar. Um supervisor esperando pendentes()==[] giraria para
+            # sempre por causa de um dicionário de executores incompleto.
+            _falhar_grupo(run_dir, manifesto, fila,
+                          f"sem executor para o tipo {tipo!r}")
+            logger.error("Sem executor para o tipo", tipo=tipo, itens=len(fila))
             continue
 
         logger.info("Iniciando grupo", tipo=tipo, pendentes=len(fila))
-        with broker.exclusivo(RECURSO_DE[tipo]):
-            for item in fila:
-                _um(run_dir, manifesto, item, executor)
+        try:
+            with broker.exclusivo(RECURSO_DE[tipo]):
+                for item in fila:
+                    _um(run_dir, manifesto, item, executor)
+        except (LiberacaoFalhou, GPUOcupada) as e:
+            # Falha de broker na fronteira do grupo: sem isso a exceção sobe e
+            # aborta o `executar` inteiro deixando os pendentes intocados. Numa
+            # noite sem ninguém olhando isso é um liberador quebrado que faz
+            # cada iteração queimar o timeout e reencontrar os mesmos pendentes
+            # — sem contador, sem estado terminal, para sempre. Marcar `falhou`
+            # dá ao supervisor um estado que ele consegue ler.
+            _falhar_grupo(run_dir, manifesto, fila, str(e))
+            logger.error("Grupo abortado pelo broker", tipo=tipo,
+                         recurso=RECURSO_DE[tipo], itens=len(fila), error=str(e))
+            continue
     return manifesto
+
+
+def _falhar_grupo(run_dir: Path, manifesto: Manifesto, fila: list[Item],
+                  motivo: str) -> None:
+    """Marca como `falhou` o que sobrou pendente do grupo e grava.
+
+    Só o que sobrou: se o broker estourou depois de alguns itens rodarem, o
+    resultado deles é verdade e não pode ser sobrescrito.
+    """
+    for item in fila:
+        if item.estado != "pendente":
+            continue
+        item.tentativas += 1
+        item.estado = "falhou"
+        item.erro = motivo
+        item.saida = ""
+        item.duracao_ms = None
+    gravar(run_dir, manifesto)
 
 
 def _um(run_dir: Path, manifesto: Manifesto, item: Item, executor: Executor) -> None:
@@ -70,6 +109,11 @@ def _um(run_dir: Path, manifesto: Manifesto, item: Item, executor: Executor) -> 
     except Exception as e:
         item.estado = "falhou"
         item.erro = str(e)
+        # O executor pode ter preenchido `saida` antes de estourar, e o arquivo
+        # apontado está truncado. Manifesto com estado `falhou` ao lado de um
+        # caminho é convite para a montagem consumir meio WAV.
+        item.saida = ""
+        item.duracao_ms = None
         logger.error("Item falhou", id=item.id, tipo=item.tipo, error=str(e))
     else:
         item.estado = "ok"

@@ -4,25 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **CreatorBrain / forge-videos** — a LangGraph pipeline that generates Portuguese video scripts (roteiros). From a theme (or none — it invents one), it researches the web, plans a thesis, writes a 9-section script, and iterates with a reviewer agent until approved.
 
-> Note: `README.md` describes an older module layout (`writer/`, `orchestrator/`, `llm/`, `output/`). The current tree is `agents/`, `orchestration/`, `llms/`, `services/`, `prompts/`, plus `knowledge/`. Trust the code, not the README, for structure.
+> Note: `README.md` describes an older module layout (`writer/`, `orchestrator/`, `llm/`, `output/`). The current tree is `agents/`, `orchestration/`, `llms/`, `services/`, `prompts/`. Trust the code, not the README, for structure.
 
 ## Commands
 
 ```bash
 uv sync                                  # core deps
-uv sync --extra knowledge                # RAG stores client libs + embeddings
-uv sync --extra books --extra ocr        # book parsing (pypdf/ebooklib) + OCR (tesseract)
 
 uv run forge roteiro                     # theme invented by LLM
 uv run forge roteiro --tema "..."        # fixed theme
 uv run forge roteiro --provider lm-studio
 uv run forge roteiro --retomar output/runs/<ts>-<slug>   # resume a prior run from disk
-
-uv run forge ingest --path <file|dir>    # ingest books into the knowledge base
-uv run forge ingest --status             # count what is indexed
-uv run forge ingest --reset              # WIPES all three stores and recreates the schema
-
-docker compose up -d                     # bring up Qdrant/Neo4j/Postgres for knowledge layer
 
 uv run pytest                            # full suite (model mocked, no network)
 uv run pytest -k research                # one module
@@ -72,32 +64,17 @@ Three providers: `anthropic`, `openai`, `lm-studio`. `settings.resolved_model` /
 - **Prompts** ([prompts/](src/forge/prompts/)) are markdown loaded by name via `load_prompt()`. Editing a prompt needs no Python change.
 - **Skills** ([skills/](src/forge/skills/)) are markdown with frontmatter (`nome`, `dono`, `dominio`) and sections `Critérios` / `Anti-padrões` / `Procedimento`. `load_skills()` injects them into prompts. Key rule: the **`Procedimento` section is only shown to the owning agent** (`dono`) — it's the boundary between what a *producer* agent sees and what a *reviewer* must not. An unrecognized section title raises rather than passing silently.
 
-### Knowledge layer ([knowledge/](src/forge/knowledge/), optional, off by default)
+### Acervo ([services/acervo.py](src/forge/services/acervo.py))
 
-Fonte de verdade do design: [docs/knowledge.md](docs/knowledge.md). Seis níveis,
-implementados como seis sub-projetos K1-K6.
+A pesquisa não usa a web. Um serviço externo, `acervo`
+(`FORGE_ACERVO_URL`, default `http://127.0.0.1:8000`), indexa livros de domínio
+público e devolve passagens com caminho canônico estável (`PassageOut.path`) —
+é esse caminho que o roteiro cita. O forge só consome: ingestão de livros é do
+acervo (`POST /books/{book_id}/ingest`), não daqui.
 
-**Duas árvores que nunca se misturam.** A estrutural (Postgres) é imutável,
-derivada só do texto, sem LLM: Livro > Capítulo > Subcapítulo > Seção > Parágrafo
-> Sentença, com `pai_id` e caminho materializado. O grafo semântico (Neo4j) é
-evolutivo, referencia `chunk_id` e é escrito a partir de K3. Regenerar a camada
-semântica nunca exige reingerir a estrutural.
-
-- **Identidade de chunk vem do conteúdo**, não da posição:
-  `id_deterministico(documento_id, sha256(texto), ocorrencia)`. A camada semântica
-  acumula anotações sobre `chunk_id`; id posicional invalidaria tudo a cada
-  reingestão.
-- **Texto nunca é alterado.** `documentos.texto` é a extração crua; o texto de um
-  chunk é fatia por offset. Normalização só como entrada transitória de tsvector e
-  embedding.
-- **Só a folha-parágrafo é embedada** (small-to-big): vetor preciso, entrega sobe
-  pelo `pai_id`. Só ela tem coluna `texto`; os outros níveis derivam por offset.
-- **Ingestão de K1 não faz nenhuma chamada de LLM.** A única que resta na camada é
-  a tradução do termo de busca em fontes remotas, que não toca o conteúdo.
-- **Retriever dormente até K5.** `retriever/hybrid.py` não tem chamador; o comando
-  `forge buscar` não existe; o fluxo de roteiro não toca a camada.
-- Testabilidade: `embed_fn` e `stores` entram por injeção — o pipeline roda com
-  fakes, sem Docker. `_montar()` monta as reais a partir de `Settings`.
+Acervo fora do ar levanta `AcervoIndisponivel`. Não existe fallback para busca
+web: um fallback silencioso reintroduziria exatamente a fonte não-citável que
+este desenho elimina.
 
 ## Response style
 

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     acervo_top: int = 8
     acervo_timeout: float = 30.0
 
+    # Gerência da GPU. Ver gpu/broker.py: um recurso residente por vez.
+    gpu_lock_timeout: float = 900.0
+    # `cpu` faz a narração não disputar o slot, liberando-a para rodar
+    # concorrente com a fase de imagem.
+    tts_backend: Literal["vulkan", "cpu"] = "vulkan"
+
     @property
     def resolved_model(self) -> str:
         """Modelo do provider ativo. `FORGE_MODEL` sobrepõe qualquer provider."""

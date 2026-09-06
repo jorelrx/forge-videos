@@ -80,3 +80,11 @@ def test_acervo_tem_defaults_locais():
     assert s.acervo_url == "http://127.0.0.1:8000"
     assert s.acervo_top == 8
     assert s.acervo_timeout == 30.0
+
+
+def test_broker_tem_defaults():
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.gpu_lock_timeout == 900.0
+    assert s.tts_backend == "vulkan"

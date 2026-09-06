@@ -2,9 +2,9 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
-**CreatorBrain / forge-videos** — a LangGraph pipeline that generates Portuguese video scripts (roteiros). From a theme (or none — it invents one), it researches the web, plans a thesis, writes a 9-section script, and iterates with a reviewer agent until approved.
+**CreatorBrain / forge-videos** — a LangGraph pipeline that generates Portuguese video scripts (roteiros). From a theme (or none — it invents one), it researches the acervo, plans a thesis, writes a 9-section script, and iterates with a reviewer agent until approved.
 
-> Note: `README.md` describes an older module layout (`writer/`, `orchestrator/`, `llm/`, `output/`). The current tree is `agents/`, `orchestration/`, `llms/`, `services/`, `prompts/`, plus `knowledge/`. Trust the code, not the README, for structure.
+> Note: `README.md` describes an older module layout (`writer/`, `orchestrator/`, `llm/`, `output/`). The current tree is `agents/`, `orchestration/`, `llms/`, `services/`, `prompts/`. Trust the code, not the README, for structure.
 
 ## Commands
 
@@ -65,7 +65,7 @@ Every stage writes a numbered markdown file (`00-tema.md`, `01-research.md`, `03
 
 ### Providers ([llms/model.py](src/forge/llms/model.py), [infrastructure/config.py](src/forge/infrastructure/config.py))
 
-Three providers: `anthropic`, `openai`, `lm-studio`. `settings.resolved_model` / `settings.resolved_api_key` pick model + key for the *active* provider. Keys never cross providers — a missing key fails with an explicit `API key ausente para o provider '<name>'` instead of an opaque 401 downstream. Research adapts to the provider: anthropic uses the server-side `web_search` tool; openai/lm-studio use client-side tool-calling over DuckDuckGo (`ddgs`), up to 5 rounds.
+Three providers: `anthropic`, `openai`, `lm-studio`. `settings.resolved_model` / `settings.resolved_api_key` pick model + key for the *active* provider. Keys never cross providers — a missing key fails with an explicit `API key ausente para o provider '<name>'` instead of an opaque 401 downstream. A pesquisa não depende mais do provider: todo provider passa pelo mesmo caminho, o acervo. O que varia entre providers é só o modelo e a chave.
 
 ### Prompts & skills
 

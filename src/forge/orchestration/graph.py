@@ -70,7 +70,9 @@ def build_graph(model, settings, inicio: str = "tema"):
     def node_research(state):
         pedido = state.get("pedido")
         logger.debug("Starting research phase", tema=state["tema"], reentrada=bool(pedido))
-        brief, fontes, raw = research_stage.pesquisar(model, state["tema"], acervo, pedido)
+        brief, fontes, raw = research_stage.pesquisar(
+            model, state["tema"], acervo, pedido, top=settings.acervo_top
+        )
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))

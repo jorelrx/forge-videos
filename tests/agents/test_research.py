@@ -32,8 +32,11 @@ def test_formular_queries_corta_no_maximo(scripted):
 
 def test_colher_deduplica_por_path_e_ordena_por_score(acervo_fake):
     acervo = acervo_fake(por_query={
-        "a": [_passagem("p1", 0.5), _passagem("p2", 0.9)],
-        "b": [_passagem("p1", 0.8), _passagem("p3", 0.2)],
+        # p1 chega primeiro com o score MAIOR (0.8) e de novo depois com o
+        # MENOR (0.5) — um merge last-wins guardaria 0.5 e a asserção abaixo
+        # capturaria a regressão.
+        "a": [_passagem("p1", 0.8), _passagem("p2", 0.9)],
+        "b": [_passagem("p1", 0.5), _passagem("p3", 0.2)],
     })
 
     passagens = colher(acervo, ["a", "b"])
@@ -75,6 +78,24 @@ def test_pesquisar_sem_passagens_relata_lacuna_e_nao_chama_o_modelo(scripted, ac
     assert fontes == []
     assert "Lacuna no acervo" in brief
     assert "Determinism or Free-Will?" in brief
+
+
+def test_pesquisar_repassa_top_para_colher(scripted):
+    tops_recebidos = []
+
+    class AcervoQueRegistraTop:
+        def buscar(self, q, **kwargs):
+            tops_recebidos.append(kwargs.get("top"))
+            return [_passagem("p1", 0.5)]
+
+        def descobrir(self, q, **kwargs):
+            return []
+
+    model = scripted(invoke_texts=["query única", "brief"])
+
+    pesquisar(model, "tema", AcervoQueRegistraTop(), top=3)
+
+    assert tops_recebidos == [3]
 
 
 def test_pedido_dirigido_entra_na_formulacao_das_queries(scripted, acervo_fake):

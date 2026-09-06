@@ -5,7 +5,7 @@ from langgraph.graph import END
 from forge.infrastructure.config import Settings
 from forge.orchestration.graph import rotear, build_graph
 from forge.domain.models import (
-    ReviewResult, Nota, Plano, RoteiroDraft, Secao, Fonte,
+    ReviewResult, Nota, Plano, RoteiroDraft, Secao,
 )
 
 # --- rotear (puro) ---

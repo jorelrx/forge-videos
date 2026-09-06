@@ -33,10 +33,17 @@ _MARCADOR = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 
 def pesquisar(
-    model, tema: str, acervo: Acervo, pedido: str | None = None
+    model,
+    tema: str,
+    acervo: Acervo,
+    pedido: str | None = None,
+    *,
+    top: int | None = None,
 ) -> tuple[str, list[Fonte], str]:
     queries = formular_queries(model, tema, pedido)
-    passagens = colher(acervo, queries)
+    # `top=None` deixa o default do próprio `colher` decidir — não duplicamos
+    # aqui o valor de fallback.
+    passagens = colher(acervo, queries, top=top) if top is not None else colher(acervo, queries)
     bruto = _bruto(queries, passagens)
 
     if not passagens:

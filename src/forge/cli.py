@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import get_settings
 from forge.llms.model import build_chat_model
 from forge.infrastructure.logging import setup_logging, get_logger
@@ -81,28 +82,56 @@ def _cmd_roteiro(args) -> int:
     graph = build_graph(model, settings, inicio=inicio)
     estado_inicial = {**conteudo, "rounds": 0, "passos": 0, "run_dir": run_dir}
 
-    logger.info("Starting graph invocation", tema=args.tema, rounds=0)
-    try:
-        state: dict = dict(estado_inicial)
-        for step in graph.stream(estado_inicial):
-            node_name = next(iter(step))
-            logger.info("Node finished", node=node_name)
-            print(f"[{node_name}]", file=sys.stderr)
-            state.update(step[node_name])
-        final = state
-    except Exception as e:
-        logger.error("Graph invocation failed", error=str(e), exc_info=True)
-        sys.exit(1)
+    # O slot cobre o grafo E o plano de mídia: o plano é emitido de propósito
+    # com o modelo ainda residente. Sair do `with` é o que descarrega o LLM
+    # antes de o TTS ou o SDXL pedirem a placa — sem isso o Qwen fica com ~6 GB
+    # ocupados e a fase seguinte aloca numa placa cheia, que é exatamente a OOM
+    # que o broker existe para evitar. Com provider na nuvem o LLM não usa VRAM
+    # e `montar_broker` já o tira da disputa, então aqui vira no-op.
+    with montar_broker(settings).exclusivo("llm"):
+        logger.info("Starting graph invocation", tema=args.tema, rounds=0)
+        try:
+            state: dict = dict(estado_inicial)
+            for step in graph.stream(estado_inicial):
+                node_name = next(iter(step))
+                logger.info("Node finished", node=node_name)
+                print(f"[{node_name}]", file=sys.stderr)
+                state.update(step[node_name])
+            final = state
+        except Exception as e:
+            logger.error("Graph invocation failed", error=str(e), exc_info=True)
+            sys.exit(1)
 
-    aprovado = final["review"].aprovado if final.get("review") is not None else None
-    path = gravar_roteiro(
-        final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
-    )
-    logger.info("Completed", output_path=str(path), aprovados=aprovado)
+        aprovado = final["review"].aprovado if final.get("review") is not None else None
+        path = gravar_roteiro(
+            final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
+        )
+        logger.info("Completed", output_path=str(path), aprovados=aprovado)
 
-    # O plano de mídia sai junto do roteiro porque é a última coisa que exige
-    # LLM: emiti-lo aqui evita recarregar o modelo na fase de GPU.
+        _plano_de_midia(model, settings, run_dir, final, aprovado)
+
+    print(str(path))
+    print(f"run: {run_dir}", file=sys.stderr)
+    return 0
+
+
+def _plano_de_midia(model, settings, run_dir: Path, final: dict,
+                    aprovado: bool | None) -> None:
+    """O plano de mídia sai junto do roteiro porque é a última coisa que exige
+    LLM: emiti-lo aqui evita recarregar o modelo na fase de GPU.
+
+    Só de roteiro APROVADO (spec D3/S3). O grafo também termina por esgotar
+    `max_passos` ou `max_review_rounds`, com `aprovado` False: planejar mídia aí
+    gastaria horas de TTS e de SDXL num roteiro que o revisor reprovou.
+    """
     from forge.agents.midia import gravar_plano, planejar_midia
+
+    if aprovado is not True:
+        logger.info(
+            "Plano de mídia pulado: roteiro não aprovado",
+            aprovado=aprovado, rounds=final.get("rounds"), passos=final.get("passos"),
+        )
+        return
 
     try:
         plano = planejar_midia(
@@ -115,7 +144,3 @@ def _cmd_roteiro(args) -> int:
         # Roteiro aprovado é o entregável desta etapa; falhar o plano de mídia
         # não pode apagá-lo. `forge video` refaz o plano depois.
         logger.error("Plano de mídia falhou", error=str(e), exc_info=True)
-
-    print(str(path))
-    print(f"run: {run_dir}", file=sys.stderr)
-    return 0

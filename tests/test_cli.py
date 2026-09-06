@@ -4,7 +4,7 @@ import pytest
 
 import forge.cli as cli
 from forge.infrastructure.config import Settings
-from forge.domain.models import Roteiro, Secao
+from forge.domain.models import ReviewResult, Roteiro, Secao
 
 
 def test_main_roteiro(monkeypatch, tmp_path, capsys):
@@ -47,6 +47,7 @@ def test_roteiro_grava_o_plano_de_midia(monkeypatch, tmp_path, capsys):
     class FakeGraph:
         def stream(self, state):
             yield {"write": {"roteiro": roteiro}}
+            yield {"review": {"rounds": 1, "review": ReviewResult(aprovado=True)}}
 
     monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
 
@@ -84,6 +85,7 @@ def test_falha_no_plano_de_midia_nao_derruba_o_roteiro(monkeypatch, tmp_path, ca
     class FakeGraph:
         def stream(self, state):
             yield {"write": {"roteiro": roteiro}}
+            yield {"review": {"rounds": 1, "review": ReviewResult(aprovado=True)}}
 
     monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
 
@@ -127,3 +129,90 @@ def test_comando_buscar_nao_existe_mais():
 
     with pytest.raises(SystemExit):
         main(["buscar", "--query", "virtude"])
+
+
+def _monta_run(monkeypatch, tmp_path, *, aprovado):
+    """Um `forge roteiro` de mentira que termina com o roteiro em `aprovado`."""
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros",
+                        anthropic_api_key="sk-test")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+
+    roteiro = Roteiro(tema="tema", tese="tese",
+                      secoes=[Secao(nome="Hook", conteudo="c")])
+    review = None if aprovado is None else ReviewResult(aprovado=aprovado)
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": roteiro}}
+            yield {"review": {"rounds": 8, "review": review}}
+
+    monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
+    return settings
+
+
+def test_roteiro_toma_o_slot_llm(monkeypatch, tmp_path):
+    """Sem isto nada em produção reivindica o slot `llm`: o Qwen fica residente
+    ao fim do run, `residente()` devolve None na fase seguinte, nada é liberado
+    e o TTS aloca numa placa que ainda tem ~6 GB ocupados.
+
+    O plano de mídia tem que sair DENTRO do slot — ele é emitido de propósito
+    com o modelo ainda carregado."""
+    from contextlib import contextmanager
+
+    from forge.agents import midia as midia_mod
+    from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+
+    _monta_run(monkeypatch, tmp_path, aprovado=True)
+    eventos = []
+
+    class BrokerFalso:
+        @contextmanager
+        def exclusivo(self, recurso):
+            eventos.append(f"entra:{recurso}")
+            yield
+            eventos.append(f"sai:{recurso}")
+
+    monkeypatch.setattr(cli, "montar_broker", lambda s: BrokerFalso())
+
+    plano = PlanoMidia(
+        blocos=[BlocoNarracao(id="b001", secao="Hook", texto="c")],
+        beats=[Beat(id="i001", bloco_id="b001", prompt="uma ampulheta")],
+    )
+
+    def _planejar(*a, **k):
+        eventos.append("plano")
+        return plano
+
+    monkeypatch.setattr(midia_mod, "planejar_midia", _planejar)
+
+    assert cli.main(["roteiro", "--tema", "meu tema"]) == 0
+    assert eventos == ["entra:llm", "plano", "sai:llm"]
+
+
+def test_plano_de_midia_nao_sai_de_roteiro_reprovado(monkeypatch, tmp_path):
+    """O grafo também termina por esgotar max_passos ou max_review_rounds, com
+    aprovado False. Planejar mídia aí gasta horas de TTS e de SDXL num roteiro
+    que o revisor reprovou."""
+    from forge.agents import midia as midia_mod
+    from forge.domain.midia import BlocoNarracao, PlanoMidia
+
+    _monta_run(monkeypatch, tmp_path, aprovado=False)
+    chamadas = []
+
+    def _planejar(*a, **k):
+        # Devolve um plano VÁLIDO de propósito: se este teste apenas levantasse,
+        # o try/except do CLI engoliria a exceção e o teste passaria mesmo com a
+        # chamada acontecendo.
+        chamadas.append(1)
+        return PlanoMidia(
+            blocos=[BlocoNarracao(id="b001", secao="Hook", texto="c")], beats=[]
+        )
+
+    monkeypatch.setattr(midia_mod, "planejar_midia", _planejar)
+
+    assert cli.main(["roteiro", "--tema", "meu tema"]) == 0
+
+    assert chamadas == []
+    runs = list((tmp_path / "runs").iterdir())
+    assert not (runs[0] / "video" / "midia.json").exists()

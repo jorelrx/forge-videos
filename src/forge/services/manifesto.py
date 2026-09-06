@@ -58,14 +58,35 @@ def criar_ou_carregar(run_dir: Path, plano: PlanoMidia) -> Manifesto:
     """Monta o manifesto do plano, preservando o que um run anterior já fez.
 
     O id vem do plano e é estável, então o estado antigo reata com o item novo
-    sem ambiguidade.
+    sem ambiguidade. Porém, se a entrada mudou (ex: texto de um bloco foi editado),
+    o item é resetado como pendente, pois a saída anterior não corresponde ao
+    novo input. tentativas é preservada para manter histórico de falhas.
     """
     novo = _do_plano(plano)
     if not caminho(run_dir).exists():
         return novo
 
     antigo = {i.id: i for i in carregar(run_dir).itens}
-    itens = [antigo.get(i.id, i) for i in novo.itens]
+    itens = []
+    for i_novo in novo.itens:
+        i_antigo = antigo.get(i_novo.id)
+        if i_antigo is None:
+            # Item novo, não existe no run anterior
+            itens.append(i_novo)
+        elif i_antigo.entrada == i_novo.entrada:
+            # Entrada inalterada, preserva tudo (resume case)
+            itens.append(i_antigo)
+        else:
+            # Entrada mudou, reset para pendente mas preserva tentativas
+            item_resetado = i_novo.model_copy()
+            item_resetado.tentativas = i_antigo.tentativas
+            itens.append(item_resetado)
+            logger.warning(
+                "Item entrada mudou, resetando",
+                id=i_novo.id,
+                estado_anterior=i_antigo.estado,
+            )
+
     logger.info(
         "Manifesto retomado",
         total=len(itens),

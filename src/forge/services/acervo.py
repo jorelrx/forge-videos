@@ -68,10 +68,10 @@ class Acervo:
         try:
             resp = self._client.get(rota, params=params)
             resp.raise_for_status()
-        except httpx.HTTPError as e:
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
             logger.error("Acervo request failed", rota=rota, error=str(e))
             raise AcervoIndisponivel(f"acervo não respondeu em {rota}: {e}") from e
-        return resp.json()
 
     def saude(self) -> bool:
         try:

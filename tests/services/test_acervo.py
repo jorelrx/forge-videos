@@ -93,3 +93,13 @@ def test_descobrir_converte_candidatos():
 
     assert [c.id for c in candidatos] == [37358]
     assert candidatos[0].ingested is False
+
+
+def test_resposta_200_nao_json_levanta():
+    def handler(request):
+        return httpx.Response(200, text="<html>not json</html>")
+
+    with pytest.raises(AcervoIndisponivel):
+        _acervo(handler).buscar("x")
+
+    assert _acervo(handler).saude() is False

@@ -55,15 +55,27 @@ def liberar_llm(
             # Sem prazo aqui, um `lms.exe` travado (já visto duas vezes, 10 e
             # 12 min sem retorno) pendura esta chamada DENTRO do lock da GPU:
             # todo outro processo do forge esperaria `gpu_lock_timeout` e
-            # morreria com GPUOcupada. `FileNotFoundError` saiu do except por
-            # ser subclasse de `OSError`, que já está aqui.
+            # morreria com GPUOcupada.
             timeout=settings.gpu_liberacao_timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("lms indisponível ou travado; seguindo", error=str(e))
+    except OSError as e:
+        # Binário ausente ou não executável (`FileNotFoundError` é um `OSError`):
+        # o LM Studio não está instalado nem no PATH, então não há modelo
+        # carregado e não há o que confirmar.
+        logger.warning("lms indisponível; nada a descarregar", error=str(e))
         return
-    if proc.returncode != 0:
-        logger.warning("lms unload falhou", returncode=proc.returncode)
+    except subprocess.TimeoutExpired as e:
+        # O oposto do caso acima: o comando existe e não voltou, então o LM
+        # Studio muito provavelmente está NO AR e travado — com o modelo ainda
+        # residente. Retornar aqui declararia a liberação feita sem confirmar
+        # nada, e o próximo consumidor carregaria numa placa cheia. Cair para o
+        # `_esperar` faz o estado ser conferido de verdade: modelo ainda
+        # carregado vira LiberacaoFalhou no prazo.
+        logger.warning("lms unload não retornou; confirmando o estado mesmo assim",
+                       error=str(e))
+    else:
+        if proc.returncode != 0:
+            logger.warning("lms unload falhou", returncode=proc.returncode)
 
     fechar = cliente is None
     cliente = cliente or httpx.Client(base_url=_base_lm_studio(settings), timeout=10.0)

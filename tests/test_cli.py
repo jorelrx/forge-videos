@@ -190,6 +190,29 @@ def test_roteiro_toma_o_slot_llm(monkeypatch, tmp_path):
     assert eventos == ["entra:llm", "plano", "sai:llm"]
 
 
+def test_gpu_ocupada_sai_limpo_sem_traceback(monkeypatch, tmp_path):
+    """Outro forge segurando a placa por >900s é o caso NORMAL que o lock
+    existe para produzir, não um bug: `forge roteiro` tem que sair com rc=1
+    como os demais erros previstos deste comando, não propagar um traceback."""
+    from contextlib import contextmanager
+
+    from forge.gpu.broker import GPUOcupada
+
+    _monta_run(monkeypatch, tmp_path, aprovado=True)
+
+    class BrokerFalso:
+        @contextmanager
+        def exclusivo(self, recurso):
+            raise GPUOcupada("placa ocupada por outro processo")
+            yield  # pragma: no cover - inatingível, mas mantém o formato de gerador
+
+    monkeypatch.setattr(cli, "montar_broker", lambda s: BrokerFalso())
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["roteiro", "--tema", "meu tema"])
+    assert exc.value.code == 1
+
+
 def test_plano_de_midia_nao_sai_de_roteiro_reprovado(monkeypatch, tmp_path):
     """O grafo também termina por esgotar max_passos ou max_review_rounds, com
     aprovado False. Planejar mídia aí gasta horas de TTS e de SDXL num roteiro

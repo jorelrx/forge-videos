@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from forge.gpu.broker import GPUOcupada
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import get_settings
 from forge.llms.model import build_chat_model
@@ -88,27 +89,38 @@ def _cmd_roteiro(args) -> int:
     # ocupados e a fase seguinte aloca numa placa cheia, que é exatamente a OOM
     # que o broker existe para evitar. Com provider na nuvem o LLM não usa VRAM
     # e `montar_broker` já o tira da disputa, então aqui vira no-op.
-    with montar_broker(settings).exclusivo("llm"):
-        logger.info("Starting graph invocation", tema=args.tema, rounds=0)
-        try:
-            state: dict = dict(estado_inicial)
-            for step in graph.stream(estado_inicial):
-                node_name = next(iter(step))
-                logger.info("Node finished", node=node_name)
-                print(f"[{node_name}]", file=sys.stderr)
-                state.update(step[node_name])
-            final = state
-        except Exception as e:
-            logger.error("Graph invocation failed", error=str(e), exc_info=True)
-            sys.exit(1)
+    try:
+        with montar_broker(settings).exclusivo("llm"):
+            logger.info("Starting graph invocation", tema=args.tema, rounds=0)
+            try:
+                state: dict = dict(estado_inicial)
+                for step in graph.stream(estado_inicial):
+                    node_name = next(iter(step))
+                    logger.info("Node finished", node=node_name)
+                    print(f"[{node_name}]", file=sys.stderr)
+                    state.update(step[node_name])
+                final = state
+            except Exception as e:
+                logger.error("Graph invocation failed", error=str(e), exc_info=True)
+                sys.exit(1)
 
-        aprovado = final["review"].aprovado if final.get("review") is not None else None
-        path = gravar_roteiro(
-            final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
-        )
-        logger.info("Completed", output_path=str(path), aprovados=aprovado)
+            aprovado = (
+                final["review"].aprovado if final.get("review") is not None else None
+            )
+            path = gravar_roteiro(
+                final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
+            )
+            logger.info("Completed", output_path=str(path), aprovados=aprovado)
 
-        _plano_de_midia(model, settings, run_dir, final, aprovado)
+            _plano_de_midia(model, settings, run_dir, final, aprovado)
+    except GPUOcupada as e:
+        # Outro forge segurando a placa é o caso NORMAL que o lock existe para
+        # produzir, não um bug: sai como os demais erros previstos deste comando
+        # (diretório de --retomar inexistente, artefato ilegível, grafo que
+        # estoura) em vez de traceback. Só GPUOcupada — bug de verdade continua
+        # aparecendo inteiro.
+        logger.error("GPU ocupada por outro processo", error=str(e))
+        sys.exit(1)
 
     print(str(path))
     print(f"run: {run_dir}", file=sys.stderr)

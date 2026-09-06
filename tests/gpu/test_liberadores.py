@@ -165,14 +165,39 @@ def test_liberar_llm_poe_prazo_no_lms():
     assert kwargs_vistos["timeout"] == settings.gpu_liberacao_timeout
 
 
-def test_liberar_llm_com_lms_travado_apenas_avisa():
+def test_liberar_llm_com_lms_travado_e_modelo_ainda_carregado_estoura():
+    """`lms unload --all` travado é o oposto do binário ausente: o LM Studio
+    muito provavelmente está NO AR e o modelo continua residente. Retornar sem
+    conferir declararia a liberação feita e o próximo consumidor alocaria numa
+    placa cheia — por isso cai para `_esperar`, que aqui vê `state: loaded` e
+    estoura."""
     import subprocess
 
     def executar(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
 
-    def handler(request):  # pragma: no cover - não deve ser alcançado
-        raise AssertionError("não deveria conferir o estado com o lms travado")
+    def handler(request):
+        return httpx.Response(200, json={"data": [
+            {"id": "qwen", "state": "loaded"},
+        ]})
+
+    cliente = httpx.Client(transport=httpx.MockTransport(handler),
+                           base_url="http://lm.test")
+    with pytest.raises(LiberacaoFalhou):
+        liberar_llm(_settings(), executar=executar, cliente=cliente)
+
+
+def test_liberar_llm_com_lms_travado_mas_ja_descarregado_nao_estoura():
+    """Mesmo `lms unload --all` travado, mas `/api/v0/models` já não reporta
+    nada carregado: a confirmação por polling é quem decide, e aqui ela
+    autoriza a liberação mesmo sem o `lms` ter respondido."""
+    import subprocess
+
+    def executar(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+
+    def handler(request):
+        return httpx.Response(200, json={"data": []})
 
     cliente = httpx.Client(transport=httpx.MockTransport(handler),
                            base_url="http://lm.test")

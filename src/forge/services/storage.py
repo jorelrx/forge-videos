@@ -56,7 +56,9 @@ def _render(
         linhas.append("")
         for f in roteiro.fontes:
             autor = f" — {f.autor}" if f.autor else ""
-            linhas.append(f"- {f.titulo}{autor}")
+            # O caminho canônico é o que torna a citação verificável no acervo.
+            caminho = f" (`{f.path}`)" if f.path else ""
+            linhas.append(f"- {f.titulo}{autor}{caminho}")
     return "\n".join(linhas) + "\n"
 
 

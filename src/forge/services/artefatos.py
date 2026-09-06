@@ -43,7 +43,16 @@ def _fmt_fontes(fontes: list[Fonte]) -> str:
     Emitir os campos como YAML solto quebra em título com dois-pontos
     ("A Ética: Uma Introdução"), que é a forma comum de título de livro.
     """
-    dados = [{"titulo": f.titulo, "autor": f.autor, "url": f.url} for f in fontes]
+    dados = [
+        {
+            "titulo": f.titulo,
+            "autor": f.autor,
+            "url": f.url,
+            "path": f.path,
+            "book_id": f.book_id,
+        }
+        for f in fontes
+    ]
     return "fontes: " + json.dumps(dados, ensure_ascii=False)
 
 

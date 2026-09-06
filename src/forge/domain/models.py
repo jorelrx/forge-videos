@@ -11,6 +11,11 @@ class Fonte(BaseModel):
     autor: str | None = None
     url: str | None = None
     frase: str | None = None
+    # Procedência no acervo. Opcionais porque runs anteriores ao acervo não
+    # têm nenhum dos dois, e `--retomar` precisa continuar lendo aqueles
+    # artefatos.
+    path: str | None = None
+    book_id: int | None = None
 
 
 class Secao(BaseModel):

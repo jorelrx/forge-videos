@@ -37,3 +37,25 @@ def test_slug_no_nome_do_arquivo(tmp_path):
     path = gravar_roteiro(_roteiro(), settings)
     assert path.suffix == ".md"
     assert "o-tedio" in path.name
+
+def test_fontes_do_acervo_saem_com_caminho_canonico(tmp_path):
+    """O caminho canônico é o que torna a citação verificável no acervo."""
+    roteiro = Roteiro(
+        tema="determinismo",
+        tese="tese",
+        secoes=[Secao(nome="Hook", conteudo="c")],
+        fontes=[Fonte(titulo="Beyond Good and Evil", autor="Nietzsche",
+                      path="4363/ch2/p7", book_id=4363)],
+    )
+    settings = Settings(_env_file=None, output_dir=tmp_path)
+
+    path = gravar_roteiro(roteiro, settings, rounds=1, aprovado=True)
+
+    assert "- Beyond Good and Evil — Nietzsche (`4363/ch2/p7`)" in path.read_text(encoding="utf-8")
+
+def test_fonte_sem_caminho_sai_sem_parenteses_vazio(tmp_path):
+    settings = Settings(_env_file=None, output_dir=tmp_path)
+
+    path = gravar_roteiro(_roteiro(), settings, rounds=1, aprovado=True)
+
+    assert "- Obra — Autor\n" in path.read_text(encoding="utf-8")

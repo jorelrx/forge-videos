@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"
 
+    # Serviço externo de pesquisa. Substitui a busca web por completo — ver
+    # services/acervo.py.
+    acervo_url: str = "http://127.0.0.1:8000"
+    acervo_top: int = 8
+    acervo_timeout: float = 30.0
+
     @property
     def resolved_model(self) -> str:
         """Modelo do provider ativo. `FORGE_MODEL` sobrepõe qualquer provider."""

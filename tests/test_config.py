@@ -71,3 +71,12 @@ def test_chave_faltando_falha_claro(monkeypatch, provider):
     s = Settings(_env_file=None, provider=provider)
     with pytest.raises(ValueError, match="API key ausente"):
         s.exigir_api_key()
+
+
+def test_acervo_tem_defaults_locais():
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.acervo_url == "http://127.0.0.1:8000"
+    assert s.acervo_top == 8
+    assert s.acervo_timeout == 30.0

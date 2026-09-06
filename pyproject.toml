@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "structlog>=24.1",
+    "sounddevice>=0.5.5",
 ]
 
 [project.optional-dependencies]

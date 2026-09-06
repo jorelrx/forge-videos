@@ -113,3 +113,51 @@ def test_liberacao_que_estoura_solta_o_lock(tmp_path):
     # o lock foi solto: um novo uso não estoura por timeout
     with b.exclusivo("llm"):
         pass
+
+
+def test_estado_ilegivel_libera_todos_os_recursos(tmp_path):
+    """Estado corrompido significa que ALGO foi reivindicado e perdemos o
+    registro de quem. Não existe "próximo liberador" que cubra isso: `_trocar`
+    só libera o residente registrado, então tratar corrupção como placa vazia
+    deixaria o modelo carregado para sempre."""
+    registro = []
+    b = _broker(tmp_path, registro)
+    (tmp_path / "residente.json").write_text("{truncad", encoding="utf-8")
+
+    with b.exclusivo("imagem"):
+        pass
+
+    assert sorted(registro) == ["imagem", "llm", "tts"]
+    assert b.residente() == "imagem"
+
+
+def test_arquivo_ausente_continua_sendo_placa_vazia(tmp_path):
+    """O oposto do teste acima: sem arquivo, ninguém reivindicou nada e liberar
+    seria pagar reload à toa."""
+    registro = []
+    b = _broker(tmp_path, registro)
+
+    assert b.residente() is None
+    with b.exclusivo("imagem"):
+        pass
+    assert registro == []
+
+
+def test_escrita_interrompida_nao_apaga_o_residente(tmp_path, monkeypatch):
+    """O estado é reescrito exatamente quando um modelo ESTÁ carregado. Uma
+    escrita não-atômica o truncaria no pior momento possível."""
+    from forge.gpu import broker as mod
+
+    registro = []
+    b = _broker(tmp_path, registro)
+    with b.exclusivo("llm"):
+        pass
+
+    def _corte(*args):
+        raise OSError("corte de energia")
+
+    monkeypatch.setattr(mod.os, "replace", _corte)
+    with pytest.raises(OSError):
+        b._gravar("imagem")
+
+    assert b.residente() == "llm"

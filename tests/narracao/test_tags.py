@@ -48,3 +48,33 @@ def test_sanear_texto_limpo_nao_muda_nada():
 
     assert removidas == []
     assert texto == "<|emotion:awe|>Olá."
+
+
+def test_sanear_remove_tag_malformada():
+    """Tag com forma certa e sintaxe errada passava intacta, sem sequer entrar
+    em `removidas` — e lixo com cara de tag chegava ao TTS horas depois."""
+    for ruim in ("<|Emotion:Awe|>", "<|prosody:speed-slow|>", "<| emotion:awe |>"):
+        texto, removidas = sanear_texto(f"Olá.{ruim}Tchau.")
+
+        assert texto == "Olá.Tchau.", ruim
+        assert removidas == [ruim]
+
+
+def test_validar_estoura_em_tag_malformada():
+    for ruim in ("<|Emotion:Awe|>", "<|prosody:speed-slow|>", "<| emotion:awe |>"):
+        with pytest.raises(TagInvalida) as exc:
+            validar_texto(f"Olá.{ruim}")
+        assert ruim in str(exc.value), ruim
+
+
+def test_saneado_sempre_passa_na_validacao():
+    """A garantia que liga as duas funções: o que sai de `sanear_texto` nunca
+    faz `validar_texto` levantar."""
+    sujo = ("<|emotion:awe|>Olá.<|Emotion:Awe|><|mood:happy|>"
+            "<|prosody:speed-slow|><| emotion:awe |>Fim.<|prosody:long_pause|>")
+
+    texto, removidas = sanear_texto(sujo)
+
+    assert len(removidas) == 4
+    validar_texto(texto)
+    assert texto == "<|emotion:awe|>Olá.Fim.<|prosody:long_pause|>"

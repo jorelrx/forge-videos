@@ -15,6 +15,11 @@ import difflib
 import re
 
 TAG_RE = re.compile(r"<\|([a-z_]+):([a-z_]+)\|>")
+# Qualquer coisa com FORMA de tag, mesmo malformada. Validar só pelo TAG_RE
+# deixava passar `<|Emotion:Awe|>`, `<|prosody:speed-slow|>` e `<| emotion:awe |>`
+# intactos, sem sequer um aviso — e lixo com cara de tag chega ao TTS horas
+# depois, custando minutos de GPU por bloco.
+TAG_SOLTA_RE = re.compile(r"<\|[^|>]*\|>")
 
 TAGS_SENTENCA: dict[str, frozenset[str]] = {
     "emotion": frozenset({
@@ -53,20 +58,39 @@ def _categorias() -> set[str]:
     return set(TAGS_SENTENCA) | set(TAGS_INLINE)
 
 
+def _problema(tag: str) -> str | None:
+    """Por que `tag` não vale, ou None se ela vale.
+
+    Um único lugar decide o que é uma tag válida. `validar_texto` e
+    `sanear_texto` reagem diferente à mesma resposta — uma levanta, a outra
+    remove — mas não podem discordar sobre o que é válido: divergir aqui é
+    exatamente como tag malformada atravessava a validação e chegava ao TTS.
+    """
+    m = TAG_RE.fullmatch(tag)
+    if m is None:
+        return (
+            f"tag malformada: {tag}. A sintaxe é <|categoria:nome|>, tudo em "
+            f"minúsculas, sem espaços, com _ separando palavras."
+        )
+    categoria, nome = m.group(1), m.group(2)
+    if categoria not in _categorias():
+        return (
+            f"categoria de tag desconhecida: {categoria!r}. "
+            f"Conhecidas: {sorted(_categorias())}"
+        )
+    validos = _nomes(categoria)
+    if nome not in validos:
+        perto = difflib.get_close_matches(nome, sorted(validos), n=1)
+        sugestao = f" Você quis dizer {perto[0]!r}?" if perto else ""
+        return f"tag desconhecida: <|{categoria}:{nome}|>.{sugestao}"
+    return None
+
+
 def validar_texto(texto: str) -> None:
-    for categoria, nome in TAG_RE.findall(texto):
-        if categoria not in _categorias():
-            raise TagInvalida(
-                f"categoria de tag desconhecida: {categoria!r}. "
-                f"Conhecidas: {sorted(_categorias())}"
-            )
-        validos = _nomes(categoria)
-        if nome not in validos:
-            perto = difflib.get_close_matches(nome, sorted(validos), n=1)
-            sugestao = f" Você quis dizer {perto[0]!r}?" if perto else ""
-            raise TagInvalida(
-                f"tag desconhecida: <|{categoria}:{nome}|>.{sugestao}"
-            )
+    for tag in TAG_SOLTA_RE.findall(texto):
+        problema = _problema(tag)
+        if problema is not None:
+            raise TagInvalida(problema)
 
 
 def sanear_texto(texto: str) -> tuple[str, list[str]]:
@@ -78,10 +102,10 @@ def sanear_texto(texto: str) -> tuple[str, list[str]]:
     removidas: list[str] = []
 
     def _troca(m: re.Match) -> str:
-        categoria, nome = m.group(1), m.group(2)
-        if categoria in _categorias() and nome in _nomes(categoria):
-            return m.group(0)
-        removidas.append(m.group(0))
+        tag = m.group(0)
+        if _problema(tag) is None:
+            return tag
+        removidas.append(tag)
         return ""
 
-    return TAG_RE.sub(_troca, texto), removidas
+    return TAG_SOLTA_RE.sub(_troca, texto), removidas

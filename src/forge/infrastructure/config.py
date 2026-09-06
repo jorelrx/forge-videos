@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # `cpu` faz a narração não disputar o slot, liberando-a para rodar
     # concorrente com a fase de imagem.
     tts_backend: Literal["vulkan", "cpu"] = "vulkan"
+    comfy_url: str = "http://127.0.0.1:8188"
+    # VRAM que precisa estar livre para o ComfyUI aceitar a próxima geração.
+    # 6 GB numa placa de 8 GB: o SDXL não entra abaixo disso.
+    comfy_vram_livre_min: int = 6_000_000_000
+    lms_bin: str = str(Path.home() / ".lmstudio" / "bin" / "lms.exe")
+    gpu_liberacao_timeout: float = 60.0
 
     @property
     def resolved_model(self) -> str:

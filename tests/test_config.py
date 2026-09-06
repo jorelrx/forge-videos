@@ -88,3 +88,13 @@ def test_broker_tem_defaults():
     s = Settings(_env_file=None)
     assert s.gpu_lock_timeout == 900.0
     assert s.tts_backend == "vulkan"
+
+
+def test_liberadores_tem_defaults():
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.comfy_url == "http://127.0.0.1:8188"
+    assert s.comfy_vram_livre_min == 6_000_000_000
+    assert s.gpu_liberacao_timeout == 60.0
+    assert s.lms_bin.endswith("lms.exe")

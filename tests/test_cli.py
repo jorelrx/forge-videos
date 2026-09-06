@@ -31,6 +31,42 @@ def test_main_roteiro(monkeypatch, tmp_path, capsys):
     assert out.endswith(".md")
 
 
+def test_roteiro_grava_o_plano_de_midia(monkeypatch, tmp_path, capsys):
+    from forge.agents import midia as midia_mod
+    from forge.agents.midia import carregar_plano
+    from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros",
+                        anthropic_api_key="sk-test")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+
+    roteiro = Roteiro(tema="tema", tese="tese",
+                      secoes=[Secao(nome="Hook", conteudo="c")])
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": roteiro}}
+
+    monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
+
+    plano = PlanoMidia(
+        blocos=[BlocoNarracao(id="b001", secao="Hook", texto="c")],
+        beats=[Beat(id="i001", bloco_id="b001", prompt="uma ampulheta")],
+    )
+    monkeypatch.setattr(midia_mod, "planejar_midia", lambda *a, **k: plano)
+
+    rc = cli.main(["roteiro", "--tema", "meu tema"])
+
+    assert rc == 0
+    # criar_run_dir monta `settings.output_dir.parent / "runs" / <ts>-<slug>`
+    # (services/artefatos.py:17), por isso output_dir aponta para um subdiretório
+    # de tmp_path: as runs caem em tmp_path/runs e nada escapa do tmp.
+    runs = list((tmp_path / "runs").iterdir())
+    assert len(runs) == 1
+    assert carregar_plano(runs[0]) == plano
+
+
 def test_ingest_nao_e_mais_um_subcomando():
     """A ingestão de livros é do acervo (POST /books/{id}/ingest), não do forge."""
     with pytest.raises(SystemExit) as exc:

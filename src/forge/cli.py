@@ -99,6 +99,23 @@ def _cmd_roteiro(args) -> int:
         final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
     )
     logger.info("Completed", output_path=str(path), aprovados=aprovado)
+
+    # O plano de mídia sai junto do roteiro porque é a última coisa que exige
+    # LLM: emiti-lo aqui evita recarregar o modelo na fase de GPU.
+    from forge.agents.midia import gravar_plano, planejar_midia
+
+    try:
+        plano = planejar_midia(
+            model, final["roteiro"], alvo_segundos=settings.midia_alvo_segundos
+        )
+        caminho_midia = gravar_plano(run_dir, plano)
+        logger.info("Plano de mídia gravado", path=str(caminho_midia),
+                    blocos=len(plano.blocos), beats=len(plano.beats))
+    except Exception as e:
+        # Roteiro aprovado é o entregável desta etapa; falhar o plano de mídia
+        # não pode apagá-lo. `forge video` refaz o plano depois.
+        logger.error("Plano de mídia falhou", error=str(e), exc_info=True)
+
     print(str(path))
     print(f"run: {run_dir}", file=sys.stderr)
     return 0

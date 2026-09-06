@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20
+    midia_alvo_segundos: int = 15
 
     provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"

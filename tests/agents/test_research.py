@@ -105,3 +105,45 @@ def test_pedido_dirigido_entra_na_formulacao_das_queries(scripted, acervo_fake):
     pesquisar(model, "ética", acervo, pedido="Kant disse que o dever é X?")
 
     assert acervo.chamadas == ["kant sobre dever"]
+
+
+def test_juiz_mantem_so_as_passagens_aprovadas(scripted):
+    from forge.agents.research import julgar_relevancia
+    from forge.domain.models import VeredictoRelevancia
+
+    passagens = [_passagem("p1", 0.9), _passagem("p2", 0.8), _passagem("p3", 0.7)]
+    model = scripted(structured=[
+        VeredictoRelevancia(relevantes=[0, 2], motivo="a segunda fala de outro assunto")
+    ])
+
+    aprovadas, motivo = julgar_relevancia(model, "vontade", passagens)
+
+    assert [p.path for p in aprovadas] == ["p1", "p3"]
+    assert "outro assunto" in motivo
+
+
+def test_juiz_ignora_indice_fora_da_lista(scripted):
+    """Índice inventado pelo modelo não pode estourar nem trazer passagem errada."""
+    from forge.agents.research import julgar_relevancia
+    from forge.domain.models import VeredictoRelevancia
+
+    passagens = [_passagem("p1", 0.9)]
+    model = scripted(structured=[VeredictoRelevancia(relevantes=[0, 7, -3], motivo="")])
+
+    aprovadas, _ = julgar_relevancia(model, "vontade", passagens)
+
+    assert [p.path for p in aprovadas] == ["p1"]
+
+
+def test_colher_por_query_preserva_a_origem(acervo_fake):
+    from forge.agents.research import colher_por_query
+
+    acervo = acervo_fake(por_query={
+        "a": [_passagem("p1", 0.5), _passagem("p2", 0.9)],
+        "b": [_passagem("p1", 0.8)],
+    })
+
+    por_query = colher_por_query(acervo, ["a", "b"])
+
+    assert [p.path for p in por_query["a"]] == ["p1", "p2"]
+    assert [p.path for p in por_query["b"]] == ["p1"]

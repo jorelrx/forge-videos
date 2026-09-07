@@ -117,3 +117,9 @@ def test_midia_alvo_segundos_deve_ser_positivo():
 
     with pytest.raises(pydantic.ValidationError):
         Settings(_env_file=None, midia_alvo_segundos=0)
+
+
+def test_juiz_de_relevancia_vem_ligado():
+    from forge.infrastructure.config import Settings
+
+    assert Settings(_env_file=None).juiz_relevancia is True

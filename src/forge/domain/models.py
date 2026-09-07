@@ -54,6 +54,17 @@ class Plano(BaseModel):
     esboco: str
 
 
+class VeredictoRelevancia(BaseModel):
+    """Quais passagens do acervo realmente respondem ao que se perguntou.
+
+    Índices, não caminhos: pedir ao modelo que copie `4363/ch2/p7` corretamente é
+    convidar erro de transcrição; um número ele acerta.
+    """
+
+    relevantes: list[int] = Field(default_factory=list)
+    motivo: str = ""
+
+
 class RoteiroDraft(BaseModel):
     secoes: list[Secao]
     falta_pesquisa: str | None = Field(

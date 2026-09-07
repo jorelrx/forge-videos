@@ -13,7 +13,7 @@ import re
 
 from langchain_core.messages import HumanMessage
 
-from forge.domain.models import Fonte
+from forge.domain.models import Fonte, VeredictoRelevancia
 from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import _texto
 from forge.prompts.loader import load_prompt
@@ -88,6 +88,47 @@ def colher(acervo: Acervo, queries: list[str], *, top: int = 8) -> list[Passagem
             if atual is None or p.score > atual.score:
                 por_path[p.path] = p
     return sorted(por_path.values(), key=lambda p: p.score, reverse=True)
+
+
+def colher_por_query(
+    acervo: Acervo, queries: list[str], *, top: int = 8
+) -> dict[str, list[Passagem]]:
+    """Busca cada query preservando de qual delas veio cada passagem.
+
+    `colher` funde tudo num pool ordenado, que é o que a síntese quer. A origem
+    importa para outra coisa: saber qual pergunta o acervo não soube responder.
+    """
+    return {q: acervo.buscar(q, top=top) for q in queries}
+
+
+def _fmt_passagens_curtas(passagens: list[Passagem], *, chars: int = 200) -> str:
+    """Só o suficiente para julgar pertinência — o texto inteiro custaria minutos."""
+    linhas = []
+    for i, p in enumerate(passagens):
+        autores = ", ".join(p.authors) or "autor não identificado"
+        trecho = p.text[:chars].replace("\n", " ")
+        linhas.append(f"[{i}] {p.book_title} — {autores} — {p.breadcrumb}\n{trecho}")
+    return "\n\n".join(linhas)
+
+
+def julgar_relevancia(
+    model, tema: str, passagens: list[Passagem]
+) -> tuple[list[Passagem], str]:
+    prompt = load_prompt("juiz").format(
+        tema=tema, passagens=_fmt_passagens_curtas(passagens)
+    )
+    veredicto = model.with_structured_output(VeredictoRelevancia).invoke(
+        [HumanMessage(content=prompt)]
+    )
+    # Índice fora da faixa é erro de modelo, não motivo para estourar: descarta.
+    validos = sorted({i for i in veredicto.relevantes if 0 <= i < len(passagens)})
+    aprovadas = [passagens[i] for i in validos]
+    logger.info(
+        "Juiz de relevância",
+        recebidas=len(passagens),
+        aprovadas=len(aprovadas),
+    )
+    return aprovadas, veredicto.motivo
 
 
 def _sintetizar(model, tema: str, pedido: str | None, passagens: list[Passagem]) -> str:

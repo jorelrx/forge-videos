@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     acervo_url: str = "http://127.0.0.1:8000"
     acervo_top: int = 8
     acervo_timeout: float = 30.0
+    # O juiz custa uma chamada de LLM por passagem de pesquisa (~3 min nesta
+    # máquina). Desligar troca a detecção de lacuna por velocidade.
+    juiz_relevancia: bool = True
 
     # Gerência da GPU. Ver gpu/broker.py: um recurso residente por vez.
     gpu_lock_timeout: float = 900.0

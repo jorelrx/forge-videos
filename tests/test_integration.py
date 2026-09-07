@@ -13,7 +13,18 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_pipeline_real(tmp_path):
-    settings = Settings(_env_file=None, output_dir=tmp_path, max_review_rounds=2)
+    # `juiz_relevancia=False` + gap files sob `tmp_path`: os defaults reais de
+    # `Settings` apontam para `C:\dev\research\dados\...`, e este teste roda
+    # de verdade sempre que uma API key está no ambiente — o skip no topo do
+    # módulo não é garantia disso. Nada aqui pode escrever no acervo real.
+    settings = Settings(
+        _env_file=None,
+        output_dir=tmp_path,
+        max_review_rounds=2,
+        juiz_relevancia=False,
+        gaps_file=tmp_path / "gaps.txt",
+        respostas_ruins_file=tmp_path / "ruins.jsonl",
+    )
     graph = build_graph(build_chat_model(settings), settings)
     final = graph.invoke({
         "tema": "O papel do tédio na vida moderna",

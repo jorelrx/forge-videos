@@ -175,6 +175,34 @@ def test_query_toda_reprovada_vira_lacuna_registrada(scripted, acervo_fake, tmp_
     assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["ruim"]
 
 
+def test_query_sem_nenhuma_passagem_vira_lacuna_registrada(scripted, acervo_fake, tmp_path):
+    """Uma query que não achou NADA é uma lacuna tão real quanto uma rejeitada
+    pelo juiz — e o guard antigo (`achadas and ...`) a descartava em silêncio."""
+    from forge.agents.research import pesquisar
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(
+        _env_file=None,
+        gaps_file=tmp_path / "gaps.txt",
+        respostas_ruins_file=tmp_path / "ruins.jsonl",
+    )
+    acervo = acervo_fake(por_query={
+        "boa": [_passagem("p1", 0.9)],
+        "vazia": [],
+    })
+    model = scripted(
+        invoke_texts=["boa\nvazia", "notas densas"],
+        structured=[VeredictoRelevancia(relevantes=[0], motivo="ok")],
+    )
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert brief == "notas densas"
+    assert [f.path for f in fontes] == ["p1"]
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["vazia"]
+
+
 def test_tudo_reprovado_vira_brief_de_lacuna_sem_sintetizar(scripted, acervo_fake, tmp_path):
     """Sem passagem aprovada não há o que sintetizar — e a síntese é a chamada
     mais cara do pipeline (15-22 min nesta máquina)."""
@@ -202,6 +230,30 @@ def test_tudo_reprovado_vira_brief_de_lacuna_sem_sintetizar(scripted, acervo_fak
     assert "Lacuna no acervo" in brief
     assert "Determinism or Free-Will?" in brief
     assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["ruim"]
+
+
+def test_nenhuma_query_acha_nada_registra_lacunas_sem_juiz(scripted, acervo_fake, tmp_path):
+    """Falha total (nenhuma query achou passagem nenhuma) nunca chega a chamar
+    o juiz — `if passagens` barra antes. Mesmo assim cada query tem que virar
+    lacuna, e isso NÃO depende de `juiz_relevancia`: constatar zero linhas não
+    exige LLM nenhum."""
+    from forge.agents.research import pesquisar
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, juiz_relevancia=False,
+                 gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(por_query={"a": [], "b": []})
+    # Só uma resposta na fila: a das queries. Sem passagem nenhuma não há
+    # juiz nem síntese — se o agente tentar qualquer um dos dois o modelo
+    # falso estoura, o que tranca o comportamento.
+    model = scripted(invoke_texts=["a\nb"])
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert fontes == []
+    assert "Lacuna no acervo" in brief
+    assert sorted(s.gaps_file.read_text(encoding="utf-8").splitlines()) == ["a", "b"]
 
 
 def test_sem_settings_o_juiz_nao_roda(scripted, acervo_fake):

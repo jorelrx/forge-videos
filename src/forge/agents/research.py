@@ -31,6 +31,10 @@ MAX_QUERIES = 5
 # uma linha limpa.
 _MARCADOR = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
+# Motivo registrado quando uma query não achou passagem nenhuma — distinto do
+# motivo do juiz, que só existe quando há passagens para rejeitar.
+_MOTIVO_BUSCA_VAZIA = "a busca não retornou nenhuma passagem para esta query"
+
 
 def pesquisar(
     model,
@@ -52,10 +56,22 @@ def pesquisar(
     passagens = _fundir(por_query)
     bruto = _bruto(queries, passagens)
 
+    julgou = False
     if passagens and settings is not None and settings.juiz_relevancia:
         passagens = _julgar_e_registrar(model, tema, passagens, por_query, settings)
+        julgou = True
 
     if not passagens:
+        # Se o juiz rodou, ele já registrou lacuna por query dentro de
+        # `_julgar_e_registrar` (rejeitadas e vazias). Se não rodou, é porque
+        # NENHUMA query achou nada — o gate `if passagens` acima nem chegou a
+        # olhar `juiz_relevancia`. Registrar aqui não depende dessa flag:
+        # `juiz_relevancia=False` só significa "não gaste uma chamada de LLM
+        # decidindo relevância"; constatar que a busca devolveu zero linhas
+        # não exige julgamento nenhum, então amarrar isso à flag surpreenderia
+        # quem a desligou só para economizar a chamada extra.
+        if settings is not None and not julgou:
+            _registrar_lacunas_de_busca_vazia(por_query, tema, settings)
         candidatos = acervo.descobrir(tema)
         logger.warning("Acervo gap", tema=tema, sugestoes=len(candidatos))
         return _brief_lacuna(tema, candidatos), [], bruto
@@ -69,20 +85,43 @@ def _julgar_e_registrar(model, tema, passagens, por_query, settings):
     """Filtra pelo juiz e devolve ao acervo as queries que não renderam nada.
 
     A lacuna é por QUERY, não pelo tema: é a pergunta específica que o acervo não
-    soube responder, e é ela que diz qual obra falta ingerir.
+    soube responder, e é ela que diz qual obra falta ingerir. "Não renderam nada"
+    cobre duas formas, com motivo distinto: a busca não achou passagem nenhuma
+    para a query (não passou pelo juiz — não há o que julgar), ou achou passagens
+    e o juiz rejeitou todas.
     """
     # Import tardio: `lacunas` importa `Settings`, e o agente de pesquisa não
     # depende de config em lugar nenhum além daqui.
     from forge.services.lacunas import registrar_lacuna
 
-    aprovadas, motivo = julgar_relevancia(model, tema, passagens)
+    aprovadas, motivo_juiz = julgar_relevancia(model, tema, passagens)
     caminhos_ok = {p.path for p in aprovadas}
     for query, achadas in por_query.items():
-        if achadas and not any(p.path in caminhos_ok for p in achadas):
+        if not achadas:
             registrar_lacuna(
-                settings, query=query, tema=tema, motivo=motivo, passagens=achadas
+                settings, query=query, tema=tema,
+                motivo=_MOTIVO_BUSCA_VAZIA, passagens=[],
+            )
+        elif not any(p.path in caminhos_ok for p in achadas):
+            registrar_lacuna(
+                settings, query=query, tema=tema, motivo=motivo_juiz, passagens=achadas
             )
     return aprovadas
+
+
+def _registrar_lacunas_de_busca_vazia(por_query, tema, settings):
+    """Registra cada query como lacuna quando a busca não achou NADA, sem juiz.
+
+    Caminho irmão de `_julgar_e_registrar`, para quando o juiz nunca chega a
+    rodar (nenhuma query achou passagem nenhuma): não há passagens para julgar,
+    então não há chamada de LLM a fazer aqui.
+    """
+    from forge.services.lacunas import registrar_lacuna
+
+    for query in por_query:
+        registrar_lacuna(
+            settings, query=query, tema=tema, motivo=_MOTIVO_BUSCA_VAZIA, passagens=[]
+        )
 
 
 def _fundir(por_query: dict[str, list[Passagem]]) -> list[Passagem]:

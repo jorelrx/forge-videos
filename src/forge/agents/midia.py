@@ -140,6 +140,7 @@ def propor_beats(
     )
 
     validos = {b.id for b in blocos}
+    vistos: set[str] = set()
     beats: list[Beat] = []
     for p in proposta.beats:
         if p.bloco_id not in validos:
@@ -150,6 +151,14 @@ def propor_beats(
             logger.warning("Beat sem prompt descartado", secao=secao,
                            bloco_id=p.bloco_id)
             continue
+        if p.bloco_id in vistos:
+            # Um Beat só ancora em um bloco: dois no mesmo bloco competiriam
+            # pelo mesmo instante enquanto outro bloco fica sem imagem nenhuma.
+            # Mantém o primeiro, na ordem em que o modelo propôs.
+            logger.warning("Beat duplicado no mesmo bloco descartado", secao=secao,
+                           bloco_id=p.bloco_id)
+            continue
+        vistos.add(p.bloco_id)
         beats.append(Beat(id="", bloco_id=p.bloco_id, prompt=p.prompt.strip()))
 
     if not beats:

@@ -106,3 +106,14 @@ def test_llm_tem_prazo():
     s = Settings(_env_file=None)
     assert s.llm_timeout == 600.0
     assert s.llm_max_retries == 1
+
+
+def test_midia_alvo_segundos_deve_ser_positivo():
+    """propor_beats divide por esse valor para estimar quantas imagens uma
+    seção comporta; um 0 configurado seria ZeroDivisionError lá dentro. A
+    validação recusa o valor aqui, na borda, em vez de um guard na função.
+    """
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, midia_alvo_segundos=0)

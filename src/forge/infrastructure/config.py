@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20
-    midia_alvo_segundos: int = 15
+    # gt=0: propor_beats divide por este valor para estimar quantas imagens
+    # uma seção comporta. Um 0 configurado chegaria como ZeroDivisionError lá
+    # dentro; melhor a validação recusar o valor aqui, na borda da config.
+    midia_alvo_segundos: int = Field(default=15, gt=0)
 
     provider: Provider = "anthropic"
     lm_studio_base_url: str = "http://localhost:1234/v1"

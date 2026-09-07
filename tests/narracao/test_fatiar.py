@@ -86,6 +86,20 @@ def test_parentese_que_fecha_a_linha_no_corpo_sobrevive():
     assert texto_narravel(conteudo) == conteudo
 
 
+def test_rubrica_com_crlf_ainda_e_removida():
+    """Achado (fix round 2): `[ \\t]*$` sob MULTILINE não considera `\\r\\n`
+    como uma unidade — o `\\r` sobra antes do `$`, o `$` não casa ali, e a
+    rubrica inteira deixa de ser reconhecida. Não é caso de laboratório: o
+    texto de uma seção chega a `planejar_midia` direto do output estruturado
+    do modelo, nunca por `Path.read_text()` — nada normaliza CRLF no caminho
+    real. Escrito com `\\r\\n` literal na string, não lido de arquivo, porque
+    ler em modo texto normalizaria e o teste não provaria nada."""
+    conteudo = "(Cena: CRLF teste.)\r\n\r\nTexto normal aqui.\r\n"
+
+    assert texto_narravel(conteudo) == "Texto normal aqui."
+    assert extrair_rubrica(conteudo) == "Cena: CRLF teste."
+
+
 def test_sublinhado_nao_funde_palavras_com_underscore_interno():
     """Achado 2 (fix round 1): `(.+?)\\1` casava o primeiro `_` de
     `livre_arbitrio` com o primeiro `_` de `determinismo_estrito` e apagava

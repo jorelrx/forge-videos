@@ -22,7 +22,13 @@ import re
 # óbvio de corrigir no roteiro. O erro anterior era o oposto: silencioso e
 # irrecuperável (apagava frases inteiras sem sinal nenhum). Toda rubrica do
 # corpus real cabe numa linha só.
-RUBRICA_RE = re.compile(r"^[ \t]*\(([^)\n]*)\)[ \t]*$", re.MULTILINE)
+#
+# `\r?$` e `\r` na classe negada: `$` sob MULTILINE não trata `\r\n` como uma
+# unidade — sem isso, o `\r` de um CRLF sobra antes do `$` e a rubrica inteira
+# deixa de casar. Isso não é hipotético: o texto de uma seção chega aqui
+# direto do output estruturado do modelo, nunca por `Path.read_text()` — nada
+# no caminho real normaliza a quebra de linha antes deste ponto.
+RUBRICA_RE = re.compile(r"^[ \t]*\(([^)\n\r]*)\)[ \t]*\r?$", re.MULTILINE)
 
 # Ênfase markdown, em dois padrões — não um só compartilhado por `_` e `*`.
 # `(.+?)\1` original casava o primeiro delimitador com o PRÓXIMO IGUAL EM

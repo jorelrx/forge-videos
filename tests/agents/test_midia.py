@@ -21,9 +21,11 @@ def test_beats_apontam_para_blocos_da_secao(scripted):
 
     assert [b.bloco_id for b in beats] == ["b001", "b002"]
     assert beats[0].prompt == "a hand on a steering wheel"
-    # Ids são atribuídos depois, pelo caller, que sabe a contagem corrida no
-    # roteiro inteiro. Um id preenchido aqui corromperia essa renumeração.
-    assert all(b.id == "" for b in beats)
+    # O tipo é o contrato: `propor_beats` não devolve `Beat`, devolve
+    # `BeatProposto` — sem campo `id`. Ids são do caller, que sabe a contagem
+    # corrida no roteiro inteiro; um id atribuído aqui corromperia a
+    # renumeração e o modelo não tem como saber qual seria.
+    assert all(isinstance(b, BeatProposto) for b in beats)
 
 
 def test_beat_para_bloco_de_fora_da_secao_e_descartado(scripted):
@@ -48,7 +50,7 @@ def test_secao_sem_beat_proposto_ganha_um_de_fallback(scripted):
     assert len(beats) == 1
     assert beats[0].bloco_id == "b001"
     assert "carro" in beats[0].prompt
-    assert beats[0].id == ""
+    assert isinstance(beats[0], BeatProposto)
 
 
 def test_fallback_dispara_quando_todos_os_beats_propostos_sao_invalidos(scripted):
@@ -201,3 +203,156 @@ def test_secao_so_com_rubrica_nao_gera_bloco_nem_chamada(scripted):
     plano = planejar_midia(model, roteiro)
 
     assert [b.secao for b in plano.blocos] == ["Problema"]
+
+
+def test_narracao_apagada_por_texto_narravel_estoura(scripted):
+    """O ponto cego da conferência relativa: `texto_narravel` apagando narração.
+
+    `RUBRICA_RE` remove TODA linha inteiramente entre parênteses, não só a
+    rubrica de abertura da seção. Uma frase de peso escrita entre parênteses no
+    meio da seção some da voz — e a conferência relativa não vê nada, porque
+    ela compara os blocos contra a saída do próprio `texto_narravel`. Só a
+    conferência contra o texto BRUTO enxerga o buraco.
+    """
+    from forge.agents.midia import CoberturaInsuficiente, planejar_midia
+    from forge.domain.models import Roteiro, Secao
+
+    roteiro = Roteiro(tema="t", tese="t", secoes=[
+        Secao(nome="Hook", conteudo=(
+            "(Cena: um tribunal.)\n\n"
+            "Hume escreveu isso em 1739.\n\n"
+            "(E aqui esta o ponto que muda tudo: ninguem escolhe querer o que "
+            "quer.)\n\n"
+            "Por isso o problema nao e fisico."
+        )),
+    ])
+    # Resposta na fila de sobra: sem a trava nova o plano sairia inteiro e
+    # silenciosamente errado, com 12 das 28 palavras narradas.
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a courtroom")]),
+    ])
+
+    with pytest.raises(CoberturaInsuficiente):
+        planejar_midia(model, roteiro)
+
+
+def test_roteiro_so_de_rubricas_nao_vira_plano_vazio(scripted):
+    """Plano com zero blocos é o incidente original com o gatilho no escritor.
+
+    `[] == []` satisfaz a conferência relativa, `gravar_plano` grava, o
+    manifesto sai com 0 itens e o runner diz "nada pendente". Vídeo mudo,
+    nenhum aviso.
+    """
+    from forge.agents.midia import CoberturaInsuficiente, planejar_midia
+    from forge.domain.models import Roteiro, Secao
+
+    roteiro = Roteiro(tema="t", tese="t", secoes=[
+        Secao(nome="Hook", conteudo="(Cena: nada é dito.)"),
+        Secao(nome="Problema", conteudo="(Cena: o silêncio continua.)"),
+    ])
+    model = scripted(structured=[])
+
+    with pytest.raises(CoberturaInsuficiente):
+        planejar_midia(model, roteiro)
+
+
+def _secao_no_formato_real(nome: str) -> object:
+    """Uma seção com a proporção rubrica/corpo medida no roteiro real.
+
+    Rubrica de 7 palavras sobre um corpo de 46: queda de ~13%, dentro da faixa
+    de 10,1%–17,7% das nove seções reais.
+    """
+    from forge.domain.models import Secao
+
+    return Secao(nome=nome, conteudo=(
+        "(Cena: uma sala de tribunal vazia.)\n\n"
+        "Hume escreveu isso em mil setecentos e trinta e nove, e a frase "
+        "atravessou dois séculos sem perder o corte. O problema não é físico, "
+        "é gramatical. Ninguém escolhe querer aquilo que quer, e é justamente "
+        "aí que a discussão inteira começa a desmoronar."
+    ))
+
+
+def test_proporcao_do_roteiro_real_passa(scripted):
+    """A calibração de FRACAO_NARRAVEL_MINIMA não pode reprovar o corpus real."""
+    from forge.agents.midia import planejar_midia
+    from forge.domain.models import Roteiro
+
+    roteiro = Roteiro(tema="t", tese="t", secoes=[
+        _secao_no_formato_real("Hook"), _secao_no_formato_real("Problema"),
+    ])
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a courtroom")]),
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b003", prompt="a clock")]),
+    ])
+
+    plano = planejar_midia(model, roteiro)
+
+    assert len(plano.blocos) > 0
+
+
+def test_cobertura_falha_antes_de_qualquer_chamada_ao_modelo(scripted, monkeypatch):
+    """`blocos` é função pura de `fatiar`; o modelo não contribui nada.
+
+    Conferir depois do laço de beats gastaria nove chamadas de output
+    estruturado — no 9B local, dezenas de minutos com o slot da GPU preso —
+    para falhar por um motivo já conhecido antes da primeira. Fila vazia: se o
+    modelo for chamado, sai `IndexError` em vez de `CoberturaInsuficiente`.
+    """
+    import forge.agents.midia as midia_mod
+    from forge.agents.midia import CoberturaInsuficiente, planejar_midia
+
+    monkeypatch.setattr(midia_mod, "fatiar", lambda conteudo, **kw: ["só isto"])
+    model = scripted(structured=[])
+
+    with pytest.raises(CoberturaInsuficiente):
+        planejar_midia(model, _roteiro_de_duas_secoes())
+
+
+def _roteiro_longo():
+    from forge.domain.models import Roteiro, Secao
+
+    frases = " ".join(
+        f"Esta é a frase número {n} da seção." for n in range(1, 9)
+    )
+    return Roteiro(tema="t", tese="t",
+                   secoes=[Secao(nome="Hook", conteudo=frases)])
+
+
+def test_alvo_em_segundos_muda_o_tamanho_dos_blocos(scripted):
+    """`FORGE_MIDIA_ALVO_SEGUNDOS` tem de chegar ao fatiador, não só ao prompt.
+
+    Antes, `fatiar` era chamado sem argumentos e ficava no default de 35
+    palavras qualquer que fosse o alvo; só a quantidade de beats pedida ao
+    modelo mudava. Com alvo baixo o modelo era cobrado por mais beats do que
+    havia blocos para ancorar, e o dedup descartava o excedente culpando o
+    modelo por uma escolha do operador.
+    """
+    from forge.agents.midia import planejar_midia
+
+    def _um_beat():
+        return scripted(structured=[
+            BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="uma sala")]),
+        ])
+
+    padrao = planejar_midia(_um_beat(), _roteiro_longo(), alvo_segundos=15)
+    curto = planejar_midia(_um_beat(), _roteiro_longo(), alvo_segundos=4)
+
+    assert len(curto.blocos) > len(padrao.blocos)
+    maior_curto = max(len(b.texto.split()) for b in curto.blocos)
+    maior_padrao = max(len(b.texto.split()) for b in padrao.blocos)
+    assert maior_curto < maior_padrao
+
+
+def test_midia_nao_declara_le_porque_nao_e_no_do_grafo():
+    """`LE` aqui seria decoração — e decoração apodrece.
+
+    `LE` é o contrato que `com_wrapper` usa para estreitar o state antes de
+    chamar um nó do grafo. `midia` não é nó: sai do `forge roteiro` depois do
+    grafo, chamado direto com o Roteiro, então ninguém lê a lista. Justamente
+    por isso ela já mentiu uma vez (declarava `tema`, que `planejar_midia`
+    deixou de ler quando `beats.md` largou tema e tese).
+    """
+    import forge.agents.midia as midia_mod
+
+    assert not hasattr(midia_mod, "LE")

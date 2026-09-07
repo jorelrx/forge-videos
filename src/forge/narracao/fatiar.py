@@ -51,6 +51,14 @@ _MARCA = "\x00"
 # de espaço e de algo que começa frase nova.
 _FIM_FRASE_RE = re.compile(r"(?<=[.!?…])(?<!\.\.)\s+(?=[^\s])")
 
+# ~2,5 palavras por segundo é a cadência medida do higgs nesta voz. Mora aqui,
+# e não em quem pede beats, porque é propriedade da NARRAÇÃO: é o que converte
+# um alvo em segundos para um alvo em palavras, que é a única unidade que o
+# fatiador entende. Serve para dimensionar blocos e estimar quantas imagens uma
+# seção comporta, não para cronometrar nada: a duração real sai das métricas do
+# TTS, no manifesto.
+PALAVRAS_POR_SEGUNDO = 2.5
+
 
 def extrair_rubrica(conteudo: str) -> str:
     """A rubrica de cena da seção, sem os parênteses. Vazio se não houver.

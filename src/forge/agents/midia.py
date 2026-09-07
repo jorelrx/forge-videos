@@ -17,13 +17,22 @@ from langchain_core.messages import HumanMessage
 from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, BlocoNarracao, PlanoMidia
 from forge.domain.models import Roteiro
 from forge.infrastructure.logging import get_logger
-from forge.narracao.fatiar import extrair_rubrica, fatiar, texto_narravel
+from forge.narracao.fatiar import (
+    PALAVRAS_POR_SEGUNDO,
+    extrair_rubrica,
+    fatiar,
+    texto_narravel,
+)
 from forge.prompts.loader import load_prompt
 from forge.services.persistencia import carregar_modelo, gravar_modelo
 
 logger = get_logger(__name__)
 
-LE = ["tema", "roteiro"]
+# Sem `LE` de propósito. `LE` é o contrato que `com_wrapper` usa para estreitar
+# o state antes de chamar um nó do grafo; `midia` não é nó — sai do `forge
+# roteiro` depois do grafo, chamado direto com o Roteiro. Uma lista aqui não é
+# lida por ninguém e por isso já apodreceu uma vez (declarava `tema`, que
+# `planejar_midia` deixou de ler quando `beats.md` largou tema e tese).
 
 
 class PlanoJaExiste(FileExistsError):
@@ -40,12 +49,30 @@ class CoberturaInsuficiente(RuntimeError):
     """
 
 
-def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
-    blocos: list[BlocoNarracao] = []
-    beats: list[Beat] = []
+# Piso da fração do texto BRUTO de uma seção que tem de sobreviver a
+# `texto_narravel`. Calibrado nas nove seções do roteiro real: a queda fica
+# entre 10,1% e 17,7% e é inteiramente a rubrica de cena, então 0,6 — tolerar
+# perder 40% — guarda mais de 2x de margem sobre o pior caso medido. Pega o
+# incidente das 85 palavras de 1079 (queda de 92%) e uma rubrica multi-linha ou
+# gulosa que apague narração no meio da seção.
+FRACAO_NARRAVEL_MINIMA = 0.6
 
+
+def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
+    # O alvo do operador está em segundos; o fatiador só entende palavras. Sem
+    # esta conversão `fatiar` ficava no default de 35 palavras qualquer que
+    # fosse `alvo_segundos`, e o knob só era coerente por coincidência no
+    # default (2,5 * 15 = 37,5 ≈ 35): baixá-lo pedia mais beats ao modelo do
+    # que havia blocos para ancorá-los, e o dedup jogava fora o excedente
+    # culpando o modelo por uma escolha do operador.
+    alvo_palavras = round(PALAVRAS_POR_SEGUNDO * alvo_segundos)
+
+    blocos: list[BlocoNarracao] = []
+    fatiado: list[tuple[str, str, list[BlocoNarracao]]] = []
+
+    # Primeira passada: só corte, sem modelo nenhum.
     for secao in roteiro.secoes:
-        textos = fatiar(secao.conteudo)
+        textos = fatiar(secao.conteudo, alvo_palavras=alvo_palavras)
         if not textos:
             # Seção só com rubrica não tem narração; não gasta chamada.
             logger.info("Seção sem texto narrável", secao=secao.nome)
@@ -56,33 +83,83 @@ def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> Plano
             for i, t in enumerate(textos)
         ]
         blocos.extend(da_secao)
+        fatiado.append((secao.nome, extrair_rubrica(secao.conteudo), da_secao))
 
+    # As travas rodam ANTES da primeira chamada ao modelo: `blocos` é função
+    # pura de `fatiar` e o modelo não contribui nada para elas. Conferir depois
+    # do laço de beats jogava fora nove chamadas de output estruturado — no 9B
+    # local, dezenas de minutos com o slot da GPU preso — para então falhar por
+    # um motivo que já era conhecido antes da primeira.
+    _conferir_narracao_absoluta(roteiro, blocos)
+    _conferir_cobertura_relativa(roteiro, blocos)
+
+    # Segunda passada: aqui, e só aqui, o modelo entra.
+    beats: list[Beat] = []
+    for nome, rubrica, da_secao in fatiado:
         propostos = propor_beats(
-            model,
-            secao.nome,
-            extrair_rubrica(secao.conteudo),
-            da_secao,
-            alvo_segundos=alvo_segundos,
+            model, nome, rubrica, da_secao, alvo_segundos=alvo_segundos
         )
-        for beat in propostos:
+        for p in propostos:
             beats.append(
-                Beat(id=f"i{len(beats) + 1:03d}", bloco_id=beat.bloco_id,
-                     prompt=beat.prompt)
+                Beat(id=f"i{len(beats) + 1:03d}", bloco_id=p.bloco_id, prompt=p.prompt)
             )
 
-    _conferir_cobertura(roteiro, blocos)
     logger.info("Plano de mídia pronto", blocos=len(blocos), beats=len(beats),
                 palavras=sum(len(b.texto.split()) for b in blocos))
     return PlanoMidia(blocos=blocos, beats=beats)
 
 
-def _conferir_cobertura(roteiro: Roteiro, blocos: list[BlocoNarracao]) -> None:
+def _conferir_cobertura_relativa(roteiro: Roteiro, blocos: list[BlocoNarracao]) -> None:
+    """Prova que o FATIADOR não perdeu nada do que `texto_narravel` produziu.
+
+    Só isso: os dois lados passam por `texto_narravel`, então um defeito lá
+    produz a mesma resposta errada nos dois e esta conferência passa feliz.
+    Quem cobre esse ponto cego é `_conferir_narracao_absoluta`.
+    """
     esperado = " ".join(texto_narravel(s.conteudo) for s in roteiro.secoes).split()
     obtido = " ".join(b.texto for b in blocos).split()
     if obtido != esperado:
         raise CoberturaInsuficiente(
             f"blocos cobrem {len(obtido)} palavras de {len(esperado)} do roteiro"
         )
+
+
+def _conferir_narracao_absoluta(roteiro: Roteiro, blocos: list[BlocoNarracao]) -> None:
+    """Prova que a NARRAÇÃO ainda é o roteiro, olhando o texto bruto da seção.
+
+    É o único lado da conferência que não passa por `texto_narravel`, e por isso
+    o único que enxerga narração apagada pelo próprio `texto_narravel` — hoje
+    `RUBRICA_RE`, que remove toda linha inteiramente entre parênteses, não só a
+    rubrica de abertura. Uma frase forte entre parênteses no meio da seção some
+    da voz sem sinal nenhum, e a conferência relativa concorda com o sumiço.
+    """
+    if not blocos:
+        # Plano vazio é o desfecho exato do incidente original, só que com o
+        # gatilho movido para o escritor: manifesto com 0 itens, runner dizendo
+        # "nada pendente", vídeo mudo. Nunca é resultado legítimo.
+        raise CoberturaInsuficiente(
+            "o plano não tem nenhum bloco de narração: o roteiro inteiro sumiu "
+            "antes do fatiamento"
+        )
+
+    for secao in roteiro.secoes:
+        bruto = len(secao.conteudo.split())
+        if not bruto:
+            continue
+        nar = len(texto_narravel(secao.conteudo).split())
+        if nar == 0:
+            # Seção 100% rubrica é legítima (uma cena muda, sem voz) e já foi
+            # anunciada no log da primeira passada. Isenta de propósito: a
+            # razão nar/bruto aqui é sempre 0 e reprovaria o roteiro inteiro.
+            # O caso perigoso — TODAS as seções assim — cai no `not blocos`
+            # acima, que é onde ele de fato importa.
+            continue
+        if nar / bruto < FRACAO_NARRAVEL_MINIMA:
+            raise CoberturaInsuficiente(
+                f"seção {secao.nome!r}: só {nar} das {bruto} palavras do texto "
+                f"bruto sobraram como narração "
+                f"({nar / bruto:.0%} < {FRACAO_NARRAVEL_MINIMA:.0%})"
+            )
 
 
 def caminho_plano(run_dir: Path) -> Path:
@@ -111,12 +188,6 @@ def carregar_plano(run_dir: Path) -> PlanoMidia:
     return carregar_modelo(caminho_plano(run_dir), PlanoMidia)
 
 
-# ~2,5 palavras por segundo é a cadência medida do higgs nesta voz. Serve para
-# estimar quantas imagens uma seção comporta, não para cronometrar nada: a
-# duração real sai das métricas do TTS, no manifesto.
-PALAVRAS_POR_SEGUNDO = 2.5
-
-
 def propor_beats(
     model,
     secao: str,
@@ -124,7 +195,14 @@ def propor_beats(
     blocos: list[BlocoNarracao],
     *,
     alvo_segundos: int,
-) -> list[Beat]:
+) -> list[BeatProposto]:
+    """Os beats que o modelo propõe para uma seção, filtrados — sem id.
+
+    Devolve `BeatProposto`, não `Beat`: id é nosso, atribuído por
+    `planejar_midia`, que é quem sabe a contagem corrida do roteiro inteiro. O
+    tipo é o contrato; antes era um `Beat` com `id=""` e duas asserções de
+    teste segurando a convenção.
+    """
     if not blocos:
         return []
 
@@ -144,7 +222,7 @@ def propor_beats(
 
     validos = {b.id for b in blocos}
     vistos: set[str] = set()
-    beats: list[Beat] = []
+    beats: list[BeatProposto] = []
     for p in proposta.beats:
         if p.bloco_id not in validos:
             logger.warning("Beat fora da seção descartado", secao=secao,
@@ -162,14 +240,14 @@ def propor_beats(
                            bloco_id=p.bloco_id)
             continue
         vistos.add(p.bloco_id)
-        beats.append(Beat(id="", bloco_id=p.bloco_id, prompt=p.prompt.strip()))
+        beats.append(BeatProposto(bloco_id=p.bloco_id, prompt=p.prompt.strip()))
 
     if not beats:
         # Seção sem imagem deixaria a tela congelada por minutos. A rubrica do
         # autor é a melhor descrição visual disponível sem gastar outra chamada.
         semente = rubrica or f"{secao} — cena ilustrativa"
         logger.warning("Seção sem beat; usando a rubrica", secao=secao)
-        beats.append(Beat(id="", bloco_id=blocos[0].id, prompt=semente))
+        beats.append(BeatProposto(bloco_id=blocos[0].id, prompt=semente))
 
     logger.info("Beats da seção", secao=secao, propostos=len(proposta.beats),
                 mantidos=len(beats))

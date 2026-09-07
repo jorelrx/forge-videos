@@ -28,6 +28,40 @@ def test_beats_apontam_para_blocos_da_secao(scripted):
     assert all(isinstance(b, BeatProposto) for b in beats)
 
 
+def test_bloco_id_com_colchetes_do_prompt_e_normalizado(scripted):
+    """O modelo ecoa a formatação `[b001] texto` que `beats.md` usa para listar
+    os blocos — e devolve o id com colchetes. Sem normalizar, `"[b001]"` nunca
+    bate com o `"b001"` nu que está em `validos`, e o beat é descartado como se
+    fosse invenção (foi assim que uma seção inteira perdeu todos os beats numa
+    corrida real contra o modelo local).
+    """
+    model = scripted(structured=[BeatsDaSecao(beats=[
+        BeatProposto(bloco_id="[b001]", prompt="a hand on a steering wheel"),
+        BeatProposto(bloco_id=" b002 ", prompt="a road stretching to the horizon"),
+    ])])
+
+    beats = propor_beats(model, "Hook", "", _blocos(), alvo_segundos=15)
+
+    assert [b.bloco_id for b in beats] == ["b001", "b002"]
+
+
+def test_bloco_id_com_colchetes_mas_ainda_invalido_e_descartado(scripted):
+    """Normalizar tira a formatação, não inventa validade: um id de fora da
+    seção continua fora mesmo depois de perder os colchetes.
+    """
+    model = scripted(structured=[BeatsDaSecao(beats=[
+        BeatProposto(bloco_id="[b999]", prompt="inventado"),
+    ])])
+
+    beats = propor_beats(model, "Hook", "Cena: um carro na estrada", _blocos(),
+                         alvo_segundos=15)
+
+    # Sem beat válido, cai no fallback da rubrica — não em b999.
+    assert len(beats) == 1
+    assert beats[0].bloco_id == "b001"
+    assert "carro" in beats[0].prompt
+
+
 def test_beat_para_bloco_de_fora_da_secao_e_descartado(scripted):
     """O modelo só recebeu os blocos desta seção; citar outro é invenção."""
     model = scripted(structured=[BeatsDaSecao(beats=[
@@ -192,7 +226,16 @@ def test_secao_so_com_rubrica_nao_gera_bloco_nem_chamada(scripted):
 
     roteiro = Roteiro(tema="t", tese="t", secoes=[
         Secao(nome="Hook", conteudo="(Cena: nada é dito.)"),
-        Secao(nome="Problema", conteudo="Uma frase."),
+        # Longa de propósito: a trava do ROTEIRO INTEIRO (FIX 2 de FRACAO_
+        # NARRAVEL_MINIMA) soma até as palavras da rubrica muda do Hook contra
+        # o total; "Uma frase." sozinha (2 palavras) empurrava a fração do
+        # roteiro para 33%, abaixo do piso, embora o ponto deste teste seja
+        # só a seção sem texto não gastar chamada nenhuma.
+        Secao(nome="Problema", conteudo=(
+            "Uma frase muito mais longa para garantir que a proporção do "
+            "roteiro inteiro continue acima do piso mesmo somando a rubrica "
+            "muda."
+        )),
     ])
     # Uma única resposta na fila: se o agente chamar o modelo para a seção sem
     # texto, o modelo falso estoura.
@@ -289,6 +332,32 @@ def test_proporcao_do_roteiro_real_passa(scripted):
     plano = planejar_midia(model, roteiro)
 
     assert len(plano.blocos) > 0
+
+
+def test_maioria_de_secoes_so_de_rubrica_estoura_no_piso_do_roteiro_inteiro(scripted):
+    """Concern 2 do relatório da onda final: o piso por seção isenta seção
+    100% rubrica, e uma seção normal isolada passa no próprio piso — então um
+    roteiro de 8 seções mudas + 1 seção real passava inteiro carregando só uma
+    fração pequena da narração pretendida. É a forma exata do incidente
+    original (plano coerente, cobertura ínfima), só que dissolvida entre
+    seções em vez de concentrada numa só. Nenhuma seção aqui viola seu próprio
+    piso; só a soma do roteiro viola o dela.
+    """
+    from forge.agents.midia import CoberturaInsuficiente, planejar_midia
+    from forge.domain.models import Roteiro, Secao
+
+    rubrica_longa = "(" + " ".join(f"detalhe{n}" for n in range(60)) + ")"
+    secoes = [Secao(nome=f"Rubrica{i}", conteudo=rubrica_longa) for i in range(8)]
+    secoes.append(_secao_no_formato_real("Real"))
+    roteiro = Roteiro(tema="t", tese="t", secoes=secoes)
+
+    # Fila vazia: a trava roda antes do modelo ser chamado (FIX 2); se isto
+    # falhar por IndexError em vez de CoberturaInsuficiente, a trava não
+    # estourou a tempo.
+    model = scripted(structured=[])
+
+    with pytest.raises(CoberturaInsuficiente):
+        planejar_midia(model, roteiro)
 
 
 def test_cobertura_falha_antes_de_qualquer_chamada_ao_modelo(scripted, monkeypatch):

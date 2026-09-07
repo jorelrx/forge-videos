@@ -3,13 +3,15 @@ Você escolhe as imagens de um trecho de vídeo narrado.
 Seção: {secao}
 Direção de cena escrita pelo autor: {rubrica}
 
-A narração já está cortada em blocos. Cada bloco tem um id:
+A narração já está cortada em blocos. Cada linha abaixo é `id: texto do bloco`:
 
 {blocos}
 
 Proponha cerca de {quantidade} imagens para esta seção — uma a cada
 {alvo_segundos} segundos de narração, aproximadamente. Cada imagem indica o id
-do bloco em que ela entra na tela e traz o prompt de geração.
+do bloco em que ela entra na tela e traz o prompt de geração. Responda com o
+id puro, como aparece antes dos dois-pontos acima — sem colchetes, sem aspas,
+sem mais nada em volta.
 
 Regras do prompt de imagem:
 

@@ -142,11 +142,15 @@ def _conferir_narracao_absoluta(roteiro: Roteiro, blocos: list[BlocoNarracao]) -
             "antes do fatiamento"
         )
 
+    total_bruto = 0
+    total_nar = 0
     for secao in roteiro.secoes:
         bruto = len(secao.conteudo.split())
         if not bruto:
             continue
         nar = len(texto_narravel(secao.conteudo).split())
+        total_bruto += bruto
+        total_nar += nar
         if nar == 0:
             # Seção 100% rubrica é legítima (uma cena muda, sem voz) e já foi
             # anunciada no log da primeira passada. Isenta de propósito: a
@@ -160,6 +164,20 @@ def _conferir_narracao_absoluta(roteiro: Roteiro, blocos: list[BlocoNarracao]) -
                 f"bruto sobraram como narração "
                 f"({nar / bruto:.0%} < {FRACAO_NARRAVEL_MINIMA:.0%})"
             )
+
+    # A isenção acima é por seção; esta trava é do ROTEIRO INTEIRO, e não tem
+    # isenção nenhuma. Sem ela, um roteiro de várias seções mudas mais uma
+    # seção normal isolada passa: cada seção muda é isenta e a seção normal
+    # cobre o próprio piso sozinha — mas o roteiro inteiro pode estar
+    # carregando só uma fração pequena da narração pretendida. É o incidente
+    # original (plano coerente, cobertura ínfima) com o defeito dissolvido
+    # entre seções em vez de concentrado numa só.
+    if total_bruto and total_nar / total_bruto < FRACAO_NARRAVEL_MINIMA:
+        raise CoberturaInsuficiente(
+            f"o roteiro inteiro: só {total_nar} das {total_bruto} palavras "
+            f"brutas de TODAS as seções sobraram como narração "
+            f"({total_nar / total_bruto:.0%} < {FRACAO_NARRAVEL_MINIMA:.0%})"
+        )
 
 
 def caminho_plano(run_dir: Path) -> Path:
@@ -188,6 +206,23 @@ def carregar_plano(run_dir: Path) -> PlanoMidia:
     return carregar_modelo(caminho_plano(run_dir), PlanoMidia)
 
 
+def _normalizar_bloco_id(bruto: str) -> str:
+    """Tira a formatação que o modelo aprende ecoando a listagem do prompt.
+
+    `beats.md` listava os blocos como `[b001] texto`, e o modelo local
+    respondia com o id ainda entre colchetes — `"[b005]"` nunca bate com o
+    `"b005"` nu em `validos`, e o beat inteiro é descartado como invenção.
+    Estreito de propósito: só um `[` inicial e um `]` final, mais espaço em
+    volta — não pontuação arbitrária. `beats.md` foi corrigido para não
+    ensinar mais o formato errado; isto é a rede de segurança para respostas
+    já viciadas ou de outros modelos.
+    """
+    normalizado = bruto.strip()
+    if normalizado.startswith("[") and normalizado.endswith("]"):
+        normalizado = normalizado[1:-1].strip()
+    return normalizado
+
+
 def propor_beats(
     model,
     secao: str,
@@ -212,7 +247,7 @@ def propor_beats(
     prompt = load_prompt("beats").format(
         secao=secao,
         rubrica=rubrica or "(nenhuma)",
-        blocos="\n".join(f"[{b.id}] {b.texto}" for b in blocos),
+        blocos="\n".join(f"{b.id}: {b.texto}" for b in blocos),
         quantidade=quantidade,
         alvo_segundos=alvo_segundos,
     )
@@ -224,23 +259,27 @@ def propor_beats(
     vistos: set[str] = set()
     beats: list[BeatProposto] = []
     for p in proposta.beats:
-        if p.bloco_id not in validos:
+        bloco_id = _normalizar_bloco_id(p.bloco_id)
+        if bloco_id != p.bloco_id:
+            logger.debug("Id de bloco normalizado", secao=secao,
+                         bruto=p.bloco_id, normalizado=bloco_id)
+        if bloco_id not in validos:
             logger.warning("Beat fora da seção descartado", secao=secao,
-                           bloco_id=p.bloco_id)
+                           bloco_id=bloco_id)
             continue
         if not p.prompt.strip():
             logger.warning("Beat sem prompt descartado", secao=secao,
-                           bloco_id=p.bloco_id)
+                           bloco_id=bloco_id)
             continue
-        if p.bloco_id in vistos:
+        if bloco_id in vistos:
             # Um Beat só ancora em um bloco: dois no mesmo bloco competiriam
             # pelo mesmo instante enquanto outro bloco fica sem imagem nenhuma.
             # Mantém o primeiro, na ordem em que o modelo propôs.
             logger.warning("Beat duplicado no mesmo bloco descartado", secao=secao,
-                           bloco_id=p.bloco_id)
+                           bloco_id=bloco_id)
             continue
-        vistos.add(p.bloco_id)
-        beats.append(BeatProposto(bloco_id=p.bloco_id, prompt=p.prompt.strip()))
+        vistos.add(bloco_id)
+        beats.append(BeatProposto(bloco_id=bloco_id, prompt=p.prompt.strip()))
 
     if not beats:
         # Seção sem imagem deixaria a tela congelada por minutos. A rubrica do

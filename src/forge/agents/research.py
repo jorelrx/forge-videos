@@ -9,13 +9,11 @@ referências de memória.
 
 from __future__ import annotations
 
-import re
-
 from langchain_core.messages import HumanMessage
 
 from forge.domain.models import Fonte, VeredictoRelevancia
 from forge.infrastructure.logging import get_logger
-from forge.llms.parsing import _texto
+from forge.llms.parsing import MARCADOR_LISTA, _texto
 from forge.prompts.loader import load_prompt
 from forge.services.acervo import Acervo, Candidato, Passagem
 from forge.skills.loader import load_skills
@@ -26,10 +24,6 @@ SKILLS = ["fact_check"]
 LE = ["tema", "pedido", "research_notes"]
 
 MAX_QUERIES = 5
-
-# Marcador de lista que o modelo insiste em emitir mesmo quando o prompt pede
-# uma linha limpa.
-_MARCADOR = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 # Motivo registrado quando uma query não achou passagem nenhuma — distinto do
 # motivo do juiz, que só existe quando há passagens para rejeitar.
@@ -229,7 +223,7 @@ def _parse_queries(texto: str) -> list[str]:
     """Uma query por linha, sem marcador e sem aspas, deduplicadas."""
     queries: list[str] = []
     for linha in texto.splitlines():
-        q = _MARCADOR.sub("", linha).strip().strip('"')
+        q = MARCADOR_LISTA.sub("", linha).strip().strip('"')
         if q and q not in queries:
             queries.append(q)
     return queries[:MAX_QUERIES]

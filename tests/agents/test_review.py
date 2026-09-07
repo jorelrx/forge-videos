@@ -104,3 +104,44 @@ def test_revisar_entrega_verificar_ja_filtrado(scripted):
 
     assert resultado.verificar == []
     assert resultado.aprovado is True
+
+
+def test_resposta_de_checklist_decorada_em_markdown_nao_sobrevive():
+    """`**Sim** (carro volta)` é payload real do run de 2026-09-06.
+
+    `_PONTUACAO_BORDA` não tinha `*`, então `**sim**` nunca casava com
+    `_RESPOSTAS` e o item passava por alegação — ~50 min de GPU e uma linha de
+    lixo no arquivo de lacunas do usuário por falso positivo.
+    """
+    assert alegacoes_reais(["**Sim** (carro volta)"]) == []
+    assert alegacoes_reais(["__Sim__ (carro volta)"]) == []
+
+
+def test_resposta_de_checklist_entre_aspas_curvas_nao_sobrevive():
+    """Aspas curvas bloqueavam o strip: o modelo local as emite no lugar das
+    retas, e só as retas estavam na lista."""
+    assert alegacoes_reais(["“Sim, carro volta no fim.”"]) == []
+    assert alegacoes_reais(["«Sim, carro volta no fim.»"]) == []
+
+
+def test_resposta_de_checklist_com_marcador_de_lista_nao_sobrevive():
+    """Em `1. Sim, o carro volta` a palavra de abertura era o marcador, não a
+    resposta, e o item escapava inteiro da regra."""
+    assert alegacoes_reais(["1. Sim, o carro volta"]) == []
+    assert alegacoes_reais(["- Sim, o carro volta"]) == []
+    assert alegacoes_reais(["1) Sim, o carro volta"]) == []
+
+
+def test_teto_de_seis_palavras_segue_valendo_com_marcador():
+    """O teto NÃO muda: `Não encontrei problemas factuais no roteiro.` tem
+    exatamente seis palavras e sobrevive, com ou sem marcador. Subir o teto
+    passaria a comer alegação real — a troca já está registrada no ledger.
+    """
+    seis = "Não encontrei problemas factuais no roteiro."
+
+    assert alegacoes_reais([seis]) == [seis]
+    assert alegacoes_reais(["- " + seis]) == ["- " + seis]
+
+
+def test_item_que_e_so_marcador_nao_vira_alegacao():
+    assert alegacoes_reais(["-", "*", "1."]) == []

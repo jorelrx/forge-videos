@@ -1,6 +1,7 @@
 from langchain_core.messages import HumanMessage
 
 from forge.infrastructure.logging import get_logger
+from forge.llms.parsing import MARCADOR_LISTA
 from forge.prompts.loader import load_prompt
 from forge.domain.models import ReviewResult, Roteiro
 from forge.skills.loader import load_skills
@@ -22,7 +23,14 @@ _RESPOSTAS = {"sim", "nao", "não", "ok", "n/a", "nenhum", "nenhuma", "-"}
 # checklist ("Sim,", "OK.", "Sim?"). Removida dos dois lados antes de
 # comparar com _RESPOSTAS — uma vírgula sozinha bastaria para reintroduzir o
 # problema que esta função existe para resolver.
-_PONTUACAO_BORDA = ".,;:!?\"'"
+#
+# `*` e `_` porque o modelo enfatiza a resposta do checklist em markdown
+# (`**Sim** (carro volta)` saiu do run real); as aspas curvas porque ele
+# também as usa no lugar das retas (`“Sim, carro volta no fim.”`). Sem elas a
+# decoração blindava o item, ele sobrevivia como alegação, e cada falso
+# positivo custa ~50 min de GPU e uma linha de lixo no arquivo de lacunas do
+# usuário.
+_PONTUACAO_BORDA = ".,;:!?\"'*_“”‘’«»"
 
 
 def alegacoes_reais(itens: list[str]) -> list[str]:
@@ -60,7 +68,18 @@ def alegacoes_reais(itens: list[str]) -> list[str]:
         item = bruto.strip()
         if not item:
             continue
-        palavras = item.split()
+        # O marcador de lista tem de sair ANTES de olhar a palavra de abertura:
+        # em "1. Sim, o carro volta" a palavra 1 é o marcador, não a resposta,
+        # e o item escapava inteiro da regra. Mesmo regex que o parser de
+        # queries usa (`llms/parsing`), não uma cópia — é o mesmo modelo
+        # emitindo a mesma decoração. A contagem de palavras também é feita
+        # sobre o item nu, para que o marcador não empurre uma negativa curta
+        # por cima do teto de seis.
+        palavras = MARCADOR_LISTA.sub("", item).split()
+        if not palavras:
+            # Só o marcador, nada mais ("-", "*", "1.").
+            logger.debug("Item de verificar descartado: só marcador", item=item)
+            continue
         abertura = palavras[0].casefold().strip(_PONTUACAO_BORDA)
         if abertura in _RESPOSTAS and len(palavras) < 6:
             logger.debug("Item de verificar descartado: resposta de checklist", item=item)

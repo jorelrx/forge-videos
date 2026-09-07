@@ -97,3 +97,67 @@ def test_registro_desligado_quando_o_caminho_e_none(tmp_path):
     s = Settings(_env_file=None, gaps_file=None, respostas_ruins_file=None)
 
     registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])  # não levanta
+
+
+def test_gaps_file_ilegivel_pula_o_append_sem_derrubar(tmp_path):
+    """Bytes que não decodificam como utf-8 são um caso real: o arquivo é
+    escrito por outro projeto, fora do nosso controle.
+
+    Decisão (não é `errors="replace"`): sem conseguir ler o arquivo não dá
+    para checar duplicata, então a chamada PULA o append em vez de escrever
+    às cegas — duplicar a linha deles quebraria o contrato "no duplicates".
+    """
+    s = _settings(tmp_path)
+    s.gaps_file.write_bytes(b"\xff\xfe\x00bad\x80\x81")
+    antes = s.gaps_file.read_bytes()
+
+    registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])  # não levanta
+
+    assert s.gaps_file.read_bytes() == antes  # nada foi anexado
+
+
+def test_dedup_normaliza_espacamento_interno_de_linha_existente(tmp_path):
+    """A linha existente pode ter espaçamento interno irregular (escrita por
+    outro processo); precisa ser normalizada igual à pergunta de entrada, não
+    só stripada nas pontas, senão vira quase-duplicata."""
+    s = _settings(tmp_path)
+    s.gaps_file.write_text("vontade  em Nietzsche\n", encoding="utf-8")  # espaço duplo
+
+    registrar_lacuna(s, query="vontade em Nietzsche", tema="t", motivo="", passagens=[])
+
+    linhas = s.gaps_file.read_text(encoding="utf-8").splitlines()
+    assert linhas == ["vontade  em Nietzsche"]  # nenhuma linha nova
+
+
+def test_query_vazia_ou_so_espacos_nao_escreve_em_nenhum_arquivo(tmp_path):
+    s = _settings(tmp_path)
+
+    registrar_lacuna(s, query="   ", tema="t", motivo="", passagens=[])
+
+    assert not s.gaps_file.exists()
+    assert not s.respostas_ruins_file.exists()
+
+
+def test_gaps_file_none_ainda_grava_evidencia(tmp_path):
+    s = Settings(
+        _env_file=None,
+        gaps_file=None,
+        respostas_ruins_file=tmp_path / "respostas_ruins.jsonl",
+    )
+
+    registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])
+
+    registro = json.loads(s.respostas_ruins_file.read_text(encoding="utf-8").strip())
+    assert registro["query"] == "q"
+
+
+def test_respostas_ruins_file_none_ainda_grava_pergunta(tmp_path):
+    s = Settings(
+        _env_file=None,
+        gaps_file=tmp_path / "unanswered_questions.txt",
+        respostas_ruins_file=None,
+    )
+
+    registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])
+
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]

@@ -50,8 +50,12 @@ def _anexar_pergunta(caminho: Path | None, pergunta: str) -> None:
         caminho.parent.mkdir(parents=True, exist_ok=True)
         existentes = set()
         if caminho.exists():
+            # Mesma normalização da pergunta de entrada (" ".join(...split())),
+            # não só strip() das pontas: o arquivo é escrito por outro
+            # projeto e espaçamento interno irregular lá dentro não pode
+            # produzir um "quase-duplicado" aqui.
             existentes = {
-                linha.strip()
+                " ".join(linha.split())
                 for linha in caminho.read_text(encoding="utf-8").splitlines()
                 if linha.strip()
             }
@@ -60,7 +64,15 @@ def _anexar_pergunta(caminho: Path | None, pergunta: str) -> None:
         with caminho.open("a", encoding="utf-8") as arquivo:
             arquivo.write(pergunta + "\n")
         logger.info("Lacuna registrada no acervo", pergunta=pergunta)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
+        # UnicodeDecodeError é ValueError, não OSError — um gaps_file com
+        # bytes que não decodificam como utf-8 (arquivo de outro projeto,
+        # fora do nosso controle) precisa cair aqui também. Decisão: um
+        # arquivo ilegível significa que não dá para checar duplicata, então
+        # PULAMOS o append desta chamada em vez de escrever às cegas — o
+        # contrato do acervo é "no duplicates", e anexar sem poder comparar
+        # quebraria isso silenciosamente. Perder este registro é aceitável;
+        # duplicar a linha deles não é.
         logger.warning("Não foi possível registrar a lacuna",
                        path=str(caminho), error=str(e))
 

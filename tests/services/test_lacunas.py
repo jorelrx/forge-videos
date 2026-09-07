@@ -161,3 +161,106 @@ def test_respostas_ruins_file_none_ainda_grava_pergunta(tmp_path):
     registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])
 
     assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]
+
+
+def test_so_evidencia_pula_o_arquivo_do_acervo(tmp_path):
+    """Busca vazia não vai para o arquivo do acervo: ele já registrou sozinho.
+
+    Ver `routers/search.py` do projeto research, ramo
+    `if not passages: container.log_unanswered(q)` — roda dentro da mesma
+    chamada HTTP que a pesquisa acabou de fazer. A nossa cópia era duplicação
+    pura, suprimida pelo próprio dedupe da leitura.
+    """
+    s = _settings(tmp_path)
+
+    registrar_lacuna(s, query="pergunta sem resposta", tema="t",
+                     motivo="a busca não retornou nada", passagens=[],
+                     so_evidencia=True)
+
+    assert not s.gaps_file.exists()
+    registro = json.loads(s.respostas_ruins_file.read_text(encoding="utf-8").strip())
+    assert registro["query"] == "pergunta sem resposta"
+
+
+def test_rejeicao_do_juiz_escreve_nos_dois_arquivos(tmp_path):
+    """O caso que o acervo NÃO detecta: a busca teve sucesso para ele, e as
+    passagens que voltaram não respondem. É o único que escrevemos no arquivo
+    dele."""
+    s = _settings(tmp_path)
+
+    registrar_lacuna(s, query="vontade em Nietzsche", tema="t",
+                     motivo="fala de moral, não de vontade",
+                     passagens=[_passagem()])
+
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["vontade em Nietzsche"]
+    assert s.respostas_ruins_file.exists()
+
+
+def test_append_da_pergunta_acontece_sob_lock_de_arquivo(tmp_path, monkeypatch):
+    """O modo "a" do Windows é seek-then-write, não atômico entre processos:
+    medido nesta máquina, dois processos anexando 3000 linhas cada produziram
+    5744 linhas, 291 corrompidas. O servidor do acervo escreve no mesmo arquivo
+    durante a nossa própria pesquisa."""
+    from forge.services import lacunas
+
+    eventos = []
+
+    class LockEspiao:
+        def __init__(self, caminho, timeout=None):
+            eventos.append(("lock", str(caminho), timeout))
+
+        def __enter__(self):
+            eventos.append(("enter", None, None))
+            return self
+
+        def __exit__(self, *exc):
+            eventos.append(("exit", None, None))
+            return False
+
+    monkeypatch.setattr(lacunas, "FileLock", LockEspiao)
+    s = _settings(tmp_path)
+
+    registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])
+
+    assert [e[0] for e in eventos] == ["lock", "enter", "exit"]
+    assert eventos[0][1] == str(s.gaps_file) + ".lock"
+    assert eventos[0][2] == lacunas.LOCK_TIMEOUT
+    # O append aconteceu dentro do bloco, não fora dele.
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]
+
+
+def test_lock_que_nao_vem_a_tempo_nao_derruba_o_roteiro(tmp_path, monkeypatch):
+    """Timeout de lock é mais uma falha tolerada: aviso e segue."""
+    from filelock import Timeout
+
+    from forge.services import lacunas
+
+    def _lock_travado(caminho, timeout=None):
+        raise Timeout(caminho)
+
+    monkeypatch.setattr(lacunas, "FileLock", _lock_travado)
+    s = _settings(tmp_path)
+
+    registrar_lacuna(s, query="q", tema="t", motivo="", passagens=[])  # não levanta
+
+    assert not s.gaps_file.exists()
+    # A evidência, que não disputa arquivo com ninguém, ainda foi gravada.
+    assert s.respostas_ruins_file.exists()
+
+
+def test_surrogate_solto_na_evidencia_nao_derruba_o_roteiro(tmp_path):
+    """UnicodeEncodeError não é OSError.
+
+    Um surrogate solto no texto de uma passagem ou no `motivo` do juiz é
+    alcançável a partir de um modelo local; sem o ramo largo o `.write()`
+    estourava e matava o run duas horas adentro, quebrando a promessa do
+    docstring do módulo.
+    """
+    s = _settings(tmp_path)
+    ruim = _passagem()
+    ruim.text = "trecho com surrogate " + chr(0xD800) + " no meio"
+
+    registrar_lacuna(s, query="q", tema="t", motivo=chr(0xD800), passagens=[ruim])
+
+    # A pergunta, que não carrega o texto da passagem, sobreviveu.
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]

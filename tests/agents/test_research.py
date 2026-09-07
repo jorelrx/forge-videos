@@ -1,3 +1,5 @@
+import json
+
 from forge.agents.research import colher, formular_queries, pesquisar
 from forge.services.acervo import Passagem
 
@@ -175,9 +177,12 @@ def test_query_toda_reprovada_vira_lacuna_registrada(scripted, acervo_fake, tmp_
     assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["ruim"]
 
 
-def test_query_sem_nenhuma_passagem_vira_lacuna_registrada(scripted, acervo_fake, tmp_path):
-    """Uma query que não achou NADA é uma lacuna tão real quanto uma rejeitada
-    pelo juiz — e o guard antigo (`achadas and ...`) a descartava em silêncio."""
+def test_query_sem_nenhuma_passagem_registra_so_a_evidencia(scripted, acervo_fake, tmp_path):
+    """Uma query que não achou NADA é uma lacuna real, mas o acervo já a
+    registrou sozinho durante a busca que acabamos de fazer
+    (`routers/search.py`, `if not passages: container.log_unanswered(q)`).
+    Escrever de novo no arquivo dele seria duplicação pura; a evidência do
+    nosso lado continua sendo gravada."""
     from forge.agents.research import pesquisar
     from forge.domain.models import VeredictoRelevancia
     from forge.infrastructure.config import Settings
@@ -200,7 +205,12 @@ def test_query_sem_nenhuma_passagem_vira_lacuna_registrada(scripted, acervo_fake
 
     assert brief == "notas densas"
     assert [f.path for f in fontes] == ["p1"]
-    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["vazia"]
+    assert not s.gaps_file.exists()
+    registros = [
+        json.loads(linha)
+        for linha in s.respostas_ruins_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [r["query"] for r in registros] == ["vazia"]
 
 
 def test_tudo_reprovado_vira_brief_de_lacuna_sem_sintetizar(scripted, acervo_fake, tmp_path):
@@ -236,7 +246,10 @@ def test_nenhuma_query_acha_nada_registra_lacunas_sem_juiz(scripted, acervo_fake
     """Falha total (nenhuma query achou passagem nenhuma) nunca chega a chamar
     o juiz — `if passagens` barra antes. Mesmo assim cada query tem que virar
     lacuna, e isso NÃO depende de `juiz_relevancia`: constatar zero linhas não
-    exige LLM nenhum."""
+    exige LLM nenhum.
+
+    A lacuna vai só para a evidência: o acervo já anotou cada uma dessas
+    perguntas ele mesmo, na própria chamada de busca."""
     from forge.agents.research import pesquisar
     from forge.infrastructure.config import Settings
 
@@ -253,7 +266,12 @@ def test_nenhuma_query_acha_nada_registra_lacunas_sem_juiz(scripted, acervo_fake
 
     assert fontes == []
     assert "Lacuna no acervo" in brief
-    assert sorted(s.gaps_file.read_text(encoding="utf-8").splitlines()) == ["a", "b"]
+    assert not s.gaps_file.exists()
+    registros = [
+        json.loads(linha)
+        for linha in s.respostas_ruins_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert sorted(r["query"] for r in registros) == ["a", "b"]
 
 
 def test_sem_settings_o_juiz_nao_roda(scripted, acervo_fake):

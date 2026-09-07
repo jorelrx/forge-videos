@@ -98,9 +98,11 @@ def _julgar_e_registrar(model, tema, passagens, por_query, settings):
     caminhos_ok = {p.path for p in aprovadas}
     for query, achadas in por_query.items():
         if not achadas:
+            # `so_evidencia`: o acervo já anotou esta pergunta sozinho durante
+            # a busca que acabamos de fazer. Ver `registrar_lacuna`.
             registrar_lacuna(
                 settings, query=query, tema=tema,
-                motivo=_MOTIVO_BUSCA_VAZIA, passagens=[],
+                motivo=_MOTIVO_BUSCA_VAZIA, passagens=[], so_evidencia=True,
             )
         elif not any(p.path in caminhos_ok for p in achadas):
             registrar_lacuna(
@@ -115,12 +117,21 @@ def _registrar_lacunas_de_busca_vazia(por_query, tema, settings):
     Caminho irmão de `_julgar_e_registrar`, para quando o juiz nunca chega a
     rodar (nenhuma query achou passagem nenhuma): não há passagens para julgar,
     então não há chamada de LLM a fazer aqui.
+
+    Só evidência, nunca o `gaps_file`: o acervo registra a pergunta ele mesmo
+    quando a busca não casa com nada (`routers/search.py`, ramo
+    `if not passages: container.log_unanswered(q)`), e ele o faz dentro da
+    mesma chamada HTTP que acabamos de fazer. A nossa cópia era pura
+    duplicação — o dedupe da leitura a suprimia, então esse ramo não
+    contribuía nada para o arquivo deles. O que o acervo NÃO detecta, e por
+    isso continua indo para lá, é a rejeição do juiz.
     """
     from forge.services.lacunas import registrar_lacuna
 
     for query in por_query:
         registrar_lacuna(
-            settings, query=query, tema=tema, motivo=_MOTIVO_BUSCA_VAZIA, passagens=[]
+            settings, query=query, tema=tema, motivo=_MOTIVO_BUSCA_VAZIA,
+            passagens=[], so_evidencia=True,
         )
 
 
@@ -182,7 +193,10 @@ def _fmt_passagens_curtas(passagens: list[Passagem], *, chars: int = 200) -> str
     linhas = []
     for i, p in enumerate(passagens):
         autores = ", ".join(p.authors) or "autor não identificado"
-        trecho = p.text[:chars].replace("\n", " ")
+        # `\r` junto com `\n`: o acervo indexa livros de domínio público cujo
+        # texto-fonte vem com quebra CRLF, e um `\r` solto no meio do prompt
+        # embaralha a numeração `[i]` que o juiz precisa ler.
+        trecho = p.text[:chars].replace("\r", " ").replace("\n", " ")
         linhas.append(f"[{i}] {p.book_title} — {autores} — {p.breadcrumb}\n{trecho}")
     return "\n\n".join(linhas)
 

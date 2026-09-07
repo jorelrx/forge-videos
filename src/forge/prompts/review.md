@@ -20,8 +20,8 @@ Exemplos do que entra:
 - Bergson afirma em Time and Free Will que a duração não é mensurável.
 - Leibniz chamou de oblíquo o poder que temos sobre a própria vontade.
 
-Exemplos do que NUNCA entra: "Hook sem preâmbulo?", "Sim", "Zero aspas
-indevidas?", "Conclusão transforma Hook?".
+Nunca entra: pergunta sobre o seu próprio trabalho, nem resposta solta de
+conferência ("sim", "não", "ok" e afins) — com ou sem nota entre parênteses.
 
 Cada item que você põe aqui manda o roteiro de volta para uma nova rodada de
 pesquisa, que custa caro. Se não há nenhuma afirmação factual duvidosa, devolva

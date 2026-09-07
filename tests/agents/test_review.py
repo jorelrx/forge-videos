@@ -65,6 +65,36 @@ def test_negativa_longa_que_abre_com_resposta_sobrevive():
     assert alegacoes_reais(itens) == itens
 
 
+def test_pontuacao_colada_na_resposta_tambem_cai():
+    """Uma vírgula na palavra de abertura não pode driblar a regra 1 — é a
+    forma mais natural do modelo pontuar uma resposta de checklist.
+    """
+    itens = ["OK, confere isso.", "Sim, confere direitinho.", "Ok confere tudo certo."]
+
+    assert alegacoes_reais(itens) == []
+
+
+def test_na_contracao_nao_e_resposta_de_checklist():
+    """"na" é grafia de "n/a" na lista de respostas, mas colide com a
+    contração portuguesa comum — não pode derrubar uma alegação real.
+    """
+    itens = ["Na obra ele erra.", "Na carta ele nega."]
+
+    assert alegacoes_reais(itens) == itens
+
+
+def test_negativa_curta_cai_por_desenho_nao_por_acidente():
+    """Pino da troca deliberada: um veredito negativo curto que abre com
+    palavra de resposta é descartado de propósito. `verificar` é para
+    alegações do ROTEIRO, não para o veredito do revisor — isso é `notas`.
+    Este teste existe para que a próxima pessoa que mexer no teto de seis
+    palavras veja que está desfazendo uma escolha, não corrigindo um bug.
+    """
+    itens = ["Não há registro."]
+
+    assert alegacoes_reais(itens) == []
+
+
 def test_revisar_entrega_verificar_ja_filtrado(scripted):
     bruto = ReviewResult(aprovado=True, verificar=["Hook sem preâmbulo?", "Sim"])
     model = scripted(structured=[bruto])

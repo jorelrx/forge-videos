@@ -26,3 +26,17 @@ class Beat(BaseModel):
 class PlanoMidia(BaseModel):
     blocos: list[BlocoNarracao] = Field(default_factory=list)
     beats: list[Beat] = Field(default_factory=list)
+
+
+class BeatProposto(BaseModel):
+    """O que o modelo devolve por seção: em qual bloco a imagem entra e o quê.
+
+    `id` não aparece aqui de propósito — ids são nossos, atribuídos depois.
+    """
+
+    bloco_id: str
+    prompt: str
+
+
+class BeatsDaSecao(BaseModel):
+    beats: list[BeatProposto] = Field(default_factory=list)

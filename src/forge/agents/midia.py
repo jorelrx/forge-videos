@@ -10,7 +10,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
-from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, BlocoNarracao, PlanoMidia
 from forge.domain.models import Roteiro
 from forge.infrastructure.logging import get_logger
 from forge.narracao.tags import sanear_texto
@@ -106,3 +106,59 @@ def gravar_plano(run_dir: Path, plano: PlanoMidia, *, forcar: bool = False) -> P
 
 def carregar_plano(run_dir: Path) -> PlanoMidia:
     return carregar_modelo(caminho_plano(run_dir), PlanoMidia)
+
+
+# ~2,5 palavras por segundo é a cadência medida do higgs nesta voz. Serve para
+# estimar quantas imagens uma seção comporta, não para cronometrar nada: a
+# duração real sai das métricas do TTS, no manifesto.
+PALAVRAS_POR_SEGUNDO = 2.5
+
+
+def propor_beats(
+    model,
+    secao: str,
+    rubrica: str,
+    blocos: list[BlocoNarracao],
+    *,
+    alvo_segundos: int,
+) -> list[Beat]:
+    if not blocos:
+        return []
+
+    palavras = sum(len(b.texto.split()) for b in blocos)
+    quantidade = max(1, round(palavras / PALAVRAS_POR_SEGUNDO / alvo_segundos))
+
+    prompt = load_prompt("beats").format(
+        secao=secao,
+        rubrica=rubrica or "(nenhuma)",
+        blocos="\n".join(f"[{b.id}] {b.texto}" for b in blocos),
+        quantidade=quantidade,
+        alvo_segundos=alvo_segundos,
+    )
+    proposta = model.with_structured_output(BeatsDaSecao).invoke(
+        [HumanMessage(content=prompt)]
+    )
+
+    validos = {b.id for b in blocos}
+    beats: list[Beat] = []
+    for p in proposta.beats:
+        if p.bloco_id not in validos:
+            logger.warning("Beat fora da seção descartado", secao=secao,
+                           bloco_id=p.bloco_id)
+            continue
+        if not p.prompt.strip():
+            logger.warning("Beat sem prompt descartado", secao=secao,
+                           bloco_id=p.bloco_id)
+            continue
+        beats.append(Beat(id="", bloco_id=p.bloco_id, prompt=p.prompt.strip()))
+
+    if not beats:
+        # Seção sem imagem deixaria a tela congelada por minutos. A rubrica do
+        # autor é a melhor descrição visual disponível sem gastar outra chamada.
+        semente = rubrica or f"{secao} — cena ilustrativa"
+        logger.warning("Seção sem beat; usando a rubrica", secao=secao)
+        beats.append(Beat(id="", bloco_id=blocos[0].id, prompt=semente))
+
+    logger.info("Beats da seção", secao=secao, propostos=len(proposta.beats),
+                mantidos=len(beats))
+    return beats

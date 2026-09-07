@@ -124,6 +124,11 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
     um `RoteiroDraft` e um `ReviewResult` da fila estruturada. As filas abaixo
     repetem esse ciclo muito além do necessário: quem tem de encerrar o grafo é
     `max_passos`, não uma fila esgotada.
+
+    `verificar` precisa de uma alegação de verdade (frase afirmativa, 3+
+    palavras, sem "?") para sobreviver a `alegacoes_reais` — um placeholder
+    como "x" seria descartado pelo filtro e o modelo pararia de forçar o
+    handoff para research, o que descaracterizaria o teste.
     """
     n_ciclos = 40  # bem mais que o necessário para estourar max_passos=12
     textos = ["tema"]
@@ -133,7 +138,7 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
         estruturados += [
             Plano(tese="t", esboco="e"),
             _draft(),
-            ReviewResult(aprovado=False, verificar=["x"]),
+            ReviewResult(aprovado=False, verificar=["Confirmar a data citada no texto."]),
         ]
 
     model = scripted(invoke_texts=textos, structured=estruturados)

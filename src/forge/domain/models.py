@@ -41,7 +41,11 @@ class ReviewResult(BaseModel):
     notas: list[Nota] = Field(default_factory=list)
     verificar: list[str] = Field(
         default_factory=list,
-        description="Alegações que precisam de verificação por busca antes de decidir.",
+        description=(
+            "Afirmações de fato do roteiro que você não conseguiu confirmar. "
+            "Frases afirmativas e completas, nunca perguntas nem respostas de "
+            "conferência. Vazio é a resposta normal."
+        ),
     )
 
 

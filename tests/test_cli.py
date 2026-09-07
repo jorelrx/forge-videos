@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,113 @@ def test_falha_no_plano_de_midia_nao_derruba_o_roteiro(monkeypatch, tmp_path, ca
     runs = list((tmp_path / "runs").iterdir())
     assert len(runs) == 1
     assert not (runs[0] / "video" / "midia.json").exists()
+
+
+# structlog colore o console (ConsoleRenderer), então `retentar=False` chega ao
+# capsys entremeado de escapes ANSI. O teste olha o texto, não as cores.
+_ANSI_RE = re.compile(r"\[[0-9;]*m")
+
+
+def _log_limpo(texto: str) -> str:
+    return _ANSI_RE.sub("", texto)
+
+
+def _cli_com_roteiro_aprovado(monkeypatch, tmp_path):
+    """Monta um `forge roteiro` que chega ao plano de mídia com roteiro aprovado."""
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros",
+                        anthropic_api_key="sk-test")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+
+    roteiro = Roteiro(tema="tema", tese="tese",
+                      secoes=[Secao(nome="Hook", conteudo="c")])
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": roteiro}}
+            yield {"review": {"rounds": 1, "review": ReviewResult(aprovado=True)}}
+
+    monkeypatch.setattr(cli, "build_graph", lambda model, s, inicio="tema": FakeGraph())
+
+
+def test_cobertura_insuficiente_e_marcada_como_nao_retentavel(monkeypatch, tmp_path,
+                                                              capsys):
+    """O laço não vigiado precisa saber que este erro não muda ao ser repetido.
+
+    `fatiar` é puro e o roteiro está congelado em disco: a segunda tentativa
+    falha idêntica à primeira, para sempre. Sem essa marca, o retry-com-teto de
+    S9 queima o orçamento inteiro num erro que nunca vai passar.
+    """
+    from forge.agents import midia as midia_mod
+    from forge.agents.midia import CoberturaInsuficiente
+
+    _cli_com_roteiro_aprovado(monkeypatch, tmp_path)
+
+    def _sem_cobertura(*a, **k):
+        raise CoberturaInsuficiente("blocos cobrem 85 palavras de 1079")
+
+    monkeypatch.setattr(midia_mod, "planejar_midia", _sem_cobertura)
+
+    rc = cli.main(["roteiro", "--tema", "meu tema"])
+
+    assert rc == 0
+    out = _log_limpo(capsys.readouterr().out)
+    assert "retentar=False" in out
+    caminho = out.strip().splitlines()[-1].strip()
+    assert Path(caminho).exists() and caminho.endswith(".md")
+
+
+def test_plano_ja_existente_nao_e_erro(monkeypatch, tmp_path, capsys):
+    """Plano já em disco é o comportamento correto de `gravar_plano`, não falha.
+
+    Em ERROR, cada run retomada acrescentaria um "Plano de mídia falhou" ao log
+    do laço, escondendo as falhas de verdade entre ruído previsto.
+    """
+    from forge.agents import midia as midia_mod
+    from forge.agents.midia import PlanoJaExiste
+    from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+
+    _cli_com_roteiro_aprovado(monkeypatch, tmp_path)
+
+    plano = PlanoMidia(
+        blocos=[BlocoNarracao(id="b001", secao="Hook", texto="c")],
+        beats=[Beat(id="i001", bloco_id="b001", prompt="uma ampulheta")],
+    )
+    monkeypatch.setattr(midia_mod, "planejar_midia", lambda *a, **k: plano)
+
+    def _ja_existe(*a, **k):
+        raise PlanoJaExiste("plano de mídia já existe")
+
+    monkeypatch.setattr(midia_mod, "gravar_plano", _ja_existe)
+
+    rc = cli.main(["roteiro", "--tema", "meu tema"])
+
+    assert rc == 0
+    out = _log_limpo(capsys.readouterr().out)
+    assert "Plano de mídia falhou" not in out
+    assert "mantido" in out
+    caminho = out.strip().splitlines()[-1].strip()
+    assert Path(caminho).exists() and caminho.endswith(".md")
+
+
+def test_falha_transitoria_continua_retentavel(monkeypatch, tmp_path, capsys):
+    """Timeout / `Model unloaded by user`: vale retentar, ao contrário da cobertura."""
+    from forge.agents import midia as midia_mod
+
+    _cli_com_roteiro_aprovado(monkeypatch, tmp_path)
+
+    def _timeout(*a, **k):
+        raise TimeoutError("Model unloaded by user")
+
+    monkeypatch.setattr(midia_mod, "planejar_midia", _timeout)
+
+    rc = cli.main(["roteiro", "--tema", "meu tema"])
+
+    assert rc == 0
+    out = _log_limpo(capsys.readouterr().out)
+    assert "retentar=True" in out
+    caminho = out.strip().splitlines()[-1].strip()
+    assert Path(caminho).exists() and caminho.endswith(".md")
 
 
 def test_ingest_nao_e_mais_um_subcomando():

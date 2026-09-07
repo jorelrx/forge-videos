@@ -136,7 +136,12 @@ def _plano_de_midia(model, settings, run_dir: Path, final: dict,
     `max_passos` ou `max_review_rounds`, com `aprovado` False: planejar mídia aí
     gastaria horas de TTS e de SDXL num roteiro que o revisor reprovou.
     """
-    from forge.agents.midia import gravar_plano, planejar_midia
+    from forge.agents.midia import (
+        CoberturaInsuficiente,
+        PlanoJaExiste,
+        gravar_plano,
+        planejar_midia,
+    )
 
     if aprovado is not True:
         logger.info(
@@ -152,7 +157,27 @@ def _plano_de_midia(model, settings, run_dir: Path, final: dict,
         caminho_midia = gravar_plano(run_dir, plano)
         logger.info("Plano de mídia gravado", path=str(caminho_midia),
                     blocos=len(plano.blocos), beats=len(plano.beats))
+    # Os três braços abaixo existem porque o laço não vigiado precisa distinguir
+    # o que adianta retentar do que não adianta. Todos deixam o `forge roteiro`
+    # sair 0 com o roteiro entregue: o roteiro aprovado é o entregável desta
+    # etapa e falhar o plano de mídia não pode apagá-lo.
+    except CoberturaInsuficiente as e:
+        # DETERMINÍSTICO: `fatiar` é puro e o roteiro já está congelado em
+        # disco, então a segunda tentativa falha exatamente igual à primeira,
+        # para sempre. O retry-com-teto de S9 queimaria o orçamento inteiro
+        # aqui. O conserto é no roteiro ou no fatiador, por uma pessoa.
+        logger.error(
+            "Plano de mídia falhou: cobertura insuficiente",
+            error=str(e), deterministico=True, retentar=False,
+        )
+    except PlanoJaExiste as e:
+        # Não é erro: a run já tem plano e sobrescrevê-lo renumeraria os blocos,
+        # descartando áudio e imagem já gerados. Em ERROR isso poluiria o log do
+        # laço e esconderia as falhas de verdade.
+        logger.info("Plano de mídia já existe; o plano em disco foi mantido",
+                    detalhe=str(e))
     except Exception as e:
-        # Roteiro aprovado é o entregável desta etapa; falhar o plano de mídia
-        # não pode apagá-lo. `forge video` refaz o plano depois.
-        logger.error("Plano de mídia falhou", error=str(e), exc_info=True)
+        # Timeout, `Model unloaded by user`, provider fora do ar: TRANSITÓRIO,
+        # vale retentar. `forge video` refaz o plano depois.
+        logger.error("Plano de mídia falhou", error=str(e), exc_info=True,
+                     retentar=True)

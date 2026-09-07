@@ -57,6 +57,45 @@ def test_enfase_markdown_sai_mas_a_palavra_fica():
     assert texto_narravel("Isso é _sutil_ demais.") == "Isso é sutil demais."
 
 
+def test_parentese_multilinha_nao_apaga_narracao_entre_eles():
+    """Achado 1 (fix round 1): `.+?` com DOTALL cruzava linhas em busca do
+    primeiro `)` que fechasse alguma linha seguinte, apagando tudo no meio —
+    inclusive frases inteiras de narração. Uma rubrica é UMA linha só; um
+    parêntese que não fecha na mesma linha não é rubrica e não deve consumir
+    nada além de si mesmo."""
+    conteudo = (
+        "(Prologo que abre a secao sem ser rubrica de cena, apenas uma frase\n"
+        "entre parenteses que continua) Nao deveria sumir isso.\n\n"
+        "Segunda frase normal aqui (com aparte que termina a linha assim)\n\n"
+        "Terceira frase ate o fim."
+    )
+
+    narravel = texto_narravel(conteudo)
+
+    assert "Nao deveria sumir isso." in narravel
+    assert "Segunda frase normal aqui" in narravel
+    assert "com aparte que termina a linha assim" in narravel
+    assert "Terceira frase ate o fim." in narravel
+
+
+def test_parentese_que_fecha_a_linha_no_corpo_sobrevive():
+    """Uma linha de corpo que termina em `)` não é, por si, uma rubrica de
+    cena — só é rubrica se a linha INTEIRA estiver entre parênteses."""
+    conteudo = "Segunda frase normal aqui (com aparte que termina a linha assim)"
+
+    assert texto_narravel(conteudo) == conteudo
+
+
+def test_sublinhado_nao_funde_palavras_com_underscore_interno():
+    """Achado 2 (fix round 1): `(.+?)\\1` casava o primeiro `_` de
+    `livre_arbitrio` com o primeiro `_` de `determinismo_estrito` e apagava
+    ambos, colando as palavras. Contagem de palavras por espaço não pega isso
+    — é reescrita silenciosa, a mesma classe de bug que rubrica multilinha."""
+    assert texto_narravel("Aceita o livre_arbitrio ou o determinismo_estrito?") == (
+        "Aceita o livre_arbitrio ou o determinismo_estrito?"
+    )
+
+
 def test_divide_por_pontuacao_final():
     frases = dividir_frases("Uma. Duas! Três? Quatro.")
 

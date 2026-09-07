@@ -13,10 +13,28 @@ import re
 
 # Linha inteiramente entre parênteses: a rubrica de cena que o escritor põe no
 # começo de cada seção. Descreve a imagem, não o que a voz diz.
-RUBRICA_RE = re.compile(r"^\s*\((.+?)\)\s*$", re.MULTILINE | re.DOTALL)
+#
+# `[^)\n]*` — não DOTALL, não `.+?` — de propósito: a versão antiga usava
+# `.+?` com DOTALL, e o não-guloso então cruzava linhas em branco caçando o
+# primeiro `)` que fechasse QUALQUER linha seguinte, apagando toda a narração
+# no meio do caminho. Consequência aceita: uma rubrica que se quebra em duas
+# linhas deixa de ser reconhecida e vira narração — errado, mas visível e
+# óbvio de corrigir no roteiro. O erro anterior era o oposto: silencioso e
+# irrecuperável (apagava frases inteiras sem sinal nenhum). Toda rubrica do
+# corpus real cabe numa linha só.
+RUBRICA_RE = re.compile(r"^[ \t]*\(([^)\n]*)\)[ \t]*$", re.MULTILINE)
 
-# Ênfase markdown. O asterisco não pode chegar ao TTS; a palavra sim.
-_ENFASE_RE = re.compile(r"(\*\*|\*|_)(.+?)\1", re.DOTALL)
+# Ênfase markdown, em dois padrões — não um só compartilhado por `_` e `*`.
+# `(.+?)\1` original casava o primeiro delimitador com o PRÓXIMO IGUAL EM
+# QUALQUER LUGAR do texto: em "livre_arbitrio ou o determinismo_estrito" ele
+# fundia os dois underscores de palavras diferentes e colava
+# "livrearbitrio"+"determinismoestrito" — reescrita silenciosa, invisível pra
+# contagem de palavras. `[^*\n]` / `[^_\n]` impedem cruzar linha, e os
+# lookarounds de fronteira de palavra em `_..._` garantem que só um underscore
+# ladeado por espaço/pontuação (ênfase real) é tocado — `livre_arbitrio`, com
+# `_` colado a letras dos dois lados, nunca casa.
+_ASTERISCO_RE = re.compile(r"(\*\*|\*)([^*\n]+?)\1")
+_SUBLINHADO_RE = re.compile(r"(?<!\w)_([^_\n]+?)_(?!\w)")
 
 # Abreviações que terminam em ponto sem terminar a frase. Cortar depois delas
 # partiria a narração no meio de uma oração.
@@ -41,7 +59,8 @@ def extrair_rubrica(conteudo: str) -> str:
 def texto_narravel(conteudo: str) -> str:
     """O que a voz de fato diz: sem rubrica, sem ênfase markdown."""
     sem_rubrica = RUBRICA_RE.sub("", conteudo)
-    sem_enfase = _ENFASE_RE.sub(r"\2", sem_rubrica)
+    sem_asterisco = _ASTERISCO_RE.sub(r"\2", sem_rubrica)
+    sem_enfase = _SUBLINHADO_RE.sub(r"\1", sem_asterisco)
     return " ".join(sem_enfase.split())
 
 

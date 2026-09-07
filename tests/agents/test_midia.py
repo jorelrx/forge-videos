@@ -1,3 +1,5 @@
+import pytest
+
 from forge.agents.midia import propor_beats
 from forge.domain.midia import BeatProposto, BeatsDaSecao, BlocoNarracao
 
@@ -100,3 +102,102 @@ def test_prompt_vazio_nao_vira_beat(scripted):
     beats = propor_beats(model, "Hook", "", _blocos(), alvo_segundos=15)
 
     assert [b.prompt for b in beats] == ["uma estrada"]
+
+
+def _roteiro_de_duas_secoes():
+    from forge.domain.models import Roteiro, Secao
+
+    return Roteiro(
+        tema="livre-arbítrio",
+        tese="a vontade é sentida, não observada",
+        secoes=[
+            Secao(nome="Hook", conteudo=(
+                "(Cena: um carro na estrada.)\n\n"
+                "Primeira frase do gancho. Segunda frase do gancho."
+            )),
+            Secao(nome="Problema", conteudo="O problema não é físico. É linguístico."),
+        ],
+    )
+
+
+def test_plano_cobre_todas_as_secoes(scripted):
+    from forge.agents.midia import planejar_midia
+
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a car")]),
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b002", prompt="a scale")]),
+    ])
+
+    plano = planejar_midia(model, _roteiro_de_duas_secoes())
+
+    assert {b.secao for b in plano.blocos} == {"Hook", "Problema"}
+    assert [b.id for b in plano.blocos] == ["b001", "b002"]
+    assert [i.id for i in plano.beats] == ["i001", "i002"]
+
+
+def test_nenhuma_palavra_do_roteiro_se_perde_no_plano(scripted):
+    """A trava do plano inteiro: o que a voz diz tem de ser o roteiro inteiro."""
+    from forge.agents.midia import planejar_midia
+    from forge.narracao.fatiar import texto_narravel
+
+    roteiro = _roteiro_de_duas_secoes()
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a car")]),
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b002", prompt="a scale")]),
+    ])
+
+    plano = planejar_midia(model, roteiro)
+
+    esperado = " ".join(texto_narravel(s.conteudo) for s in roteiro.secoes).split()
+    assert " ".join(b.texto for b in plano.blocos).split() == esperado
+
+
+def test_rubrica_nunca_entra_na_narracao(scripted):
+    from forge.agents.midia import planejar_midia
+
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a car")]),
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b002", prompt="a scale")]),
+    ])
+
+    plano = planejar_midia(model, _roteiro_de_duas_secoes())
+
+    assert all("Cena:" not in b.texto for b in plano.blocos)
+
+
+def test_cobertura_insuficiente_estoura(scripted, monkeypatch):
+    """Se um dia o fatiador regredir, o plano falha alto em vez de narrar 8%.
+
+    É a lição do plano gerado por LLM: 85 palavras de 1079, todos os itens do
+    manifesto marcados `ok`, e ninguém percebendo.
+    """
+    import forge.agents.midia as midia_mod
+    from forge.agents.midia import CoberturaInsuficiente, planejar_midia
+
+    monkeypatch.setattr(midia_mod, "fatiar", lambda conteudo, **kw: ["só isto"])
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a car")]),
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b002", prompt="a scale")]),
+    ])
+
+    with pytest.raises(CoberturaInsuficiente):
+        planejar_midia(model, _roteiro_de_duas_secoes())
+
+
+def test_secao_so_com_rubrica_nao_gera_bloco_nem_chamada(scripted):
+    from forge.agents.midia import planejar_midia
+    from forge.domain.models import Roteiro, Secao
+
+    roteiro = Roteiro(tema="t", tese="t", secoes=[
+        Secao(nome="Hook", conteudo="(Cena: nada é dito.)"),
+        Secao(nome="Problema", conteudo="Uma frase."),
+    ])
+    # Uma única resposta na fila: se o agente chamar o modelo para a seção sem
+    # texto, o modelo falso estoura.
+    model = scripted(structured=[
+        BeatsDaSecao(beats=[BeatProposto(bloco_id="b001", prompt="a scale")]),
+    ])
+
+    plano = planejar_midia(model, roteiro)
+
+    assert [b.secao for b in plano.blocos] == ["Problema"]

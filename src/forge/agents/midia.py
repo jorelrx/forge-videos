@@ -2,6 +2,10 @@
 
 Roda com o LLM ainda residente, no fim do `forge roteiro`, para que a fase de
 GPU não precise recarregar o modelo só para pedir prompts de imagem.
+
+Os blocos de narração vêm do fatiador determinístico (`forge.narracao.fatiar`),
+não do modelo, então o texto nunca passa pelo LLM e não há tag de controle
+inventada para `sanear_texto` limpar aqui.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from langchain_core.messages import HumanMessage
 from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, BlocoNarracao, PlanoMidia
 from forge.domain.models import Roteiro
 from forge.infrastructure.logging import get_logger
-from forge.narracao.tags import sanear_texto
+from forge.narracao.fatiar import extrair_rubrica, fatiar, texto_narravel
 from forge.prompts.loader import load_prompt
 from forge.services.persistencia import carregar_modelo, gravar_modelo
 
@@ -26,60 +30,59 @@ class PlanoJaExiste(FileExistsError):
     """Já há um plano em disco e ninguém pediu para refazê-lo."""
 
 
-def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
-    prompt = load_prompt("midia").format(
-        tema=roteiro.tema,
-        tese=roteiro.tese,
-        roteiro=_fmt_roteiro(roteiro),
-        alvo_segundos=alvo_segundos,
-    )
-    cru = model.with_structured_output(PlanoMidia).invoke([HumanMessage(content=prompt)])
-    plano = _normalizar(cru)
-    logger.info("Plano de mídia pronto", blocos=len(plano.blocos), beats=len(plano.beats))
-    return plano
+class CoberturaInsuficiente(RuntimeError):
+    """Os blocos não reproduzem o roteiro palavra por palavra.
 
-
-def _fmt_roteiro(roteiro: Roteiro) -> str:
-    return "\n\n".join(f"## {s.nome}\n\n{s.conteudo}" for s in roteiro.secoes)
-
-
-def _normalizar(cru: PlanoMidia) -> PlanoMidia:
-    """Renumera os ids e limpa o que o modelo errou.
-
-    Ids vêm de nós, não do modelo: são a chave que o manifesto e os arquivos de
-    saída usam, e um id repetido pelo modelo sobrescreveria um item já gerado.
+    Existe por causa de um caso real: a versão anterior pedia o fatiamento ao
+    LLM e recebeu 85 palavras de um roteiro de 1079, todas da primeira seção. O
+    plano era coerente, o manifesto marcaria tudo `ok`, e o vídeo teria 36
+    segundos de narração. Falhar alto aqui é a única defesa.
     """
-    mapa: dict[str, str] = {}
+
+
+def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
     blocos: list[BlocoNarracao] = []
-    for i, bloco in enumerate(cru.blocos, 1):
-        novo = f"b{i:03d}"
-        if bloco.id in mapa:
-            # O prompt diz ao modelo que o id não importa, o que convida a
-            # repeti-lo. Sobrescrever a entrada mandaria um beat destinado ao
-            # primeiro bloco silenciosamente para o segundo; first-wins é
-            # arbitrário mas determinístico, avisado, e segue a ordem de leitura.
-            logger.warning(
-                "Id de bloco repetido pelo modelo; mantendo o primeiro",
-                id_repetido=bloco.id, bloco_perdido=novo,
-            )
-        else:
-            mapa[bloco.id] = novo
-        texto, removidas = sanear_texto(bloco.texto)
-        if removidas:
-            logger.warning("Tags inválidas removidas", bloco=novo, tags=removidas)
-        blocos.append(BlocoNarracao(id=novo, secao=bloco.secao, texto=texto.strip()))
-
     beats: list[Beat] = []
-    for beat in cru.beats:
-        alvo = mapa.get(beat.bloco_id)
-        if alvo is None:
-            # Beat apontando para bloco inexistente não tem quando entrar em
-            # tela; descartar é melhor que ancorá-lo em algum bloco arbitrário.
-            logger.warning("Beat órfão descartado", bloco_id=beat.bloco_id)
-            continue
-        beats.append(Beat(id=f"i{len(beats) + 1:03d}", bloco_id=alvo, prompt=beat.prompt))
 
+    for secao in roteiro.secoes:
+        textos = fatiar(secao.conteudo)
+        if not textos:
+            # Seção só com rubrica não tem narração; não gasta chamada.
+            logger.info("Seção sem texto narrável", secao=secao.nome)
+            continue
+
+        da_secao = [
+            BlocoNarracao(id=f"b{len(blocos) + i + 1:03d}", secao=secao.nome, texto=t)
+            for i, t in enumerate(textos)
+        ]
+        blocos.extend(da_secao)
+
+        propostos = propor_beats(
+            model,
+            secao.nome,
+            extrair_rubrica(secao.conteudo),
+            da_secao,
+            alvo_segundos=alvo_segundos,
+        )
+        for beat in propostos:
+            beats.append(
+                Beat(id=f"i{len(beats) + 1:03d}", bloco_id=beat.bloco_id,
+                     prompt=beat.prompt)
+            )
+
+    _conferir_cobertura(roteiro, blocos)
+    logger.info("Plano de mídia pronto", blocos=len(blocos), beats=len(beats),
+                palavras=sum(len(b.texto.split()) for b in blocos))
     return PlanoMidia(blocos=blocos, beats=beats)
+
+
+def _conferir_cobertura(roteiro: Roteiro, blocos: list[BlocoNarracao]) -> None:
+    esperado = " ".join(texto_narravel(s.conteudo) for s in roteiro.secoes).split()
+    obtido = " ".join(b.texto for b in blocos).split()
+    if obtido != esperado:
+        raise CoberturaInsuficiente(
+            f"blocos cobrem {len(obtido)} palavras de {len(esperado)} do roteiro"
+        )
 
 
 def caminho_plano(run_dir: Path) -> Path:

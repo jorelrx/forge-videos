@@ -82,6 +82,16 @@ este desenho elimina.
 narração com tags de controle do TTS e um prompt de imagem por beat visual. É o
 último artefato que exige LLM.
 
+Os blocos de narração são cortados por código
+([narracao/fatiar.py](src/forge/narracao/fatiar.py)), não pelo modelo: fatiar é
+operação determinística, e pedi-la a um LLM custou, uma vez, 85 palavras de um
+roteiro de 1079. A rubrica de cena entre parênteses e a ênfase markdown são
+retiradas — nenhuma das duas é narração. `_conferir_cobertura` recusa o plano
+cujos blocos não reproduzam o roteiro palavra por palavra.
+
+O modelo é chamado uma vez por seção e só para propor os beats de imagem,
+recebendo os blocos já prontos e a rubrica do autor como semente visual.
+
 [gpu/broker.py](src/forge/gpu/broker.py) mantém **um** consumidor de GPU
 residente por vez (`llm`, `tts`, `imagem`), com lock de arquivo em
 `output/.gpu.lock`. A troca acontece por fase, nunca por item. Os liberadores

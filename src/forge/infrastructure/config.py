@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # máquina). Desligar troca a detecção de lacuna por velocidade.
     juiz_relevancia: bool = True
 
+    # Realimentação do acervo. O primeiro arquivo é DELE: guarda só a pergunta,
+    # uma por linha, sem duplicata, e o próprio acervo o lê de volta
+    # (ver unanswered_log.py no projeto research). A evidência completa vai no
+    # segundo, que é nosso e ninguém lê de volta. `None` desliga.
+    gaps_file: Path | None = Path(r"C:\dev\research\dados\unanswered_questions.txt")
+    respostas_ruins_file: Path | None = Path(r"C:\dev\research\dados\respostas_ruins.jsonl")
+
     # Gerência da GPU. Ver gpu/broker.py: um recurso residente por vez.
     gpu_lock_timeout: float = 900.0
     # `cpu` faz a narração não disputar o slot, liberando-a para rodar

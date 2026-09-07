@@ -123,3 +123,12 @@ def test_juiz_de_relevancia_vem_ligado():
     from forge.infrastructure.config import Settings
 
     assert Settings(_env_file=None).juiz_relevancia is True
+
+
+def test_arquivos_de_lacuna_apontam_para_o_acervo():
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.gaps_file is not None and s.gaps_file.name == "unanswered_questions.txt"
+    assert s.respostas_ruins_file is not None
+    assert s.respostas_ruins_file.suffix == ".jsonl"

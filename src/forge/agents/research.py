@@ -35,6 +35,23 @@ _MARCADOR = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 # motivo do juiz, que só existe quando há passagens para rejeitar.
 _MOTIVO_BUSCA_VAZIA = "a busca não retornou nenhuma passagem para esta query"
 
+# Tamanho de pool a partir do qual uma reprovação TOTAL do juiz é lida como
+# defeito do juiz, não como lacuna do acervo.
+#
+# O raciocínio é de plausibilidade. `acervo_top` é 8 por query: um pool de uma
+# ou duas passagens reprovado inteiro é perfeitamente possível — uma query
+# marginal, dois resultados de raspa. Um pool de uma dúzia, montado a partir de
+# várias queries e sobrevivendo ao dedupe, reprovado item por item sem exceção,
+# é muito mais provavelmente um veredicto degenerado (lista vazia por falha de
+# structured output, um 9B local perdendo o formato) do que um acervo que
+# devolveu doze passagens de alto score e nenhuma serve.
+#
+# A troca é consciente e assimétrica: acima do piso perdemos a detecção de
+# lacuna que D8 existe para fazer, e ganhamos a garantia de que um veredicto
+# ruim não produza um roteiro sem fonte nenhuma. Abaixo do piso a lacuna
+# continua sendo registrada normalmente.
+POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ = 12
+
 
 def pesquisar(
     model,
@@ -58,7 +75,9 @@ def pesquisar(
 
     julgou = False
     if passagens and settings is not None and settings.juiz_relevancia:
-        passagens = _julgar_e_registrar(model, tema, passagens, por_query, settings)
+        passagens = _julgar_e_registrar(
+            model, tema, passagens, por_query, settings, queries=queries, pedido=pedido
+        )
         julgou = True
 
     if not passagens:
@@ -81,7 +100,9 @@ def pesquisar(
     return brief, _fontes(passagens), bruto
 
 
-def _julgar_e_registrar(model, tema, passagens, por_query, settings):
+def _julgar_e_registrar(
+    model, tema, passagens, por_query, settings, *, queries=None, pedido=None
+):
     """Filtra pelo juiz e devolve ao acervo as queries que não renderam nada.
 
     A lacuna é por QUERY, não pelo tema: é a pergunta específica que o acervo não
@@ -89,12 +110,58 @@ def _julgar_e_registrar(model, tema, passagens, por_query, settings):
     cobre duas formas, com motivo distinto: a busca não achou passagem nenhuma
     para a query (não passou pelo juiz — não há o que julgar), ou achou passagens
     e o juiz rejeitou todas.
+
+    **A atribuição por query é aproximada, e continua sendo.** O juiz recebe o
+    pool FUNDIDO de todas as queries e devolve um veredicto só; nós inferimos
+    "esta query não rendeu nada" olhando se sobrou algum caminho dela entre as
+    aprovadas. Uma passagem que veio de duas queries salva as duas. Isso é o
+    preço de uma chamada de LLM por pesquisa em vez de uma por query: cinco
+    chamadas de 3-9 min cada são inviáveis nesta máquina. Passar as queries ao
+    prompt melhora o veredicto — o juiz passa a julgar contra a necessidade de
+    informação real, não contra o tema nu —, mas não desfaz a fusão.
+
+    O juiz é OPCIONAL (`FORGE_JUIZ_RELEVANCIA`); o roteiro não é. Por isso as
+    duas guardas abaixo: falha da chamada e veredicto degenerado ambos caem
+    para "mantém tudo, registra nada".
     """
     # Import tardio: `lacunas` importa `Settings`, e o agente de pesquisa não
     # depende de config em lugar nenhum além daqui.
     from forge.services.lacunas import registrar_lacuna
 
-    aprovadas, motivo_juiz = julgar_relevancia(model, tema, passagens)
+    try:
+        aprovadas, motivo_juiz = julgar_relevancia(
+            model, tema, passagens, queries=queries, pedido=pedido
+        )
+    except Exception as e:
+        # Timeout de 10 min, `400 Model unloaded by user` (que o cliente OpenAI
+        # não retenta), validação de structured output que o modelo local erra:
+        # qualquer uma matava o grafo duas horas run adentro. Falhar em produzir
+        # um benefício opcional não pode destruir a saída obrigatória — mesma
+        # postura que `services/lacunas.py` documenta para as escritas.
+        logger.error(
+            "Juiz de relevância falhou; seguindo com todas as passagens",
+            erro=str(e), passagens=len(passagens),
+        )
+        return passagens
+
+    if not aprovadas and len(passagens) >= POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ:
+        # Piso de sanidade, irmão do piso de cobertura do plano de mídia. Sem
+        # ele, um único veredicto vazio esvazia `passagens`, o controle cai no
+        # ramo de "o acervo não tem o livro", a síntese é pulada, `fontes` fica
+        # vazia — e `write` não tem guarda para isso, então o pipeline redige
+        # nove seções em cima de um brief que diz não haver fonte alguma, e
+        # `storage.py` renderiza o roteiro com o bloco de fontes vazio.
+        # Afirmar sem caminho citável é o pecado original deste projeto.
+        #
+        # `error`, e com mensagem distinta do `warning "Acervo gap"`: no log de
+        # um loop desassistido isto precisa ser separável de uma lacuna real.
+        logger.error(
+            "Juiz reprovou o pool inteiro; tratando como falha do juiz, não como lacuna",
+            passagens=len(passagens), piso=POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ,
+            motivo=motivo_juiz,
+        )
+        return passagens
+
     caminhos_ok = {p.path for p in aprovadas}
     for query, achadas in por_query.items():
         if not achadas:
@@ -201,11 +268,49 @@ def _fmt_passagens_curtas(passagens: list[Passagem], *, chars: int = 200) -> str
     return "\n\n".join(linhas)
 
 
+def _fmt_queries_juiz(queries: list[str] | None) -> str:
+    """As perguntas que de fato foram ao acervo.
+
+    Sem elas o juiz via só o tema, e o spec (S8) pede "a query e as passagens".
+    A diferença é concreta: uma passagem pode estar no tema e não responder à
+    query — e era registrada como respondida —, ou responder à query e parecer
+    fora do tema — e ia parar no arquivo de lacunas do usuário como
+    irrespondível.
+    """
+    if not queries:
+        return "(as perguntas exatas não foram informadas; julgue pelo assunto)"
+    return "\n".join(f"- {q}" for q in queries)
+
+
+def _fmt_pedido_juiz(pedido: str | None) -> str:
+    """O pedido dirigido do handoff `review → research`.
+
+    Nessa volta `pedido` carrega a alegação específica a conferir, e o juiz não
+    a via: ele aprovava qualquer coisa vagamente sobre livre-arbítrio enquanto
+    a alegação seguia sem checagem. Essa volta custa ~50 min nesta máquina.
+    """
+    if not pedido:
+        return ""
+    return (
+        "\nEsta pesquisa é dirigida: o que precisa ser confirmado ou refutado é\n"
+        f"exatamente isto.\n\n{pedido}\n\n"
+        "Uma passagem que não toca nisso NÃO serve, por mais que fale do assunto.\n"
+    )
+
+
 def julgar_relevancia(
-    model, tema: str, passagens: list[Passagem]
+    model,
+    tema: str,
+    passagens: list[Passagem],
+    *,
+    queries: list[str] | None = None,
+    pedido: str | None = None,
 ) -> tuple[list[Passagem], str]:
     prompt = load_prompt("juiz").format(
-        tema=tema, passagens=_fmt_passagens_curtas(passagens)
+        tema=tema,
+        queries=_fmt_queries_juiz(queries),
+        pedido=_fmt_pedido_juiz(pedido),
+        passagens=_fmt_passagens_curtas(passagens),
     )
     veredicto = model.with_structured_output(VeredictoRelevancia).invoke(
         [HumanMessage(content=prompt)]

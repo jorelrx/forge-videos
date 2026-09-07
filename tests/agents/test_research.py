@@ -302,3 +302,166 @@ def test_juiz_desligado_por_config(scripted, acervo_fake, tmp_path):
 
     assert brief == "notas"
     assert not s.gaps_file.exists()
+
+
+class _ModeloQueEspiaOJuiz:
+    """Captura o prompt entregue ao juiz e devolve um veredicto fixo."""
+
+    def __init__(self, invoke_texts, veredicto):
+        self.invoke_texts = list(invoke_texts)
+        self.veredicto = veredicto
+        self.prompt_do_juiz = None
+
+    def invoke(self, messages):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content=self.invoke_texts.pop(0))
+
+    def with_structured_output(self, schema):
+        pai = self
+
+        class _Structured:
+            def invoke(self, messages):
+                pai.prompt_do_juiz = messages[0].content
+                return pai.veredicto
+
+        return _Structured()
+
+
+def test_juiz_recebe_as_queries_e_nao_so_o_tema(acervo_fake, tmp_path):
+    """Spec S8: o juiz recebe "a query e as passagens".
+
+    Com o tema nu, uma passagem no tema que não responde à query era aprovada,
+    e a inversa ia para o arquivo de lacunas do usuário como irrespondível.
+    """
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(por_query={"leibniz sobre poder oblíquo": [_passagem("p1", 0.9)]})
+    model = _ModeloQueEspiaOJuiz(
+        ["leibniz sobre poder oblíquo", "notas"],
+        VeredictoRelevancia(relevantes=[0], motivo=""),
+    )
+
+    pesquisar(model, "vontade", acervo, settings=s)
+
+    assert "leibniz sobre poder oblíquo" in model.prompt_do_juiz
+
+
+def test_juiz_recebe_o_pedido_dirigido_do_handoff(acervo_fake, tmp_path):
+    """No handoff `review → research` o `pedido` carrega a alegação a conferir.
+
+    Sem ela o juiz aprovava qualquer coisa vagamente sobre o assunto enquanto a
+    alegação seguia sem checagem — e essa volta custa ~50 min nesta máquina.
+    """
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(por_query={"bergson duração": [_passagem("p1", 0.9)]})
+    model = _ModeloQueEspiaOJuiz(
+        ["bergson duração", "notas"],
+        VeredictoRelevancia(relevantes=[0], motivo=""),
+    )
+
+    pesquisar(model, "vontade", acervo,
+              pedido="Bergson afirma em Time and Free Will que a duração não é mensurável.",
+              settings=s)
+
+    assert "Time and Free Will" in model.prompt_do_juiz
+
+
+def test_juiz_que_estoura_nao_derruba_a_pesquisa(acervo_fake, tmp_path):
+    """O juiz é opcional (`FORGE_JUIZ_RELEVANCIA`); o roteiro não é.
+
+    Timeout de 10 min, `400 Model unloaded by user` (não retentado pelo cliente
+    OpenAI) e falha de validação de structured output são os modos de falha
+    reais do lm-studio. Qualquer um matava o grafo duas horas run adentro.
+    """
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(por_query={"q": [_passagem("p1", 0.9)]})
+
+    class ModeloComJuizQuebrado:
+        def __init__(self):
+            self.invoke_texts = ["q", "notas densas"]
+
+        def invoke(self, messages):
+            from langchain_core.messages import AIMessage
+
+            return AIMessage(content=self.invoke_texts.pop(0))
+
+        def with_structured_output(self, schema):
+            class _Estoura:
+                def invoke(self, messages):
+                    raise RuntimeError("400 - Model unloaded by user or API request")
+
+            return _Estoura()
+
+    brief, fontes, _ = pesquisar(ModeloComJuizQuebrado(), "vontade", acervo, settings=s)
+
+    assert brief == "notas densas"          # a síntese aconteceu
+    assert [f.path for f in fontes] == ["p1"]  # a passagem sobreviveu
+    assert not s.gaps_file.exists()          # nenhuma lacuna inventada
+    assert not s.respostas_ruins_file.exists()
+
+
+def _acervo_com_pool(acervo_fake, quantas):
+    return acervo_fake(por_query={"q": [_passagem(f"p{i}", 0.9) for i in range(quantas)]})
+
+
+def test_pool_grande_reprovado_inteiro_e_lido_como_juiz_quebrado(scripted, acervo_fake, tmp_path):
+    """Piso de sanidade: uma dúzia de passagens reprovadas item por item é um
+    veredicto degenerado, não um acervo sem o livro.
+
+    Sem o piso, `passagens` esvazia, o controle cai no ramo de lacuna, a síntese
+    é pulada e `fontes` fica vazia — e `write` não tem guarda para isso, então o
+    roteiro sai afirmando coisas sem um único caminho citável.
+    """
+    from forge.agents.research import POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = _acervo_com_pool(acervo_fake, POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ)
+    model = scripted(
+        invoke_texts=["q", "notas densas"],
+        structured=[VeredictoRelevancia(relevantes=[], motivo="nada serve")],
+    )
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert brief == "notas densas"
+    assert len(fontes) == POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ
+    assert not s.gaps_file.exists()
+    assert not s.respostas_ruins_file.exists()
+
+
+def test_pool_pequeno_reprovado_inteiro_continua_sendo_lacuna(scripted, acervo_fake, tmp_path):
+    """O outro lado do piso: reprovar um punhado de passagens é plausível, e
+    continua valendo como lacuna registrada — que é o que D8 existe para fazer."""
+    from forge.agents.research import POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = _acervo_com_pool(acervo_fake, POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ - 1)
+    # Só duas respostas na fila: queries e veredicto. Uma tentativa de sintetizar
+    # estoura o modelo falso — é isso que tranca o comportamento.
+    model = scripted(
+        invoke_texts=["q"],
+        structured=[VeredictoRelevancia(relevantes=[], motivo="nada sobre o tema")],
+    )
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert fontes == []
+    assert "Lacuna no acervo" in brief
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]

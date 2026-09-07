@@ -78,12 +78,25 @@ este desenho elimina.
 
 Depois da busca, um juiz de relevância (`FORGE_JUIZ_RELEVANCIA`, ligado por
 padrão) decide quais passagens realmente respondem — busca semântica devolve
-pontuação alta para material fora de assunto. Uma query cujas passagens foram
-todas reprovadas vira lacuna: a pergunta é anexada ao
-`unanswered_questions.txt` do acervo (só a pergunta, deduplicada — aquele
-projeto lê o arquivo de volta) e a evidência completa vai para
-`respostas_ruins.jsonl` ao lado. Nenhuma das duas escritas pode derrubar o
-roteiro.
+pontuação alta para material fora de assunto. Ele julga contra as queries e,
+no handoff `review → research`, contra o `pedido` dirigido; não contra o tema
+nu. Uma chamada por pesquisa, com o pool fundido: a atribuição de lacuna por
+query é aproximada por isso, e `_julgar_e_registrar` diz onde.
+
+O juiz é opcional e o roteiro não é. Chamada que estoura mantém todas as
+passagens e não registra lacuna nenhuma; um veredicto que reprova um pool de
+uma dúzia ou mais inteiro é lido como juiz quebrado, não como lacuna
+(`POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ`) — sem esse piso, um veredicto ruim
+produzia roteiro sem fonte alguma.
+
+Os dois arquivos de realimentação ([services/lacunas.py](src/forge/services/lacunas.py))
+não recebem os mesmos casos. `unanswered_questions.txt` é do acervo (só a
+pergunta, deduplicada — aquele projeto lê o arquivo de volta), e só recebe a
+rejeição do juiz, que é a única lacuna que o acervo não detecta sozinho: a
+busca que não casa com nada ele já registra ele mesmo. A evidência completa de
+todos os casos vai para `respostas_ruins.jsonl` ao lado. O append à pergunta
+vai sob `FileLock` — no Windows o modo `a` não é atômico entre processos — e
+nenhuma das duas escritas pode derrubar o roteiro.
 
 ### Vídeo: broker, plano de mídia e manifesto
 

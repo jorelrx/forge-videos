@@ -59,3 +59,26 @@ class FakeAcervo:
 @pytest.fixture
 def acervo_fake():
     return FakeAcervo
+
+
+@pytest.fixture(autouse=True)
+def lacunas_em_tmp_path(monkeypatch, tmp_path):
+    r"""Nenhum teste pode alcançar `C:\dev\research\dados\` por omissão.
+
+    Os dois caminhos de realimentação do acervo são defaults reais de
+    `Settings`, apontando para dados curados do usuário. Um teste que constrói
+    `Settings(_env_file=None, ...)` sem sobrescrevê-los herda o caminho de
+    produção; hoje isso é inofensivo só porque as fixtures em uso sempre
+    devolvem passagem, e a próxima edição óbvia (uma fixture que devolve nada)
+    passaria a anexar linhas no arquivo do usuário.
+
+    Variável de ambiente, e não monkeypatch do campo: `_env_file=None` desliga
+    o `.env`, não o ambiente, então isto vale para TODA construção de
+    `Settings` na suíte — inclusive as que ainda não existem. Um teste que
+    precise do valor real ainda pode passá-lo explicitamente no construtor,
+    que vence o ambiente.
+    """
+    monkeypatch.setenv("FORGE_GAPS_FILE", str(tmp_path / "unanswered_questions.txt"))
+    monkeypatch.setenv(
+        "FORGE_RESPOSTAS_RUINS_FILE", str(tmp_path / "respostas_ruins.jsonl")
+    )

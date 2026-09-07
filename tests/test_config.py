@@ -132,3 +132,20 @@ def test_arquivos_de_lacuna_apontam_para_o_acervo():
     assert s.gaps_file is not None and s.gaps_file.name == "unanswered_questions.txt"
     assert s.respostas_ruins_file is not None
     assert s.respostas_ruins_file.suffix == ".jsonl"
+
+
+def test_nenhum_settings_da_suite_aponta_para_os_dados_do_usuario(tmp_path):
+    r"""Rede de segurança da suíte inteira (fixture autouse em conftest).
+
+    `Settings` sem `gaps_file` explícito herdava o caminho real,
+    `C:\dev\research\dados\unanswered_questions.txt` — 16 linhas curadas à
+    mão pelo usuário. Um único teste que esquecesse de passar `tmp_path` as
+    poluiria.
+    """
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None)
+
+    assert s.gaps_file is not None and s.respostas_ruins_file is not None
+    assert s.gaps_file.parent == tmp_path
+    assert s.respostas_ruins_file.parent == tmp_path

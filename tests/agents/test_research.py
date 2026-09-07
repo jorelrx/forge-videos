@@ -147,3 +147,88 @@ def test_colher_por_query_preserva_a_origem(acervo_fake):
 
     assert [p.path for p in por_query["a"]] == ["p1", "p2"]
     assert [p.path for p in por_query["b"]] == ["p1"]
+
+
+def test_query_toda_reprovada_vira_lacuna_registrada(scripted, acervo_fake, tmp_path):
+    from forge.agents.research import pesquisar
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+
+    s = Settings(
+        _env_file=None,
+        gaps_file=tmp_path / "gaps.txt",
+        respostas_ruins_file=tmp_path / "ruins.jsonl",
+    )
+    acervo = acervo_fake(por_query={
+        "boa": [_passagem("p1", 0.9)],
+        "ruim": [_passagem("p2", 0.8)],
+    })
+    model = scripted(
+        invoke_texts=["boa\nruim", "notas densas"],
+        structured=[VeredictoRelevancia(relevantes=[0], motivo="a segunda é de outro assunto")],
+    )
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert brief == "notas densas"
+    assert [f.path for f in fontes] == ["p1"]
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["ruim"]
+
+
+def test_tudo_reprovado_vira_brief_de_lacuna_sem_sintetizar(scripted, acervo_fake, tmp_path):
+    """Sem passagem aprovada não há o que sintetizar — e a síntese é a chamada
+    mais cara do pipeline (15-22 min nesta máquina)."""
+    from forge.agents.research import pesquisar
+    from forge.domain.models import VeredictoRelevancia
+    from forge.infrastructure.config import Settings
+    from forge.services.acervo import Candidato
+
+    s = Settings(_env_file=None, gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(
+        por_query={"ruim": [_passagem("p1", 0.9)]},
+        candidatos=[Candidato(id=37358, title="Determinism or Free-Will?", authors=["Cohen"])],
+    )
+    # Só duas respostas na fila: queries e veredicto. Se o agente tentar
+    # sintetizar, o modelo falso estoura — que é o que este teste tranca.
+    model = scripted(
+        invoke_texts=["ruim"],
+        structured=[VeredictoRelevancia(relevantes=[], motivo="nada sobre o tema")],
+    )
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert fontes == []
+    assert "Lacuna no acervo" in brief
+    assert "Determinism or Free-Will?" in brief
+    assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["ruim"]
+
+
+def test_sem_settings_o_juiz_nao_roda(scripted, acervo_fake):
+    """Chamada sem settings mantém o comportamento antigo — é o que os testes
+    existentes e qualquer chamador antigo esperam."""
+    from forge.agents.research import pesquisar
+
+    acervo = acervo_fake(por_query={"q": [_passagem("p1", 0.9)]})
+    model = scripted(invoke_texts=["q", "notas"])
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo)
+
+    assert brief == "notas"
+    assert len(fontes) == 1
+
+
+def test_juiz_desligado_por_config(scripted, acervo_fake, tmp_path):
+    from forge.agents.research import pesquisar
+    from forge.infrastructure.config import Settings
+
+    s = Settings(_env_file=None, juiz_relevancia=False,
+                 gaps_file=tmp_path / "gaps.txt",
+                 respostas_ruins_file=tmp_path / "ruins.jsonl")
+    acervo = acervo_fake(por_query={"q": [_passagem("p1", 0.9)]})
+    model = scripted(invoke_texts=["q", "notas"])
+
+    brief, fontes, _ = pesquisar(model, "vontade", acervo, settings=s)
+
+    assert brief == "notas"
+    assert not s.gaps_file.exists()

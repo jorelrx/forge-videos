@@ -93,7 +93,7 @@ def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo):
             ReviewResult(aprovado=True),
         ],
     )
-    settings = Settings(_env_file=None, max_review_rounds=8)
+    settings = Settings(_env_file=None, max_review_rounds=8, juiz_relevancia=False)
     graph = build_graph(model, settings)
     final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
     assert final["review"].aprovado is True
@@ -110,7 +110,7 @@ def test_grafo_para_no_teto(scripted, tmp_path, grafo_com_acervo):
             _draft(), ReviewResult(aprovado=False),
         ],
     )
-    settings = Settings(_env_file=None, max_review_rounds=2)
+    settings = Settings(_env_file=None, max_review_rounds=2, juiz_relevancia=False)
     graph = build_graph(model, settings)
     final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
     assert final["rounds"] == 2
@@ -142,7 +142,7 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
         ]
 
     model = scripted(invoke_texts=textos, structured=estruturados)
-    settings = Settings(_env_file=None, max_review_rounds=100, max_passos=12)
+    settings = Settings(_env_file=None, max_review_rounds=100, max_passos=12, juiz_relevancia=False)
     graph = build_graph(model, settings)
 
     final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})

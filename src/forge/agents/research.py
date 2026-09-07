@@ -39,12 +39,21 @@ def pesquisar(
     pedido: str | None = None,
     *,
     top: int | None = None,
+    settings=None,
 ) -> tuple[str, list[Fonte], str]:
     queries = formular_queries(model, tema, pedido)
-    # `top=None` deixa o default do próprio `colher` decidir — não duplicamos
-    # aqui o valor de fallback.
-    passagens = colher(acervo, queries, top=top) if top is not None else colher(acervo, queries)
+    # `top=None` deixa o default do próprio `colher_por_query` decidir — não
+    # duplicamos aqui o valor de fallback.
+    por_query = (
+        colher_por_query(acervo, queries, top=top)
+        if top is not None
+        else colher_por_query(acervo, queries)
+    )
+    passagens = _fundir(por_query)
     bruto = _bruto(queries, passagens)
+
+    if passagens and settings is not None and settings.juiz_relevancia:
+        passagens = _julgar_e_registrar(model, tema, passagens, por_query, settings)
 
     if not passagens:
         candidatos = acervo.descobrir(tema)
@@ -54,6 +63,41 @@ def pesquisar(
     brief = _sintetizar(model, tema, pedido, passagens)
     logger.info("Research completed", queries=len(queries), passagens=len(passagens))
     return brief, _fontes(passagens), bruto
+
+
+def _julgar_e_registrar(model, tema, passagens, por_query, settings):
+    """Filtra pelo juiz e devolve ao acervo as queries que não renderam nada.
+
+    A lacuna é por QUERY, não pelo tema: é a pergunta específica que o acervo não
+    soube responder, e é ela que diz qual obra falta ingerir.
+    """
+    # Import tardio: `lacunas` importa `Settings`, e o agente de pesquisa não
+    # depende de config em lugar nenhum além daqui.
+    from forge.services.lacunas import registrar_lacuna
+
+    aprovadas, motivo = julgar_relevancia(model, tema, passagens)
+    caminhos_ok = {p.path for p in aprovadas}
+    for query, achadas in por_query.items():
+        if achadas and not any(p.path in caminhos_ok for p in achadas):
+            registrar_lacuna(
+                settings, query=query, tema=tema, motivo=motivo, passagens=achadas
+            )
+    return aprovadas
+
+
+def _fundir(por_query: dict[str, list[Passagem]]) -> list[Passagem]:
+    """Dedupe por path guardando o maior score, ordenado por relevância.
+
+    A mesma passagem costuma responder a mais de uma query; guardar a última
+    vista destruiria a ordenação.
+    """
+    por_path: dict[str, Passagem] = {}
+    for achadas in por_query.values():
+        for p in achadas:
+            atual = por_path.get(p.path)
+            if atual is None or p.score > atual.score:
+                por_path[p.path] = p
+    return sorted(por_path.values(), key=lambda p: p.score, reverse=True)
 
 
 def formular_queries(model, tema: str, pedido: str | None = None) -> list[str]:
@@ -77,17 +121,10 @@ def _parse_queries(texto: str) -> list[str]:
 def colher(acervo: Acervo, queries: list[str], *, top: int = 8) -> list[Passagem]:
     """Busca cada query e funde os resultados.
 
-    A mesma passagem costuma responder a mais de uma query. Deduplicar por
-    `path` e guardar o maior score preserva a ordenação por relevância; guardar
-    o último visto a destruiria.
+    Delega a `colher_por_query` + `_fundir`: a origem por query importa para
+    detectar lacuna, mas `colher` continua devolvendo só o pool ordenado.
     """
-    por_path: dict[str, Passagem] = {}
-    for q in queries:
-        for p in acervo.buscar(q, top=top):
-            atual = por_path.get(p.path)
-            if atual is None or p.score > atual.score:
-                por_path[p.path] = p
-    return sorted(por_path.values(), key=lambda p: p.score, reverse=True)
+    return _fundir(colher_por_query(acervo, queries, top=top))
 
 
 def colher_por_query(

@@ -76,6 +76,15 @@ Acervo fora do ar levanta `AcervoIndisponivel`. Não existe fallback para busca
 web: um fallback silencioso reintroduziria exatamente a fonte não-citável que
 este desenho elimina.
 
+Depois da busca, um juiz de relevância (`FORGE_JUIZ_RELEVANCIA`, ligado por
+padrão) decide quais passagens realmente respondem — busca semântica devolve
+pontuação alta para material fora de assunto. Uma query cujas passagens foram
+todas reprovadas vira lacuna: a pergunta é anexada ao
+`unanswered_questions.txt` do acervo (só a pergunta, deduplicada — aquele
+projeto lê o arquivo de volta) e a evidência completa vai para
+`respostas_ruins.jsonl` ao lado. Nenhuma das duas escritas pode derrubar o
+roteiro.
+
 ### Vídeo: broker, plano de mídia e manifesto
 
 `forge roteiro` grava, além do roteiro, `<run>/video/midia.json` — os blocos de

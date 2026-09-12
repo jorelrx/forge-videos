@@ -20,7 +20,17 @@ def com_wrapper(nome, fn, le):
         entrada = {k: state[k] for k in le if k in state}
         resultado = fn(entrada)
         if isinstance(resultado, Command):
-            return resultado
+            atualizacao = dict(resultado.update or {})
+            bruto = atualizacao.pop("_raw", None)
+            gravar_artefato(state["run_dir"], nome, atualizacao)
+            if bruto is not None:
+                gravar_bruto(state["run_dir"], nome, bruto)
+            return Command(
+                graph=resultado.graph,
+                resume=resultado.resume,
+                goto=resultado.goto,
+                update={**atualizacao, "passos": state.get("passos", 0) + 1},
+            )
         bruto = resultado.pop("_raw", None)
         gravar_artefato(state["run_dir"], nome, resultado)
         if bruto is not None:
@@ -69,9 +79,11 @@ def build_graph(model, settings, inicio: str = "tema"):
 
     def node_research(state):
         pedido = state.get("pedido")
+        run_dir = state.get("run_dir")
         logger.debug("Starting research phase", tema=state["tema"], reentrada=bool(pedido))
         brief, fontes, raw = research_stage.pesquisar(
-            model, state["tema"], acervo, pedido, top=settings.acervo_top, settings=settings
+            model, state["tema"], acervo, pedido, top=settings.acervo_top, settings=settings,
+            run_dir=run_dir,
         )
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
@@ -107,7 +119,7 @@ def build_graph(model, settings, inicio: str = "tema"):
             logger.info("Handoff to research from write", motivo=falta[:120])
             return Command(goto="research", update={"roteiro": roteiro, "pedido": falta})
         logger.debug("Write phase completed", secoes_count=len(roteiro.secoes))
-        return {"roteiro": roteiro}
+        return Command(goto="review", update={"roteiro": roteiro})
 
     def node_review(state):
         logger.debug("Starting review phase")
@@ -122,14 +134,13 @@ def build_graph(model, settings, inicio: str = "tema"):
     g.add_node("research", com_wrapper("research", node_research, research_stage.LE))
     g.add_node("plan",     com_wrapper("plan",     node_plan,     plan_stage.LE))
     g.add_node("write",    com_wrapper("write",    node_write,    write_stage.LE),
-               destinations=("research",))
+               destinations=("research", "review"))
     g.add_node("review",   com_wrapper("review",   node_review,   review_stage.LE))
 
     g.set_entry_point(inicio)
     g.add_edge("tema", "research")
     g.add_edge("research", "plan")
     g.add_edge("plan", "write")
-    g.add_edge("write", "review")
     g.add_conditional_edges(
         "review",
         lambda s: rotear(s, settings.max_review_rounds, settings.max_passos),

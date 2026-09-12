@@ -16,6 +16,8 @@ from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import MARCADOR_LISTA, _texto
 from forge.prompts.loader import load_prompt
 from forge.services.acervo import Acervo, Candidato, Passagem
+from forge.services.lacunas import registrar_lacuna
+from forge.services.progresso import ProgressoLogger
 from forge.skills.loader import load_skills
 
 logger = get_logger(__name__)
@@ -55,8 +57,17 @@ def pesquisar(
     *,
     top: int | None = None,
     settings=None,
+    run_dir=None,
 ) -> tuple[str, list[Fonte], str]:
+    progresso = ProgressoLogger(run_dir) if run_dir else None
+
     queries = formular_queries(model, tema, pedido)
+    if progresso:
+        progresso.log("research", "queries_formuladas",
+                      prompt=load_prompt("queries").format(tema=tema, pedido=_fmt_pedido(pedido)),
+                      resultado="\n".join(queries),
+                      metadados={"num_queries": len(queries)})
+
     # `top=None` deixa o default do próprio `colher_por_query` decidir — não
     # duplicamos aqui o valor de fallback.
     por_query = (
@@ -67,12 +78,26 @@ def pesquisar(
     passagens = _fundir(por_query)
     bruto = _bruto(queries, passagens)
 
+    if progresso:
+        texto_passagens = "\n".join(
+            f"[{i}] {p.book_title} — score={p.score:.4f} — {p.text[:300]}"
+            for i, p in enumerate(passagens)
+        )
+        progresso.log("research", "busca_completada",
+                      resultado=texto_passagens,
+                      metadados={"total_passagens": len(passagens),
+                                 "queries": queries})
+
     julgou = False
     if passagens and settings is not None and settings.juiz_relevancia:
         passagens = _julgar_e_registrar(
             model, tema, passagens, por_query, settings, queries=queries, pedido=pedido
         )
         julgou = True
+        if progresso:
+            progresso.log("research", "juiz_relevancia",
+                          resultado=f"Aprovadas: {len(passagens)}/{len(_fundir(por_query))}",
+                          metadados={"aprovadas": len(passagens)})
 
     if not passagens:
         # Se o juiz rodou, ele já registrou lacuna por query dentro de
@@ -87,9 +112,16 @@ def pesquisar(
             _registrar_lacunas_de_busca_vazia(por_query, tema, settings)
         candidatos = acervo.descobrir(tema)
         logger.warning("Acervo gap", tema=tema, sugestoes=len(candidatos))
+        if progresso:
+            progresso.log("research", "lacuna_detectada",
+                          metadados={"candidatos": len(candidatos)})
         return _brief_lacuna(tema, candidatos), [], bruto
 
     brief = _sintetizar(model, tema, pedido, passagens)
+    if progresso:
+        progresso.log("research", "sintese_concluida",
+                      resultado=brief,
+                      metadados={"passagens_usadas": len(passagens)})
     logger.info("Research completed", queries=len(queries), passagens=len(passagens))
     return brief, _fontes(passagens), bruto
 

@@ -101,6 +101,26 @@ def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo):
     assert final["roteiro"].secoes[0].nome == "Hook"
     assert final["fontes"][0].path == "4363/ch2/p7"
 
+
+def test_grafo_handoff_de_write_vai_so_para_research(scripted, tmp_path, grafo_com_acervo):
+    """Pedido de pesquisa do escritor não pode executar review em paralelo."""
+    model = scripted(
+        invoke_texts=["tema", "busca", "notas", "busca dirigida", "notas dirigidas"],
+        structured=[
+            Plano(tese="t1", esboco="e1"),
+            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação."),
+            Plano(tese="t2", esboco="e2"),
+            _draft(),
+            ReviewResult(aprovado=True),
+        ],
+    )
+    settings = Settings(_env_file=None, juiz_relevancia=False)
+    graph = build_graph(model, settings)
+
+    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+
+    assert final["review"].aprovado is True
+
 def test_grafo_para_no_teto(scripted, tmp_path, grafo_com_acervo):
     model = scripted(
         invoke_texts=["tema", "busca", "notas"],

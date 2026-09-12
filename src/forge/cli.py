@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -89,30 +90,28 @@ def _cmd_roteiro(args) -> int:
     # ocupados e a fase seguinte aloca numa placa cheia, que é exatamente a OOM
     # que o broker existe para evitar. Com provider na nuvem o LLM não usa VRAM
     # e `montar_broker` já o tira da disputa, então aqui vira no-op.
+    #
+    # Com lm-studio local: o LLM também não usa VRAM diretamente — roda via HTTP.
+    # O broker faz retry sobre um FileLock POSIX que, no Windows, vira ghost
+    # lock quando o processo morre (crash do LM Studio). Pular o broker para
+    # lm-studio elimina a fonte desse ghost lock.
     try:
-        with montar_broker(settings).exclusivo("llm"):
-            logger.info("Starting graph invocation", tema=args.tema, rounds=0)
-            try:
-                state: dict = dict(estado_inicial)
-                for step in graph.stream(estado_inicial):
-                    node_name = next(iter(step))
-                    logger.info("Node finished", node=node_name)
-                    print(f"[{node_name}]", file=sys.stderr)
-                    state.update(step[node_name])
-                final = state
-            except Exception as e:
-                logger.error("Graph invocation failed", error=str(e), exc_info=True)
-                sys.exit(1)
+        if settings.provider == "lm-studio":
+            logger.info("GPU lock skipped: lm-studio provider runs LLM via HTTP, not VRAM")
+            result = _executar_grafo(model, settings, graph, estado_inicial)
+        else:
+            with montar_broker(settings).exclusivo("llm"):
+                result = _executar_grafo(model, settings, graph, estado_inicial)
 
-            aprovado = (
-                final["review"].aprovado if final.get("review") is not None else None
-            )
-            path = gravar_roteiro(
-                final["roteiro"], settings, rounds=final.get("rounds"), aprovado=aprovado
-            )
-            logger.info("Completed", output_path=str(path), aprovados=aprovado)
+        aprovado = (
+            result["review"].aprovado if result.get("review") is not None else None
+        )
+        path = gravar_roteiro(
+            result["roteiro"], settings, rounds=result.get("rounds"), aprovado=aprovado
+        )
+        logger.info("Completed", output_path=str(path), aprovados=aprovado)
 
-            _plano_de_midia(model, settings, run_dir, final, aprovado)
+        _plano_de_midia(model, settings, run_dir, result, aprovado)
     except GPUOcupada as e:
         # Outro forge segurando a placa é o caso NORMAL que o lock existe para
         # produzir, não um bug: sai como os demais erros previstos deste comando
@@ -121,10 +120,58 @@ def _cmd_roteiro(args) -> int:
         # aparecendo inteiro.
         logger.error("GPU ocupada por outro processo", error=str(e))
         sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error("Pipeline failed", error=str(e), exc_info=True)
+        sys.exit(1)
 
     print(str(path))
     print(f"run: {run_dir}", file=sys.stderr)
     return 0
+
+
+def _executar_grafo(model, settings, graph, estado_inicial: dict) -> dict:
+    """Executa o grafo LangGraph e retorna o state final."""
+    logger.info("Starting graph invocation", tema=estado_inicial.get("tema"), rounds=0)
+    state: dict = dict(estado_inicial)
+    try:
+        for step in graph.stream(estado_inicial):
+            node_name = next(iter(step))
+            logger.info("Node finished", node=node_name)
+            print(f"[{node_name}]", file=sys.stderr)
+            state.update(step[node_name])
+        return state
+    except Exception as e:
+        logger.error("Graph invocation failed", error=str(e), exc_info=True)
+        # Tenta salvar o que foi produzido ate agora
+        _salvar_parcial(state, estado_inicial.get("run_dir"))
+        raise
+
+
+def _salvar_parcial(state: dict, run_dir: Path) -> None:
+    """Salva o que foi produzido ate agora em caso de crash."""
+    if run_dir is None:
+        return
+    partial_path = run_dir / "parcial.json"
+    dados = {
+        "tema": state.get("tema"),
+        "research_notes": state.get("research_notes", "")[:2000],
+        "fontes_count": len(state.get("fontes", [])),
+        "tese": state.get("tese", ""),
+        "roteiro_secoes": len(state["roteiro"].secoes) if state.get("roteiro") else 0,
+        "review_aprovado": state.get("review", {}).aprovado if state.get("review") else None,
+        "rounds": state.get("rounds", 0),
+        "passos": state.get("passos", 0),
+    }
+    try:
+        partial_path.write_text(
+            json.dumps(dados, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info("Partial state saved", path=str(partial_path))
+    except Exception:
+        pass
 
 
 def _plano_de_midia(model, settings, run_dir: Path, final: dict,
@@ -132,7 +179,7 @@ def _plano_de_midia(model, settings, run_dir: Path, final: dict,
     """O plano de mídia sai junto do roteiro porque é a última coisa que exige
     LLM: emiti-lo aqui evita recarregar o modelo na fase de GPU.
 
-    Só de roteiro APROVADO (spec D3/S3). O grafo também termina por esgotar
+    So de roteiro APROVADO (spec D3/S3). O grafo também termina por esgotar
     `max_passos` ou `max_review_rounds`, com `aprovado` False: planejar mídia aí
     gastaria horas de TTS e de SDXL num roteiro que o revisor reprovou.
     """
@@ -162,7 +209,7 @@ def _plano_de_midia(model, settings, run_dir: Path, final: dict,
     # sair 0 com o roteiro entregue: o roteiro aprovado é o entregável desta
     # etapa e falhar o plano de mídia não pode apagá-lo.
     except CoberturaInsuficiente as e:
-        # DETERMINÍSTICO: `fatiar` é puro e o roteiro já está congelado em
+        # DETERMINISTICO: `fatiar` é puro e o roteiro já está congelado em
         # disco, então a segunda tentativa falha exatamente igual à primeira,
         # para sempre. O retry-com-teto de S9 queimaria o orçamento inteiro
         # aqui. O conserto é no roteiro ou no fatiador, por uma pessoa.
@@ -177,7 +224,7 @@ def _plano_de_midia(model, settings, run_dir: Path, final: dict,
         logger.info("Plano de mídia já existe; o plano em disco foi mantido",
                     detalhe=str(e))
     except Exception as e:
-        # Timeout, `Model unloaded by user`, provider fora do ar: TRANSITÓRIO,
+        # Timeout, `Model unloaded by user`, provider fora do ar: TRANSITORIO,
         # vale retentar. `forge video` refaz o plano depois.
         logger.error("Plano de mídia falhou", error=str(e), exc_info=True,
                      retentar=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import sqlite3
 
 from forge.repositories.connection import Database
 
@@ -177,15 +177,22 @@ def _validate_schema_version_table(conn) -> None:
             "migração necessária"
         )
 
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
-    ).fetchone()
-    ddl = row[0] if row else ""
-    if not re.search(
-        r"\bCHECK\s*\(\s*\(*\s*id\s*\)*\s*=\s*\(*\s*1\s*\)*\s*\)",
-        ddl,
-        re.IGNORECASE,
-    ):
+    conn.execute("SAVEPOINT validate_schema_version_singleton")
+    try:
+        try:
+            conn.execute(
+                "INSERT INTO schema_version (id, version) VALUES (?, ?)",
+                (2, SCHEMA_VERSION),
+            )
+        except sqlite3.IntegrityError:
+            singleton_constraint_enforced = True
+        else:
+            singleton_constraint_enforced = False
+    finally:
+        conn.execute("ROLLBACK TO SAVEPOINT validate_schema_version_singleton")
+        conn.execute("RELEASE SAVEPOINT validate_schema_version_singleton")
+
+    if not singleton_constraint_enforced:
         raise RuntimeError(
             "Schema incompatível: schema_version requer CHECK(id = 1) para singleton "
             "físico; migração necessária"

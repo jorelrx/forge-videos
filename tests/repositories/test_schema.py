@@ -195,6 +195,24 @@ def test_init_db_rejeita_schema_version_legado_sem_check_do_singleton(tmp_path):
         init_db(db)
 
 
+def test_init_db_rejeita_check_de_singleton_apenas_em_comentario(tmp_path):
+    db = Database(tmp_path / "forge.db")
+
+    with db.connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                CHECK (version >= 1) /* CHECK(id = 1) */
+            )
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="incompatível|migração"):
+        init_db(db)
+
+
 def test_init_db_rejeita_schema_version_corrompida_com_duas_linhas(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)

@@ -90,6 +90,18 @@ def test_init_db_rejeita_schema_version_legado_sem_colunas_do_singleton(tmp_path
         init_db(db)
 
 
+def test_init_db_rejeita_schema_version_corrompida_com_duas_linhas(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute("INSERT INTO schema_version (id, version) VALUES (2, 1)")
+
+    with pytest.raises(RuntimeError, match="incompatível|migração"):
+        init_db(db)
+
+
 def test_artifact_rejeita_stage_run_de_outro_run(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)

@@ -170,25 +170,21 @@ def _validate_schema_version_table(conn) -> None:
 
 
 def _validate_schema_version(conn) -> None:
-    rows = conn.execute(
-        "SELECT version FROM schema_version WHERE id = 1"
-    ).fetchall()
+    rows = conn.execute("SELECT id, version FROM schema_version").fetchall()
     if not rows:
         conn.execute(
             "INSERT INTO schema_version (id, version) VALUES (?, ?)",
             (1, SCHEMA_VERSION),
         )
-        rows = conn.execute(
-            "SELECT version FROM schema_version WHERE id = 1"
-        ).fetchall()
+        rows = conn.execute("SELECT id, version FROM schema_version").fetchall()
 
-    if len(rows) != 1:
+    if len(rows) != 1 or rows[0][0] != 1:
         raise RuntimeError(
             "Schema incompatível: schema_version deve conter exatamente uma versão; "
             "migração necessária"
         )
 
-    version = rows[0][0]
+    version = rows[0][1]
     if version != SCHEMA_VERSION:
         raise RuntimeError(
             "Schema incompatível: migração necessária "

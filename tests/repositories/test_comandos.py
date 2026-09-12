@@ -77,6 +77,44 @@ def test_create_idempotent_retorna_comando_existente_para_mesma_chave_tipo_e_eta
 
 
 @pytest.mark.parametrize(
+    ("status", "expected_applied"),
+    [
+        (CommandStatus.PENDING, False),
+        (CommandStatus.ACCEPTED, False),
+        (CommandStatus.APPLIED, True),
+        (CommandStatus.REJECTED, True),
+    ],
+)
+def test_create_idempotent_sets_applied_at_for_terminal_statuses(db, status, expected_applied):
+    with db.transaction(immediate=True) as conn:
+        run = create_run(OperacaoRepository(conn), tema="Tema")
+        repo = ComandosRepository(conn)
+        command, created = repo.create_idempotent(
+            run_id=run.id,
+            type=CommandType.PAUSE,
+            stage=None,
+            idempotency_key=f"{status.value}-command",
+            status=status,
+        )
+        fetched = repo.get(command.id)
+
+        assert created is True
+        assert command.status is status
+        assert command.result == {}
+        assert fetched is not None
+        assert fetched.status is status
+        assert fetched.result == {}
+        if expected_applied:
+            assert command.applied_at is not None
+            assert command.applied_at.utcoffset().total_seconds() == 0
+            assert fetched.applied_at is not None
+            assert fetched.applied_at.utcoffset().total_seconds() == 0
+        else:
+            assert command.applied_at is None
+            assert fetched.applied_at is None
+
+
+@pytest.mark.parametrize(
     ("command_type", "stage"),
     [(CommandType.RESUME, None), (CommandType.PAUSE, StageName.AUDIO)],
 )

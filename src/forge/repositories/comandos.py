@@ -43,6 +43,11 @@ class ComandosRepository:
             raise IdempotencyConflict(run_id, idempotency_key)
 
         created_at = _now()
+        applied_at = (
+            created_at
+            if status in {CommandStatus.APPLIED, CommandStatus.REJECTED}
+            else None
+        )
         command = Command(
             id=str(uuid.uuid4()),
             run_id=run_id,
@@ -52,6 +57,7 @@ class ComandosRepository:
             status=status,
             result={},
             created_at=created_at,
+            applied_at=applied_at,
         )
         try:
             self.conn.execute(
@@ -69,7 +75,7 @@ class ComandosRepository:
                     command.status.value,
                     _json(command.result),
                     _iso(command.created_at),
-                    None,
+                    _iso(command.applied_at) if command.applied_at is not None else None,
                 ),
             )
         except sqlite3.IntegrityError:

@@ -69,7 +69,7 @@ class ControlPlaneService:
             return video, run
 
     def get_run(self, run_id: str) -> RunDetail:
-        with self.db.connection() as conn:
+        with self.db.transaction() as conn:
             operacao = OperacaoRepository(conn)
             run = operacao.get_run(run_id)
             if run is None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,7 +14,7 @@ from forge.domain.operacao import (
     StageStatus,
     dependentes_de,
 )
-from forge.repositories.comandos import IdempotencyConflict
+from forge.repositories.comandos import ComandosRepository, IdempotencyConflict
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
@@ -130,6 +131,46 @@ def test_getters_delegate_read_projections_and_unknown_run_is_key_error(control_
     assert error.value.args == ("missing-run",)
 
 
+def test_get_run_uses_one_snapshot_when_retry_commits_between_reads(control_plane, db, monkeypatch):
+    _, run = enqueue(control_plane)
+    save_run_status(db, run.id, RunStatus.FAILED)
+    reader_selected = threading.Event()
+    writer_committed = threading.Event()
+    reader_errors: list[BaseException] = []
+    reader_details = []
+    original_get_run = OperacaoRepository.get_run
+
+    def get_run_and_wait_after_reader_select(self, run_id: str):
+        result = original_get_run(self, run_id)
+        if threading.current_thread().name == "snapshot-reader":
+            reader_selected.set()
+            if not writer_committed.wait(timeout=5):
+                raise TimeoutError("writer did not commit while reader was paused")
+        return result
+
+    monkeypatch.setattr(OperacaoRepository, "get_run", get_run_and_wait_after_reader_select)
+
+    def reader() -> None:
+        try:
+            reader_details.append(control_plane.get_run(run.id))
+        except BaseException as error:  # noqa: BLE001 - the test reports reader failures
+            reader_errors.append(error)
+
+    reader_thread = threading.Thread(target=reader, name="snapshot-reader")
+    reader_thread.start()
+    assert reader_selected.wait(timeout=5)
+    control_plane.request_retry_stage(run.id, StageName.ROTEIRO, idempotency_key="retry-snapshot")
+    writer_committed.set()
+    reader_thread.join(timeout=5)
+
+    assert not reader_thread.is_alive()
+    assert reader_errors == []
+    assert len(reader_details) == 1
+    detail = reader_details[0]
+    assert detail.run.status is RunStatus.FAILED
+    assert next(stage for stage in detail.stages if stage.stage is StageName.ROTEIRO).attempt == 1
+
+
 def test_claim_emits_exact_event_payload_and_empty_queue_has_no_event(control_plane):
     _, run = enqueue(control_plane)
 
@@ -212,8 +253,13 @@ def test_resume_requeues_clears_fields_and_duplicate_wins(control_plane, db, sta
     command = control_plane.request_resume(run.id, idempotency_key=f"resume-{status.value}")
     duplicate = control_plane.request_resume(run.id, idempotency_key=f"resume-{status.value}")
     resumed = control_plane.get_run(run.id).run
+    with db.connection() as conn:
+        persisted_command = ComandosRepository(conn).get(command.id)
 
     assert command.status is CommandStatus.APPLIED
+    assert command.applied_at is not None
+    assert persisted_command is not None
+    assert persisted_command.applied_at is not None
     assert duplicate.id == command.id
     assert resumed.status is RunStatus.QUEUED
     assert resumed.lease_owner is None
@@ -269,6 +315,7 @@ def test_retry_invalidates_exact_downstream_artifacts_and_preserves_history(
             "SELECT stage, attempt, status FROM stage_runs WHERE run_id = ? ORDER BY stage, attempt",
             (run.id,),
         ).fetchall()
+        persisted_command = ComandosRepository(conn).get(command.id)
 
     dependent = dependentes_de(StageName.ROTEIRO)
     current_by_stage = {stage.stage: stage for stage in detail.stages}
@@ -278,6 +325,9 @@ def test_retry_invalidates_exact_downstream_artifacts_and_preserves_history(
     }
 
     assert command.status is CommandStatus.APPLIED
+    assert command.applied_at is not None
+    assert persisted_command is not None
+    assert persisted_command.applied_at is not None
     assert duplicate.id == command.id
     assert detail.run.status is RunStatus.QUEUED
     assert [current_by_stage[stage].attempt for stage in dependent] == [2] * len(dependent)

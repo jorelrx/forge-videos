@@ -414,6 +414,69 @@ def test_artifact_rejeita_valores_fora_dos_limites_em_cadeia_valida(tmp_path, co
             )
 
 
+def test_artifact_rejeita_run_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256,
+                    size_bytes, mime_type, metadata_json, created_at
+                ) VALUES (
+                    'artifact-run-invalido', 'run-inexistente', 'stage-1', 'work-1', 'script',
+                    'script.md', 'hash', 1, 'text/markdown', '{}', '2026-01-01'
+                )
+                """
+            )
+
+
+def test_artifact_rejeita_stage_run_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256,
+                    size_bytes, mime_type, metadata_json, created_at
+                ) VALUES (
+                    'artifact-stage-invalido', 'run-1', 'stage-inexistente', 'work-1', 'script',
+                    'script.md', 'hash', 1, 'text/markdown', '{}', '2026-01-01'
+                )
+                """
+            )
+
+
+def test_artifact_rejeita_work_item_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256,
+                    size_bytes, mime_type, metadata_json, created_at
+                ) VALUES (
+                    'artifact-work-invalido', 'run-1', 'stage-1', 'work-inexistente', 'script',
+                    'script.md', 'hash', 1, 'text/markdown', '{}', '2026-01-01'
+                )
+                """
+            )
+
+
 def test_command_rejeita_run_inexistente(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)
@@ -533,6 +596,85 @@ def test_artifact_rejeita_work_item_de_outro_stage_run(tmp_path):
                 ) VALUES (
                     'artifact-1', 'run-1', 'stage-1', 'work-2', 'script', 'script.md',
                     'hash', 1, 'text/markdown', '{}', '2026-01-01'
+                )
+                """
+            )
+
+
+def test_event_rejeita_run_inexistente_sem_stage_ou_work_item(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO events (run_id, kind, level, message, payload_json, created_at)
+            VALUES ('run-inexistente', 'started', 'info', 'mensagem', '{}', '2026-01-01')
+            """
+        )
+
+
+def test_event_rejeita_stage_run_inexistente_com_run_valido(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO events (
+                    run_id, stage_run_id, kind, level, message, payload_json, created_at
+                ) VALUES (
+                    'run-1', 'stage-inexistente', 'started', 'info', 'mensagem', '{}',
+                    '2026-01-01'
+                )
+                """
+            )
+
+
+def test_event_rejeita_work_item_inexistente_com_run_e_stage_validos(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO events (
+                    run_id, stage_run_id, work_item_id, kind, level, message, payload_json,
+                    created_at
+                ) VALUES (
+                    'run-1', 'stage-1', 'work-inexistente', 'started', 'info', 'mensagem',
+                    '{}', '2026-01-01'
+                )
+                """
+            )
+
+
+def test_event_rejeita_work_item_de_outro_stage_run(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+        _insert_chain(conn, run_id="run-2", stage_run_id="stage-2", work_item_id="work-2")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO events (
+                    run_id, stage_run_id, work_item_id, kind, level, message, payload_json,
+                    created_at
+                ) VALUES (
+                    'run-1', 'stage-1', 'work-2', 'started', 'info', 'mensagem', '{}',
+                    '2026-01-01'
                 )
                 """
             )

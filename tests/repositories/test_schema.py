@@ -225,6 +225,275 @@ def test_init_db_rejeita_schema_version_corrompida_com_duas_linhas(tmp_path):
         init_db(db)
 
 
+@pytest.mark.parametrize("tema", ["", "   "])
+def test_video_rejeita_tema_vazio_ou_apenas_espacos(tmp_path, tema):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO videos (id, tema, created_at, updated_at)
+            VALUES ('video-invalido', ?, '2026-01-01', '2026-01-01')
+            """,
+            (tema,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("priority", -1),
+        ("priority", 101),
+        ("queue_position", 0),
+        ("workflow_version", 0),
+    ],
+)
+def test_run_rejeita_valores_fora_dos_limites(tmp_path, column, value):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        conn.execute(
+            """
+            INSERT INTO videos (id, tema, created_at, updated_at)
+            VALUES ('video-1', 'tema', '2026-01-01', '2026-01-01')
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"""
+                INSERT INTO runs (
+                    id, video_id, status, priority, queue_position, config_snapshot_json,
+                    workflow_version, git_commit, created_at
+                ) VALUES (
+                    'run-invalido', 'video-1', 'queued',
+                    {value if column == 'priority' else 1},
+                    {value if column == 'queue_position' else 1},
+                    '{{}}',
+                    {value if column == 'workflow_version' else 1},
+                    'abc', '2026-01-01'
+                )
+                """
+            )
+
+
+def test_run_rejeita_video_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO runs (
+                id, video_id, status, priority, queue_position, config_snapshot_json,
+                workflow_version, git_commit, created_at
+            ) VALUES ('run-invalido', 'video-inexistente', 'queued', 1, 1, '{}', 1, 'abc',
+                      '2026-01-01')
+            """
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("attempt", 0),
+        ("current_items", -1),
+        ("total_items", -1),
+        ("progress", -0.01),
+        ("progress", 1.01),
+    ],
+)
+def test_stage_run_rejeita_valores_fora_dos_limites(tmp_path, column, value):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"""
+                INSERT INTO stage_runs (
+                    id, run_id, stage, attempt, status, current_items, total_items, progress,
+                    created_at
+                ) VALUES (
+                    'stage-invalido', 'run-1', 'review',
+                    {value if column == 'attempt' else 1}, 'queued',
+                    {value if column == 'current_items' else 0},
+                    {value if column == 'total_items' else 0},
+                    {value if column == 'progress' else 0}, '2026-01-01'
+                )
+                """
+            )
+
+
+def test_stage_run_rejeita_run_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO stage_runs (id, run_id, stage, attempt, status, created_at)
+            VALUES ('stage-invalido', 'run-inexistente', 'research', 1, 'queued', '2026-01-01')
+            """
+        )
+
+
+@pytest.mark.parametrize(("column", "value"), [("attempts", -1), ("duration_ms", -1)])
+def test_work_item_rejeita_valores_fora_dos_limites(tmp_path, column, value):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"""
+                INSERT INTO work_items (
+                    id, stage_run_id, item_key, status, input_json, input_hash, attempts,
+                    duration_ms
+                ) VALUES (
+                    'work-invalido', 'stage-1', 'item-invalido', 'queued', '{{}}', 'hash',
+                    {value if column == 'attempts' else 0},
+                    {value if column == 'duration_ms' else 0}
+                )
+                """
+            )
+
+
+def test_work_item_rejeita_stage_run_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO work_items (
+                id, stage_run_id, item_key, status, input_json, input_hash
+            ) VALUES ('work-invalido', 'stage-inexistente', 'item', 'queued', '{}', 'hash')
+            """
+        )
+
+
+@pytest.mark.parametrize(("column", "value"), [("size_bytes", -1), ("is_current", 2)])
+def test_artifact_rejeita_valores_fora_dos_limites_em_cadeia_valida(tmp_path, column, value):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"""
+                INSERT INTO artifacts (
+                    id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256,
+                    size_bytes, mime_type, metadata_json, is_current, created_at
+                ) VALUES (
+                    'artifact-invalido', 'run-1', 'stage-1', 'work-1', 'script', 'script.md',
+                    'hash', {value if column == 'size_bytes' else 1}, 'text/markdown', '{{}}',
+                    {value if column == 'is_current' else 1}, '2026-01-01'
+                )
+                """
+            )
+
+
+def test_command_rejeita_run_inexistente(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            """
+            INSERT INTO commands (
+                id, run_id, type, idempotency_key, status, result_json, created_at
+            ) VALUES (
+                'command-invalido', 'run-inexistente', 'start', 'command-1', 'pending', '{}',
+                '2026-01-01'
+            )
+            """
+        )
+
+
+def test_stage_run_rejeita_duplicidade_de_stage_e_attempt_por_run(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO stage_runs (id, run_id, stage, attempt, status, created_at)
+                VALUES ('stage-duplicado', 'run-1', 'research', 1, 'queued', '2026-01-01')
+                """
+            )
+
+
+def test_work_item_rejeita_duplicidade_de_item_key_por_stage_run(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO work_items (
+                    id, stage_run_id, item_key, status, input_json, input_hash
+                ) VALUES ('work-duplicado', 'stage-1', 'item', 'queued', '{}', 'hash')
+                """
+            )
+
+
+def test_command_rejeita_duplicidade_de_idempotency_key_por_run(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.transaction(immediate=True) as conn:
+        _insert_chain(conn, run_id="run-1", stage_run_id="stage-1", work_item_id="work-1")
+        conn.execute(
+            """
+            INSERT INTO commands (
+                id, run_id, type, idempotency_key, status, result_json, created_at
+            ) VALUES ('command-1', 'run-1', 'start', 'command-1', 'pending', '{}', '2026-01-01')
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO commands (
+                    id, run_id, type, idempotency_key, status, result_json, created_at
+                ) VALUES (
+                    'command-duplicado', 'run-1', 'start', 'command-1', 'pending', '{}',
+                    '2026-01-01'
+                )
+                """
+            )
+
+
 def test_artifact_rejeita_stage_run_de_outro_run(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)

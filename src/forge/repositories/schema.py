@@ -18,6 +18,7 @@ TABLES = {
 SCHEMA_SQL = (
     """
     CREATE TABLE IF NOT EXISTS schema_version (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
         version INTEGER NOT NULL
     )
     """,
@@ -67,6 +68,7 @@ SCHEMA_SQL = (
         finished_at TEXT,
         failure_code TEXT,
         failure_message TEXT,
+        UNIQUE(run_id, id),
         UNIQUE(run_id, stage, attempt)
     )
     """,
@@ -82,6 +84,7 @@ SCHEMA_SQL = (
         duration_ms INTEGER CHECK(duration_ms >= 0),
         failure_code TEXT,
         failure_message TEXT,
+        UNIQUE(stage_run_id, id),
         UNIQUE(stage_run_id, item_key)
     )
     """,
@@ -98,7 +101,9 @@ SCHEMA_SQL = (
         mime_type TEXT NOT NULL,
         metadata_json TEXT NOT NULL,
         is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0, 1)),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (run_id, stage_run_id) REFERENCES stage_runs(run_id, id),
+        FOREIGN KEY (stage_run_id, work_item_id) REFERENCES work_items(stage_run_id, id)
     )
     """,
     """
@@ -111,7 +116,11 @@ SCHEMA_SQL = (
         level TEXT NOT NULL,
         message TEXT NOT NULL,
         payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        CHECK(stage_run_id IS NULL OR run_id IS NOT NULL),
+        CHECK(work_item_id IS NULL OR (stage_run_id IS NOT NULL AND run_id IS NOT NULL)),
+        FOREIGN KEY (run_id, stage_run_id) REFERENCES stage_runs(run_id, id),
+        FOREIGN KEY (stage_run_id, work_item_id) REFERENCES work_items(stage_run_id, id)
     )
     """,
     """
@@ -151,15 +160,46 @@ SCHEMA_SQL = (
 )
 
 
+def _validate_schema_version_table(conn) -> None:
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(schema_version)")]
+    if len(columns) != 2 or set(columns) != {"id", "version"}:
+        raise RuntimeError(
+            "Schema incompatível: schema_version requer colunas id e version; "
+            "migração necessária"
+        )
+
+
+def _validate_schema_version(conn) -> None:
+    rows = conn.execute(
+        "SELECT version FROM schema_version WHERE id = 1"
+    ).fetchall()
+    if not rows:
+        conn.execute(
+            "INSERT INTO schema_version (id, version) VALUES (?, ?)",
+            (1, SCHEMA_VERSION),
+        )
+        rows = conn.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchall()
+
+    if len(rows) != 1:
+        raise RuntimeError(
+            "Schema incompatível: schema_version deve conter exatamente uma versão; "
+            "migração necessária"
+        )
+
+    version = rows[0][0]
+    if version != SCHEMA_VERSION:
+        raise RuntimeError(
+            "Schema incompatível: migração necessária "
+            f"(banco={version}, código={SCHEMA_VERSION})"
+        )
+
+
 def init_db(db: Database) -> None:
     with db.transaction(immediate=True) as conn:
         for statement in SCHEMA_SQL:
             conn.execute(statement)
 
-        row = conn.execute("SELECT version FROM schema_version").fetchone()
-        if row is None:
-            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] > SCHEMA_VERSION:
-            raise RuntimeError(
-                "Versão do schema é mais nova que a versão suportada pelo código"
-            )
+        _validate_schema_version_table(conn)
+        _validate_schema_version(conn)

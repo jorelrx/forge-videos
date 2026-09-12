@@ -8,13 +8,20 @@ from pathlib import Path
 
 class Database:
     def __init__(self, path: Path, *, busy_timeout_ms: int = 5000) -> None:
+        if busy_timeout_ms < 0:
+            raise ValueError("busy_timeout_ms deve ser maior ou igual a zero")
+
         self.path = Path(path)
         self.busy_timeout_ms = busy_timeout_ms
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, isolation_level=None, timeout=5)
+        conn = sqlite3.connect(
+            self.path,
+            isolation_level=None,
+            timeout=self.busy_timeout_ms / 1000,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")

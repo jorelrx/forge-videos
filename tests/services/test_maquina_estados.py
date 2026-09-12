@@ -22,7 +22,12 @@ RUN_DESTINOS_PERMITIDOS = {
     ),
     RunStatus.PAUSED: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),
     RunStatus.VALIDATING: frozenset(
-        {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.INTERRUPTED}
+        {
+            RunStatus.PAUSING,
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.INTERRUPTED,
+        }
     ),
     RunStatus.FAILED: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),
     RunStatus.INTERRUPTED: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),

@@ -29,7 +29,12 @@ _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyType(
         ),
         RunStatus.PAUSED: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),
         RunStatus.VALIDATING: frozenset(
-            {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.INTERRUPTED}
+            {
+                RunStatus.PAUSING,
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.INTERRUPTED,
+            }
         ),
         RunStatus.COMPLETED: frozenset(),
         RunStatus.FAILED: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),

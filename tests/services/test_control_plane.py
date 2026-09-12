@@ -160,9 +160,13 @@ def test_claim_validation_errors_propagate_without_events(control_plane, worker_
     assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == ["run.queued"]
 
 
-def test_pause_running_sets_timestamp_and_is_idempotent(control_plane, db):
+@pytest.mark.parametrize(
+    "initial_status",
+    [RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.VALIDATING],
+)
+def test_pause_valid_paths_set_timestamp_and_are_idempotent(control_plane, db, initial_status):
     _, run = enqueue(control_plane)
-    save_run_status(db, run.id, RunStatus.RUNNING)
+    save_run_status(db, run.id, initial_status)
 
     command = control_plane.request_pause(run.id, idempotency_key="pause-1")
     duplicate = control_plane.request_pause(run.id, idempotency_key="pause-1")

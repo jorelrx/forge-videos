@@ -9,7 +9,11 @@ from forge.domain.operacao import Command, CommandStatus, CommandType, StageName
 
 
 class IdempotencyConflict(ValueError):
-    pass
+    def __init__(self, run_id: str, idempotency_key: str) -> None:
+        super().__init__(
+            f"idempotency key {idempotency_key!r} already has another payload "
+            f"for run {run_id}"
+        )
 
 
 class ComandosRepository:
@@ -36,9 +40,7 @@ class ComandosRepository:
             command = _command_from_row(existing)
             if command.type == type and command.stage == stage:
                 return command, False
-            raise IdempotencyConflict(
-                f"idempotency key {idempotency_key!r} conflicts for run {run_id!r}"
-            )
+            raise IdempotencyConflict(run_id, idempotency_key)
 
         created_at = _now()
         command = Command(

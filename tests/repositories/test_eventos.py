@@ -33,6 +33,8 @@ def test_append_gera_ids_monotonicos_e_after_pagina_sem_eventos_extras(db):
         run = create_run(OperacaoRepository(conn), tema="Tema")
         repo = EventosRepository(conn)
 
+        assert repo.after(0, limit=1000) == []
+
         first = repo.append(
             kind="run.created",
             level="info",

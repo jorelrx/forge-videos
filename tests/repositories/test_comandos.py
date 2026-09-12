@@ -83,8 +83,9 @@ def test_mesma_chave_com_tipo_ou_etapa_diferente_gera_conflito(db, command_type,
                 status=CommandStatus.PENDING,
             )
 
-        assert "control-1" in str(error.value)
-        assert run.id in str(error.value)
+        expected = f"idempotency key 'control-1' already has another payload for run {run.id}"
+        assert str(error.value) == expected
+        assert str(IdempotencyConflict(run.id, "control-1")) == expected
 
 
 @pytest.mark.parametrize("key", ["", "   ", "\t"])
@@ -193,6 +194,17 @@ def test_set_status_persiste_resultado_e_applied_at_apenas_para_estado_terminal(
         applied = repo.set_status(applied.id, CommandStatus.APPLIED, result={"done": True})
         rejected = repo.set_status(rejected.id, CommandStatus.REJECTED, result={"reason": "gate"})
         pending = repo.set_status(pending.id, CommandStatus.PENDING, result={"retry": 1})
+
+        for command, expected_status in (
+            (accepted, CommandStatus.ACCEPTED),
+            (applied, CommandStatus.APPLIED),
+            (rejected, CommandStatus.REJECTED),
+            (pending, CommandStatus.PENDING),
+        ):
+            assert command.status == expected_status
+            fetched = repo.get(command.id)
+            assert fetched is not None
+            assert fetched.status == expected_status
 
         assert accepted.applied_at is None
         assert applied.applied_at is not None

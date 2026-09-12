@@ -1,13 +1,14 @@
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from forge.gpu.broker import GPUOcupada
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import get_settings
+from forge.infrastructure.logging import get_logger, setup_logging
 from forge.llms.model import build_chat_model
-from forge.infrastructure.logging import setup_logging, get_logger
 from forge.orchestration.graph import build_graph
 from forge.services.storage import gravar_roteiro
 
@@ -98,20 +99,21 @@ def _cmd_roteiro(args) -> int:
     try:
         if settings.provider == "lm-studio":
             logger.info("GPU lock skipped: lm-studio provider runs LLM via HTTP, not VRAM")
-            result = _executar_grafo(model, settings, graph, estado_inicial)
+            slot_llm = nullcontext()
         else:
-            with montar_broker(settings).exclusivo("llm"):
-                result = _executar_grafo(model, settings, graph, estado_inicial)
+            slot_llm = montar_broker(settings).exclusivo("llm")
 
-        aprovado = (
-            result["review"].aprovado if result.get("review") is not None else None
-        )
-        path = gravar_roteiro(
-            result["roteiro"], settings, rounds=result.get("rounds"), aprovado=aprovado
-        )
-        logger.info("Completed", output_path=str(path), aprovados=aprovado)
+        with slot_llm:
+            result = _executar_grafo(model, settings, graph, estado_inicial)
+            aprovado = (
+                result["review"].aprovado if result.get("review") is not None else None
+            )
+            path = gravar_roteiro(
+                result["roteiro"], settings, rounds=result.get("rounds"), aprovado=aprovado
+            )
+            logger.info("Completed", output_path=str(path), aprovados=aprovado)
 
-        _plano_de_midia(model, settings, run_dir, result, aprovado)
+            _plano_de_midia(model, settings, run_dir, result, aprovado)
     except GPUOcupada as e:
         # Outro forge segurando a placa é o caso NORMAL que o lock existe para
         # produzir, não um bug: sai como os demais erros previstos deste comando

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     model: str | None = None
     effort: str = "high"
     output_dir: Path = Path("output/roteiros")
+    studio_db_path: Path = Path("data/forge.db")
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20

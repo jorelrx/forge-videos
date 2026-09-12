@@ -4,12 +4,14 @@ import pytest
 
 from forge.infrastructure.config import Settings, get_settings
 
+
 def test_defaults():
     s = Settings(_env_file=None)
     assert s.resolved_model == "claude-opus-4-8"
     assert s.effort == "high"
     assert s.max_review_rounds == 8
     assert s.output_dir == Path("output/roteiros")
+
 
 def test_env_prefix(monkeypatch):
     monkeypatch.setenv("FORGE_MODEL", "claude-sonnet-5")
@@ -18,11 +20,13 @@ def test_env_prefix(monkeypatch):
     assert s.resolved_model == "claude-sonnet-5"
     assert s.max_review_rounds == 3
 
+
 def test_api_key_fallback(monkeypatch):
     monkeypatch.delenv("FORGE_ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     s = Settings(_env_file=None)
     assert s.anthropic_api_key == "sk-test"
+
 
 def test_get_settings_cached():
     assert get_settings() is get_settings()
@@ -149,3 +153,22 @@ def test_nenhum_settings_da_suite_aponta_para_os_dados_do_usuario(tmp_path):
     assert s.gaps_file is not None and s.respostas_ruins_file is not None
     assert s.gaps_file.parent == tmp_path
     assert s.respostas_ruins_file.parent == tmp_path
+
+
+def test_studio_db_path_tem_default_local(monkeypatch):
+    monkeypatch.delenv("FORGE_STUDIO_DB_PATH", raising=False)
+
+    assert Settings(_env_file=None).studio_db_path == Path("data/forge.db")
+
+
+def test_studio_db_path_aceita_override_por_ambiente(monkeypatch, tmp_path):
+    studio_db_path = tmp_path / "studio" / "forge.db"
+    monkeypatch.setenv("FORGE_STUDIO_DB_PATH", str(studio_db_path))
+
+    assert Settings(_env_file=None).studio_db_path == studio_db_path
+
+
+def test_studio_db_path_aceita_construtor_direto(tmp_path):
+    studio_db_path = tmp_path / "forge.db"
+
+    assert Settings(_env_file=None, studio_db_path=studio_db_path).studio_db_path == studio_db_path

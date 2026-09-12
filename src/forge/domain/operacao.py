@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Self
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 
 class RunStatus(StrEnum):
@@ -64,18 +73,29 @@ class CommandStatus(StrEnum):
 
 
 ETAPAS = tuple(StageName)
+JSON_OBJECT = dict[str, JsonValue]
+WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _require_utc(value: datetime) -> datetime:
+    if value.utcoffset() != timedelta(0):
+        raise ValueError("timestamp must use UTC")
+    return value
+
+
+UtcDatetime = Annotated[AwareDatetime, AfterValidator(_require_utc)]
 
 
 def dependentes_de(stage: StageName) -> tuple[StageName, ...]:
-    return ETAPAS[ETAPAS.index(stage):]
+    return ETAPAS[ETAPAS.index(stage) :]
 
 
 class Video(BaseModel):
     id: str
     tema: str = Field(min_length=1, max_length=500)
     tese: str | None = Field(default=None, max_length=2000)
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class Run(BaseModel):
@@ -84,15 +104,15 @@ class Run(BaseModel):
     status: RunStatus
     priority: int = Field(ge=0, le=100)
     queue_position: int = Field(ge=1)
-    config_snapshot: dict[str, Any]
+    config_snapshot: JSON_OBJECT
     workflow_version: int = Field(ge=1)
     git_commit: str
     lease_owner: str | None = None
-    lease_expires_at: datetime | None = None
-    pause_requested_at: datetime | None = None
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    lease_expires_at: UtcDatetime | None = None
+    pause_requested_at: UtcDatetime | None = None
+    created_at: UtcDatetime
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
     failure_code: str | None = None
     failure_message: str | None = None
 
@@ -108,11 +128,17 @@ class StageRun(BaseModel):
     progress: float = Field(default=0, ge=0, le=1)
     gate_status: str | None = None
     input_hash: str | None = None
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    created_at: UtcDatetime
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+
+    @model_validator(mode="after")
+    def current_items_do_not_exceed_total_items(self) -> Self:
+        if self.current_items > self.total_items:
+            raise ValueError("current_items cannot exceed total_items")
+        return self
 
 
 class WorkItem(BaseModel):
@@ -120,7 +146,7 @@ class WorkItem(BaseModel):
     stage_run_id: str
     item_key: str
     status: ItemStatus
-    input: dict[str, Any]
+    input: JSON_OBJECT
     input_hash: str
     attempts: int = Field(default=0, ge=0)
     duration_ms: int | None = Field(default=None, ge=0)
@@ -138,9 +164,22 @@ class Artifact(BaseModel):
     sha256: str
     size_bytes: int = Field(ge=0)
     mime_type: str
-    metadata: dict[str, Any]
+    metadata: JSON_OBJECT
     is_current: bool
-    created_at: datetime
+    created_at: UtcDatetime
+
+    @field_validator("relative_path")
+    @classmethod
+    def relative_path_stays_within_run_output(cls, value: str) -> str:
+        normalized = value.replace("\\", "/")
+        if (
+            not normalized
+            or normalized.startswith("/")
+            or WINDOWS_DRIVE_PREFIX.match(normalized)
+            or ".." in normalized.split("/")
+        ):
+            raise ValueError("relative_path must stay within the run output")
+        return normalized
 
 
 class Event(BaseModel):
@@ -151,8 +190,8 @@ class Event(BaseModel):
     kind: str
     level: str
     message: str
-    payload: dict[str, Any]
-    created_at: datetime
+    payload: JSON_OBJECT
+    created_at: UtcDatetime
 
 
 class Command(BaseModel):
@@ -162,6 +201,6 @@ class Command(BaseModel):
     stage: StageName | None = None
     idempotency_key: str
     status: CommandStatus
-    result: dict[str, Any]
-    created_at: datetime
-    applied_at: datetime | None = None
+    result: JSON_OBJECT
+    created_at: UtcDatetime
+    applied_at: UtcDatetime | None = None

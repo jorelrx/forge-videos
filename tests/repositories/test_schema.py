@@ -5,6 +5,27 @@ import pytest
 from forge.repositories.connection import Database
 from forge.repositories.schema import SCHEMA_VERSION, TABLES, init_db
 
+APP_INDEXES = {
+    "idx_runs_queue": [
+        ("status", "ASC"),
+        ("priority", "DESC"),
+        ("queue_position", "ASC"),
+        ("created_at", "ASC"),
+    ],
+    "idx_stage_runs_current": [
+        ("run_id", "ASC"),
+        ("stage", "ASC"),
+        ("attempt", "DESC"),
+    ],
+    "idx_artifacts_current": [
+        ("run_id", "ASC"),
+        ("is_current", "ASC"),
+        ("kind", "ASC"),
+    ],
+    "idx_events_cursor": [("run_id", "ASC"), ("id", "ASC")],
+    "idx_commands_pending": [("status", "ASC"), ("created_at", "ASC")],
+}
+
 
 def _insert_chain(conn, *, run_id: str, stage_run_id: str, work_item_id: str) -> None:
     conn.execute(
@@ -40,6 +61,15 @@ def _insert_chain(conn, *, run_id: str, stage_run_id: str, work_item_id: str) ->
     )
 
 
+def _index_columns(conn, index_name: str) -> list[tuple[str, str]]:
+    rows = conn.execute(f"PRAGMA index_xinfo({index_name})").fetchall()
+    return [
+        (row[2], "DESC" if row[3] else "ASC")
+        for row in rows
+        if row[5] == 1
+    ]
+
+
 def test_init_db_cria_exatamente_todas_as_tabelas_do_app(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)
@@ -54,6 +84,35 @@ def test_init_db_cria_exatamente_todas_as_tabelas_do_app(tmp_path):
         }
 
     assert names == TABLES
+
+
+def test_init_db_cria_exatamente_os_cinco_indices_explicitos_do_app(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.connection() as conn:
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%'"
+            )
+        }
+
+    assert names == set(APP_INDEXES)
+
+
+def test_init_db_configura_colunas_e_ordem_dos_indices_explicitos(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with db.connection() as conn:
+        actual = {
+            index_name: _index_columns(conn, index_name)
+            for index_name in APP_INDEXES
+        }
+
+    assert actual == APP_INDEXES
 
 
 def test_init_db_e_idempotente_e_mantem_singleton_da_versao(tmp_path):
@@ -78,6 +137,17 @@ def test_schema_version_impede_fisicamente_id_diferente_de_um(tmp_path):
         conn.execute("INSERT INTO schema_version (id, version) VALUES (2, 1)")
 
 
+def test_schema_version_impede_fisicamente_segunda_linha_com_id_um(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute("INSERT INTO schema_version (id, version) VALUES (1, 1)")
+
+
 @pytest.mark.parametrize("version", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
 def test_init_db_rejeita_schema_com_versao_diferente_da_suportada(tmp_path, version):
     db = Database(tmp_path / "forge.db")
@@ -96,6 +166,18 @@ def test_init_db_rejeita_schema_version_legado_sem_colunas_do_singleton(tmp_path
     with db.connection() as conn:
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
         conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+
+    with pytest.raises(RuntimeError, match="incompatível|migração"):
+        init_db(db)
+
+
+def test_init_db_rejeita_schema_version_legado_sem_primary_key_do_singleton(tmp_path):
+    db = Database(tmp_path / "forge.db")
+
+    with db.connection() as conn:
+        conn.execute(
+            "CREATE TABLE schema_version (id INTEGER CHECK(id=1), version INTEGER NOT NULL)"
+        )
 
     with pytest.raises(RuntimeError, match="incompatível|migração"):
         init_db(db)

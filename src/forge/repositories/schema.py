@@ -163,10 +163,17 @@ SCHEMA_SQL = (
 
 
 def _validate_schema_version_table(conn) -> None:
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(schema_version)")]
-    if len(columns) != 2 or set(columns) != {"id", "version"}:
+    columns = list(conn.execute("PRAGMA table_info(schema_version)"))
+    column_by_name = {column[1]: column for column in columns}
+    if len(columns) != 2 or set(column_by_name) != {"id", "version"}:
         raise RuntimeError(
             "Schema incompatível: schema_version requer colunas id e version; "
+            "migração necessária"
+        )
+
+    if column_by_name["id"][5] != 1 or column_by_name["version"][5] != 0:
+        raise RuntimeError(
+            "Schema incompatível: schema_version requer id como única chave primária; "
             "migração necessária"
         )
 

@@ -283,15 +283,22 @@ class OperacaoRepository:
             "SELECT 1 FROM runs WHERE id = ?", (artifact.run_id,)
         ).fetchone() is None:
             raise KeyError(artifact.run_id)
-        if self.conn.execute(
-            "SELECT 1 FROM stage_runs WHERE id = ?", (artifact.stage_run_id,)
-        ).fetchone() is None:
+        stage_run = self.conn.execute(
+            "SELECT status FROM stage_runs WHERE id = ?", (artifact.stage_run_id,)
+        ).fetchone()
+        if stage_run is None:
             raise KeyError(artifact.stage_run_id)
         if artifact.work_item_id is not None and self.conn.execute(
             "SELECT 1 FROM work_items WHERE id = ?", (artifact.work_item_id,)
         ).fetchone() is None:
             raise KeyError(artifact.work_item_id)
 
+        persisted = artifact.model_copy(
+            update={
+                "is_current": artifact.is_current
+                and stage_run["status"] != StageStatus.INVALIDATED.value
+            }
+        )
         self.conn.execute(
             """
             INSERT INTO artifacts (
@@ -300,21 +307,21 @@ class OperacaoRepository:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                artifact.id,
-                artifact.run_id,
-                artifact.stage_run_id,
-                artifact.work_item_id,
-                artifact.kind,
-                artifact.relative_path,
-                artifact.sha256,
-                artifact.size_bytes,
-                artifact.mime_type,
-                _json(artifact.metadata),
-                int(artifact.is_current),
-                _iso(artifact.created_at),
+                persisted.id,
+                persisted.run_id,
+                persisted.stage_run_id,
+                persisted.work_item_id,
+                persisted.kind,
+                persisted.relative_path,
+                persisted.sha256,
+                persisted.size_bytes,
+                persisted.mime_type,
+                _json(persisted.metadata),
+                int(persisted.is_current),
+                _iso(persisted.created_at),
             ),
         )
-        return artifact
+        return persisted
 
     def invalidate_artifacts(self, run_id: str, stages: tuple[StageName, ...]) -> int:
         if self.conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:

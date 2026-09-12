@@ -231,6 +231,36 @@ def test_artifacts_registro_invalidacao_e_filtro_current_only(db):
         assert [item.id for item in repo.list_artifacts(run.id)] == ["artifact-2"]
 
 
+def test_artifact_tardio_de_etapa_invalidada_eh_persistido_como_nao_atual(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = create_run(repo)
+        roteiro_attempt1 = next(
+            stage for stage in repo.current_stages(run.id) if stage.stage is StageName.ROTEIRO
+        )
+        repo.invalidate_from_stage(run.id, StageName.ROTEIRO)
+
+        late_artifact = repo.register_artifact(
+            artifact_for(run.id, roteiro_attempt1.id, artifact_id="late-roteiro")
+        )
+        roteiro_attempt2 = next(
+            stage for stage in repo.current_stages(run.id) if stage.stage is StageName.ROTEIRO
+        )
+        current_artifact = repo.register_artifact(
+            artifact_for(run.id, roteiro_attempt2.id, artifact_id="current-roteiro")
+        )
+
+        assert late_artifact.is_current is False
+        assert current_artifact.is_current is True
+        assert [item.id for item in repo.list_artifacts(run.id)] == [current_artifact.id]
+        assert [(item.id, item.is_current) for item in repo.list_artifacts(
+            run.id, current_only=False
+        )] == [
+            (late_artifact.id, False),
+            (current_artifact.id, True),
+        ]
+
+
 def test_invalidate_artifacts_falha_para_run_desconhecida_com_ou_sem_etapas(db):
     with db.transaction(immediate=True) as conn:
         repo = OperacaoRepository(conn)

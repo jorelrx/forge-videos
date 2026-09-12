@@ -67,6 +67,17 @@ def test_init_db_e_idempotente_e_mantem_singleton_da_versao(tmp_path):
     assert [tuple(row) for row in rows] == [(1, SCHEMA_VERSION)]
 
 
+def test_schema_version_impede_fisicamente_id_diferente_de_um(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+
+    with (
+        db.transaction(immediate=True) as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute("INSERT INTO schema_version (id, version) VALUES (2, 1)")
+
+
 @pytest.mark.parametrize("version", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
 def test_init_db_rejeita_schema_com_versao_diferente_da_suportada(tmp_path, version):
     db = Database(tmp_path / "forge.db")
@@ -85,6 +96,18 @@ def test_init_db_rejeita_schema_version_legado_sem_colunas_do_singleton(tmp_path
     with db.connection() as conn:
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
         conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+
+    with pytest.raises(RuntimeError, match="incompatível|migração"):
+        init_db(db)
+
+
+def test_init_db_rejeita_schema_version_legado_sem_check_do_singleton(tmp_path):
+    db = Database(tmp_path / "forge.db")
+
+    with db.connection() as conn:
+        conn.execute(
+            "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL)"
+        )
 
     with pytest.raises(RuntimeError, match="incompatível|migração"):
         init_db(db)

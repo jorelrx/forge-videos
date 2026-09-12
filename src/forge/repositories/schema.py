@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from forge.repositories.connection import Database
 
 SCHEMA_VERSION = 1
@@ -166,6 +168,20 @@ def _validate_schema_version_table(conn) -> None:
         raise RuntimeError(
             "Schema incompatível: schema_version requer colunas id e version; "
             "migração necessária"
+        )
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    ddl = row[0] if row else ""
+    if not re.search(
+        r"\bCHECK\s*\(\s*\(*\s*id\s*\)*\s*=\s*\(*\s*1\s*\)*\s*\)",
+        ddl,
+        re.IGNORECASE,
+    ):
+        raise RuntimeError(
+            "Schema incompatível: schema_version requer CHECK(id = 1) para singleton "
+            "físico; migração necessária"
         )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import uuid
 
 import pytest
@@ -10,6 +11,23 @@ from forge.repositories.comandos import ComandosRepository, IdempotencyConflict
 from forge.repositories.connection import Database
 from forge.repositories.operacao import OperacaoRepository
 from forge.repositories.schema import init_db
+
+
+class _BarrierAfterInitialIdempotencySelect:
+    def __init__(self, conn: sqlite3.Connection, barrier: threading.Barrier) -> None:
+        self._conn = conn
+        self._barrier = barrier
+        self._initial_idempotency_select_seen = False
+
+    def execute(self, sql: str, parameters: tuple[object, ...] = ()):
+        cursor = self._conn.execute(sql, parameters)
+        if (
+            not self._initial_idempotency_select_seen
+            and sql == "SELECT * FROM commands WHERE run_id = ? AND idempotency_key = ?"
+        ):
+            self._initial_idempotency_select_seen = True
+            self._barrier.wait(timeout=5)
+        return cursor
 
 
 @pytest.fixture
@@ -249,3 +267,45 @@ def test_create_idempotent_para_run_inexistente_propaga_integrity_error_sem_fals
                 idempotency_key="shared-key",
                 status=CommandStatus.PENDING,
             )
+
+
+def test_create_idempotent_retoma_comando_existente_quando_duas_conexoes_veem_ausencia(tmp_path):
+    database = Database(tmp_path / "concurrent-forge.db")
+    init_db(database)
+    with database.transaction(immediate=True) as conn:
+        run = create_run(OperacaoRepository(conn), tema="Tema")
+
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, bool]] = []
+    errors: list[Exception] = []
+    result_lock = threading.Lock()
+
+    def worker() -> None:
+        try:
+            with database.connection() as conn:
+                command, created = ComandosRepository(
+                    _BarrierAfterInitialIdempotencySelect(conn, barrier)
+                ).create_idempotent(
+                    run_id=run.id,
+                    type=CommandType.RETRY_STAGE,
+                    stage=StageName.ROTEIRO,
+                    idempotency_key="concurrent-retry-roteiro",
+                    status=CommandStatus.PENDING,
+                )
+            with result_lock:
+                results.append((command.id, created))
+        except Exception as error:  # noqa: BLE001 - the test reports every worker failure
+            with result_lock:
+                errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not [thread for thread in threads if thread.is_alive()]
+    assert errors == []
+    assert len(results) == 2
+    assert len({command_id for command_id, _ in results}) == 1
+    assert sorted(created for _, created in results) == [False, True]

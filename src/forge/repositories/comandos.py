@@ -53,24 +53,36 @@ class ComandosRepository:
             result={},
             created_at=created_at,
         )
-        self.conn.execute(
-            """
-            INSERT INTO commands (
-                id, run_id, type, stage, idempotency_key, status, result_json, created_at, applied_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                command.id,
-                command.run_id,
-                command.type.value,
-                command.stage.value if command.stage is not None else None,
-                command.idempotency_key,
-                command.status.value,
-                _json(command.result),
-                _iso(command.created_at),
-                None,
-            ),
-        )
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO commands (
+                    id, run_id, type, stage, idempotency_key, status, result_json, created_at, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    command.id,
+                    command.run_id,
+                    command.type.value,
+                    command.stage.value if command.stage is not None else None,
+                    command.idempotency_key,
+                    command.status.value,
+                    _json(command.result),
+                    _iso(command.created_at),
+                    None,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            existing = self.conn.execute(
+                "SELECT * FROM commands WHERE run_id = ? AND idempotency_key = ?",
+                (run_id, idempotency_key),
+            ).fetchone()
+            if existing is None:
+                raise
+            command = _command_from_row(existing)
+            if command.type == type and command.stage == stage:
+                return command, False
+            raise IdempotencyConflict(run_id, idempotency_key)
         return command, True
 
     def get(self, command_id: str) -> Command | None:

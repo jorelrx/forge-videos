@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from forge.repositories.connection import Database
 
-
 SCHEMA_VERSION = 1
 
 TABLES = {

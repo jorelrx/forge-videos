@@ -231,10 +231,52 @@ def test_artifacts_registro_invalidacao_e_filtro_current_only(db):
         assert [item.id for item in repo.list_artifacts(run.id)] == ["artifact-2"]
 
 
-def test_get_unknown_e_none_e_artifact_fk_invalida_propaga_integrity_error(db):
+def test_invalidate_artifacts_falha_para_run_desconhecida_com_ou_sem_etapas(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+
+        with pytest.raises(KeyError) as nonempty_error:
+            repo.invalidate_artifacts("missing-nonempty-run", (StageName.ROTEIRO,))
+        assert nonempty_error.value.args == ("missing-nonempty-run",)
+
+        with pytest.raises(KeyError) as empty_error:
+            repo.invalidate_artifacts("missing-empty-run", ())
+        assert empty_error.value.args == ("missing-empty-run",)
+
+
+def test_get_unknown_e_none_e_artifact_ids_desconhecidos_falham(db):
     with db.transaction(immediate=True) as conn:
         repo = OperacaoRepository(conn)
         assert repo.get_run("missing") is None
+        _, run = create_run(repo)
+        roteiro_stage = next(
+            stage for stage in repo.current_stages(run.id) if stage.stage is StageName.ROTEIRO
+        )
+
+        with pytest.raises(KeyError) as run_error:
+            repo.register_artifact(
+                artifact_for("missing-run", roteiro_stage.id, artifact_id="missing-run-artifact")
+            )
+        assert run_error.value.args == ("missing-run",)
+
+        with pytest.raises(KeyError) as stage_error:
+            repo.register_artifact(
+                artifact_for(run.id, "missing-stage", artifact_id="missing-stage-artifact")
+            )
+        assert stage_error.value.args == ("missing-stage",)
+
+        with pytest.raises(KeyError) as work_item_error:
+            repo.register_artifact(
+                artifact_for(run.id, roteiro_stage.id, artifact_id="missing-work-item-artifact").model_copy(
+                    update={"work_item_id": "missing-work-item"}
+                )
+            )
+        assert work_item_error.value.args == ("missing-work-item",)
+
+
+def test_artifact_fk_invalida_propaga_integrity_error(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
         _, first = create_run(repo, tema="first")
         _, second = create_run(repo, tema="second")
         second_stage = repo.current_stages(second.id)[0]

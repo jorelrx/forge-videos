@@ -279,6 +279,19 @@ class OperacaoRepository:
         return new_stages
 
     def register_artifact(self, artifact: Artifact) -> Artifact:
+        if self.conn.execute(
+            "SELECT 1 FROM runs WHERE id = ?", (artifact.run_id,)
+        ).fetchone() is None:
+            raise KeyError(artifact.run_id)
+        if self.conn.execute(
+            "SELECT 1 FROM stage_runs WHERE id = ?", (artifact.stage_run_id,)
+        ).fetchone() is None:
+            raise KeyError(artifact.stage_run_id)
+        if artifact.work_item_id is not None and self.conn.execute(
+            "SELECT 1 FROM work_items WHERE id = ?", (artifact.work_item_id,)
+        ).fetchone() is None:
+            raise KeyError(artifact.work_item_id)
+
         self.conn.execute(
             """
             INSERT INTO artifacts (
@@ -304,6 +317,8 @@ class OperacaoRepository:
         return artifact
 
     def invalidate_artifacts(self, run_id: str, stages: tuple[StageName, ...]) -> int:
+        if self.conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+            raise KeyError(run_id)
         if not stages:
             return 0
         placeholders = ", ".join("?" for _ in stages)

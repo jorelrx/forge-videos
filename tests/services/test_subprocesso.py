@@ -332,27 +332,108 @@ def test_timeout_terminates_descendant_process(tmp_path):
             terminate_process_tree(descendant_pid)
 
 
-def test_windows_taskkill_fallback_terminates_live_tree(monkeypatch, tmp_path):
+def test_windows_job_unavailable_fails_closed_without_resume(monkeypatch):
     if os.name != "nt":
         pytest.skip("Windows fallback")
+    calls: list[str] = []
+
+    class FakeStream:
+        def close(self):
+            calls.append("close-pipe")
+
+    class FakeProcess:
+        pid = 123
+        _handle = 456
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        def kill(self):
+            calls.append("kill")
+
+        def poll(self):
+            return -9
+
+        def wait(self, timeout=None):
+            calls.append("wait")
+
+    monkeypatch.setattr(
+        subprocesso.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
     monkeypatch.setattr(
         subprocesso._WindowsJobObject,
         "try_create",
         classmethod(lambda cls, process: None),
     )
-    pid_path = tmp_path / "descendant.pid"
-    descendant_pid = None
-    try:
-        result = SubprocessExecutor(
-            descendant_child(str(pid_path)), timeout_seconds=0.1
-        ).execute(None, lambda **event: None)
-        descendant_pid = wait_for_pid(pid_path)
 
-        assert result.failure_code == "subprocess_timeout"
-        assert wait_for_process_exit(descendant_pid)
-    finally:
-        if descendant_pid is not None:
-            terminate_process_tree(descendant_pid)
+    def fail_resume(process):
+        raise AssertionError("resume")
+
+    monkeypatch.setattr(
+        SubprocessExecutor,
+        "_resume_windows_process",
+        staticmethod(fail_resume),
+    )
+
+    with pytest.raises(RuntimeError, match="Job Object indisponível"):
+        SubprocessExecutor(["trusted-worker"])._spawn_process()
+
+    assert calls == ["kill", "close-pipe", "close-pipe", "wait"]
+
+
+def test_windows_job_assignment_failure_fails_closed_without_resume(monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows fallback")
+    calls: list[str] = []
+
+    class FakeStream:
+        def close(self):
+            calls.append("close-pipe")
+
+    class FakeProcess:
+        pid = 123
+        _handle = 456
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        def kill(self):
+            calls.append("kill")
+
+        def poll(self):
+            return -9
+
+        def wait(self, timeout=None):
+            calls.append("wait")
+
+    monkeypatch.setattr(
+        subprocesso.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+
+    def fail_job(cls, process):
+        raise OSError("AssignProcessToJobObject failed")
+
+    monkeypatch.setattr(
+        subprocesso._WindowsJobObject,
+        "try_create",
+        classmethod(fail_job),
+    )
+
+    def fail_resume(process):
+        raise AssertionError("resume")
+
+    monkeypatch.setattr(
+        SubprocessExecutor,
+        "_resume_windows_process",
+        staticmethod(fail_resume),
+    )
+
+    with pytest.raises(RuntimeError, match="Job Object indisponível"):
+        SubprocessExecutor(["trusted-worker"])._spawn_process()
+
+    assert calls == ["kill", "close-pipe", "close-pipe", "wait"]
 
 
 def test_windows_spawn_is_suspended_before_job_assignment():
@@ -368,9 +449,15 @@ def test_windows_assigns_job_before_resuming_root(monkeypatch):
         pytest.skip("Windows process containment")
     calls: list[str] = []
 
+    class FakeStream:
+        def close(self):
+            calls.append("close-pipe")
+
     class FakeProcess:
         pid = 123
         _handle = 456
+        stdout = FakeStream()
+        stderr = FakeStream()
 
     class FakeJob:
         @classmethod
@@ -400,9 +487,15 @@ def test_windows_resume_failure_closes_job_and_process(monkeypatch):
         pytest.skip("Windows process containment")
     calls: list[str] = []
 
+    class FakeStream:
+        def close(self):
+            calls.append("close-pipe")
+
     class FakeProcess:
         pid = 123
         _handle = 456
+        stdout = FakeStream()
+        stderr = FakeStream()
 
         def wait(self, timeout=None):
             calls.append("wait")
@@ -440,7 +533,13 @@ def test_windows_resume_failure_closes_job_and_process(monkeypatch):
     with pytest.raises(RuntimeError, match="suspenso"):
         SubprocessExecutor(["trusted-worker"])._spawn_process()
 
-    assert calls == ["terminate", "close", "wait"]
+    assert calls == [
+        "terminate",
+        "close",
+        "close-pipe",
+        "close-pipe",
+        "wait",
+    ]
 
 
 def test_cancellation_terminates_descendant_process(tmp_path):

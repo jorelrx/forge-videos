@@ -404,26 +404,53 @@ class SubprocessExecutor:
             **self._popen_kwargs(),
         )
         process_group_id = self._capture_process_group(process)
-        windows_job = _WindowsJobObject.try_create(process)
+        try:
+            windows_job = _WindowsJobObject.try_create(process)
+        except Exception as error:  # noqa: BLE001 - fail closed before resume
+            self._cleanup_suspended_process(process)
+            raise RuntimeError(
+                "Windows Job Object indisponível; subprocesso não iniciado"
+            ) from error
+        if os.name == "nt" and windows_job is None:
+            self._cleanup_suspended_process(process)
+            raise RuntimeError(
+                "Windows Job Object indisponível; subprocesso não iniciado"
+            )
         if os.name == "nt":
             try:
                 self._resume_windows_process(process)
             except Exception as error:  # noqa: BLE001 - clean up before surfacing
-                if windows_job is not None:
-                    windows_job.terminate()
-                    windows_job.close()
-                else:
-                    self._taskkill(process, force=True)
-                    if process.poll() is None:
-                        process.kill()
-                try:
-                    process.wait(timeout=self.terminate_grace_seconds)
-                except subprocess.TimeoutExpired:
-                    pass
+                self._cleanup_suspended_process(process, windows_job)
                 raise RuntimeError(
                     "Falha ao liberar subprocesso suspenso"
                 ) from error
         return process, process_group_id, windows_job
+
+    def _cleanup_suspended_process(
+        self,
+        process: subprocess.Popen,
+        windows_job: _WindowsJobObject | None = None,
+    ) -> None:
+        if windows_job is not None:
+            try:
+                windows_job.terminate()
+            except Exception:  # noqa: BLE001 - continue cleanup
+                pass
+            finally:
+                try:
+                    windows_job.close()
+                except Exception:  # noqa: BLE001 - continue cleanup
+                    pass
+        else:
+            try:
+                process.kill()
+            except (OSError, ProcessLookupError):
+                pass
+        self._close_pipes(process)
+        try:
+            process.wait(timeout=self.terminate_grace_seconds)
+        except (subprocess.TimeoutExpired, OSError, ProcessLookupError):
+            pass
 
     @staticmethod
     def _resume_windows_process(process: subprocess.Popen) -> None:
@@ -514,23 +541,6 @@ class SubprocessExecutor:
             except Exception:  # noqa: BLE001 - best effort unblock during teardown
                 pass
 
-    @staticmethod
-    def _taskkill(process: subprocess.Popen, *, force: bool) -> bool:
-        command = ["taskkill", "/PID", str(process.pid), "/T"]
-        if force:
-            command.append("/F")
-        try:
-            completed = subprocess.run(
-                command,
-                shell=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        except OSError:
-            return False
-        return completed.returncode == 0
-
     @classmethod
     def _signal_tree(
         cls,
@@ -540,11 +550,7 @@ class SubprocessExecutor:
         force: bool,
     ) -> None:
         if os.name == "nt":
-            if cls._taskkill(process, force=force):
-                return
-            if process.poll() is None:
-                (process.kill if force else process.terminate)()
-            return
+            raise RuntimeError("Windows Job Object obrigatório para subprocesso")
         if process_group_id is not None:
             try:
                 os.killpg(
@@ -572,13 +578,7 @@ class SubprocessExecutor:
             windows_job.terminate()
             windows_job.close()
             return
-        # Explicit fallback for hosts where Job Objects cannot be assigned.
-        # It is reliable while the root is live; a dead root cannot be used by
-        # taskkill to discover descendants, so there is no silent claim here.
-        if cls._taskkill(process, force=True):
-            return
-        if process.poll() is None:
-            process.kill()
+        raise RuntimeError("Windows Job Object obrigatório para subprocesso")
 
     def _terminate(
         self,

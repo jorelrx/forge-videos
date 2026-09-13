@@ -215,18 +215,7 @@ class SubprocessExecutor:
         self.terminate_grace_seconds = terminate_grace_seconds
 
     def execute(self, context: Any, emit: EventSink) -> StageResult:
-        process = subprocess.Popen(
-            self.argv,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **self._popen_kwargs(),
-        )
-        process_group_id = self._capture_process_group(process)
-        windows_job = _WindowsJobObject.try_create(process)
+        process, process_group_id, windows_job = self._spawn_process()
         stderr = _BoundedText(self.stderr_limit)
         invalid = False
         reader_errors: list[Exception] = []
@@ -393,9 +382,116 @@ class SubprocessExecutor:
     @staticmethod
     def _popen_kwargs() -> dict[str, Any]:
         if os.name == "nt":
-            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            return {"creationflags": creation_flags} if creation_flags else {}
+            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+            return {"creationflags": creation_flags | 0x00000004}
         return {"start_new_session": True}
+
+    def _spawn_process(
+        self,
+    ) -> tuple[
+        subprocess.Popen,
+        int | None,
+        _WindowsJobObject | None,
+    ]:
+        process = subprocess.Popen(
+            self.argv,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **self._popen_kwargs(),
+        )
+        process_group_id = self._capture_process_group(process)
+        windows_job = _WindowsJobObject.try_create(process)
+        if os.name == "nt":
+            try:
+                self._resume_windows_process(process)
+            except Exception as error:  # noqa: BLE001 - clean up before surfacing
+                if windows_job is not None:
+                    windows_job.terminate()
+                    windows_job.close()
+                else:
+                    self._taskkill(process, force=True)
+                    if process.poll() is None:
+                        process.kill()
+                try:
+                    process.wait(timeout=self.terminate_grace_seconds)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise RuntimeError(
+                    "Falha ao liberar subprocesso suspenso"
+                ) from error
+        return process, process_group_id, windows_job
+
+    @staticmethod
+    def _resume_windows_process(process: subprocess.Popen) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ThreadEntry32),
+        ]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ThreadEntry32),
+        ]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        snapshot_value = getattr(snapshot, "value", snapshot)
+        if snapshot_value in (None, ctypes.c_void_p(-1).value):
+            raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+        thread_handle = None
+        try:
+            entry = ThreadEntry32()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.th32OwnerProcessID == process.pid:
+                    thread_handle = kernel32.OpenThread(
+                        0x0002, False, entry.th32ThreadID
+                    )
+                    break
+                found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+            if not thread_handle:
+                raise OSError(ctypes.get_last_error(), "main thread not found")
+            if kernel32.ResumeThread(thread_handle) == 0xFFFFFFFF:
+                raise OSError(ctypes.get_last_error(), "ResumeThread failed")
+        finally:
+            if thread_handle:
+                kernel32.CloseHandle(thread_handle)
+            kernel32.CloseHandle(snapshot)
 
     @staticmethod
     def _capture_process_group(process: subprocess.Popen) -> int | None:

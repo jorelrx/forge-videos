@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import csv
+import json
 import os
 import signal
 import subprocess
@@ -355,6 +355,94 @@ def test_windows_taskkill_fallback_terminates_live_tree(monkeypatch, tmp_path):
             terminate_process_tree(descendant_pid)
 
 
+def test_windows_spawn_is_suspended_before_job_assignment():
+    if os.name != "nt":
+        pytest.skip("Windows process containment")
+    flags = SubprocessExecutor._popen_kwargs()["creationflags"]
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert flags & 0x00000004  # CREATE_SUSPENDED
+
+
+def test_windows_assigns_job_before_resuming_root(monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows process containment")
+    calls: list[str] = []
+
+    class FakeProcess:
+        pid = 123
+        _handle = 456
+
+    class FakeJob:
+        @classmethod
+        def try_create(cls, process):
+            calls.append("job")
+            return cls()
+
+    monkeypatch.setattr(
+        subprocesso.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (calls.append("popen") or FakeProcess()),
+    )
+    monkeypatch.setattr(subprocesso, "_WindowsJobObject", FakeJob)
+    monkeypatch.setattr(
+        SubprocessExecutor,
+        "_resume_windows_process",
+        staticmethod(lambda process: calls.append("resume")),
+    )
+
+    SubprocessExecutor(["trusted-worker"])._spawn_process()
+
+    assert calls == ["popen", "job", "resume"]
+
+
+def test_windows_resume_failure_closes_job_and_process(monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows process containment")
+    calls: list[str] = []
+
+    class FakeProcess:
+        pid = 123
+        _handle = 456
+
+        def wait(self, timeout=None):
+            calls.append("wait")
+
+        def poll(self):
+            return -1
+
+    class FakeJob:
+        @classmethod
+        def try_create(cls, process):
+            return cls()
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        subprocesso.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(subprocesso, "_WindowsJobObject", FakeJob)
+
+    def fail_resume(process):
+        raise OSError("resume")
+
+    monkeypatch.setattr(
+        SubprocessExecutor,
+        "_resume_windows_process",
+        staticmethod(fail_resume),
+    )
+
+    with pytest.raises(RuntimeError, match="suspenso"):
+        SubprocessExecutor(["trusted-worker"])._spawn_process()
+
+    assert calls == ["terminate", "close", "wait"]
+
+
 def test_cancellation_terminates_descendant_process(tmp_path):
     pid_path = tmp_path / "descendant.pid"
     cancelled = threading.Event()
@@ -400,6 +488,11 @@ def test_cancellation_kills_descendant_after_root_exits_before_teardown(tmp_path
                 wait_for_path(info_path)
                 release_path.write_text("1")
                 wait_for_path(exited_path)
+                root_pid = int(json.loads(info_path.read_text())["root"])
+                deadline = time.monotonic() + 3
+                while process_exists(root_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert not process_exists(root_pid)
                 self.triggered = True
             return True
 

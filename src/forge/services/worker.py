@@ -154,7 +154,10 @@ class StudioWorker:
             )
             return run
 
-        context = self._start_stage(run, stage)
+        started = self._start_stage(run, stage)
+        if isinstance(started, Run):
+            return started
+        context = started
         heartbeat = LeaseHeartbeat(
             self.db,
             run_id=context.run.id,
@@ -190,25 +193,44 @@ class StudioWorker:
                 None,
             )
 
-    def _start_stage(self, run: Run, stage: StageRun) -> StageContext:
+    def _start_stage(self, run: Run, stage: StageRun) -> StageContext | Run:
         now = self.now()
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
+            current_run = operacao.get_run(run.id)
+            current_stage = next(
+                item
+                for item in operacao.current_stages(run.id)
+                if item.id == stage.id
+            )
+            if (
+                current_run is not None
+                and current_run.lease_owner == self.worker_id
+                and current_run.status is RunStatus.PAUSING
+            ):
+                paused_run = self._apply_accepted_pause(
+                    operacao, conn, current_run, current_stage
+                )
+                if paused_run is not None:
+                    return paused_run
+            assert current_run is not None
             started_run = operacao.save_run(
-                run.model_copy(
+                current_run.model_copy(
                     update={
                         "status": (
                             RunStatus.RUNNING
-                            if run.status is RunStatus.RUNNING
-                            else mudar_run(run.status, RunStatus.RUNNING)
+                            if current_run.status is RunStatus.RUNNING
+                            else mudar_run(current_run.status, RunStatus.RUNNING)
                         )
                     }
                 )
             )
             started_stage = operacao.save_stage(
-                stage.model_copy(
+                current_stage.model_copy(
                     update={
-                        "status": mudar_etapa(stage.status, StageStatus.RUNNING),
+                        "status": mudar_etapa(
+                            current_stage.status, StageStatus.RUNNING
+                        ),
                         "started_at": now,
                     }
                 )
@@ -233,30 +255,39 @@ class StudioWorker:
                 or current_run.status is not RunStatus.PAUSING
             ):
                 return None
-            pause_command = self._accepted_pause(ComandosRepository(conn), run.id)
-            if pause_command is None:
-                return None
-            paused_run = operacao.save_run(
-                current_run.model_copy(
-                    update={
-                        "status": mudar_run(current_run.status, RunStatus.PAUSED),
-                        "lease_owner": None,
-                        "lease_expires_at": None,
-                    }
-                )
+            return self._apply_accepted_pause(operacao, conn, current_run, stage)
+
+    def _apply_accepted_pause(
+        self,
+        operacao: OperacaoRepository,
+        conn,
+        run: Run,
+        stage: StageRun,
+    ) -> Run | None:
+        pause_command = self._accepted_pause(ComandosRepository(conn), run.id)
+        if pause_command is None:
+            return None
+        paused_run = operacao.save_run(
+            run.model_copy(
+                update={
+                    "status": mudar_run(run.status, RunStatus.PAUSED),
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                }
             )
-            ComandosRepository(conn).set_status(
-                pause_command.id, CommandStatus.APPLIED, result=pause_command.result
-            )
-            EventosRepository(conn).append(
-                kind="run.paused",
-                level="info",
-                message="Run pausada entre etapas",
-                payload={"stage": stage.stage.value},
-                run_id=run.id,
-                stage_run_id=stage.id,
-            )
-            return paused_run
+        )
+        ComandosRepository(conn).set_status(
+            pause_command.id, CommandStatus.APPLIED, result=pause_command.result
+        )
+        EventosRepository(conn).append(
+            kind="run.paused",
+            level="info",
+            message="Run pausada entre etapas",
+            payload={"stage": stage.stage.value},
+            run_id=run.id,
+            stage_run_id=stage.id,
+        )
+        return paused_run
 
     def _finish_stage(self, context: StageContext, result: StageResult) -> Run:
         now = self.now()

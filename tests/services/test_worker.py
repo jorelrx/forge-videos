@@ -164,6 +164,39 @@ def test_run_once_applies_pause_between_stages_before_starting_pending_executor(
     ]
 
 
+def test_run_once_does_not_start_stage_when_pause_arrives_after_boundary_check(
+    db, control_plane, monkeypatch
+):
+    run = enqueue(control_plane)
+    executor = FakeExecutor(StageResult(current_items=1, total_items=1))
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: executor},
+        now=lambda: FIXED_NOW,
+    )
+    pause_before_stage = worker._pause_before_stage
+
+    def request_pause_after_boundary_check(run, stage):
+        paused = pause_before_stage(run, stage)
+        if paused is None:
+            control_plane.request_pause(
+                run.id, idempotency_key="pause-after-boundary-check"
+            )
+        return paused
+
+    monkeypatch.setattr(worker, "_pause_before_stage", request_pause_after_boundary_check)
+
+    worker.run_once()
+
+    detail = control_plane.get_run(run.id)
+    stage = stage_for(control_plane, run.id, StageName.PREPARACAO)
+    assert detail.run.status is RunStatus.PAUSED
+    assert stage.status is StageStatus.PENDING
+    assert executor.contexts == []
+
+
 def test_run_once_marks_run_and_stage_failed_for_a_failed_executor_result(db, control_plane):
     run = enqueue(control_plane)
     worker = StudioWorker(

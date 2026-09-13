@@ -86,7 +86,10 @@ def wait_for_pid(path, timeout: float = 3.0) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
-            return int(path.read_text())
+            try:
+                return int(path.read_text().strip())
+            except (OSError, ValueError):
+                pass
         time.sleep(0.01)
     raise AssertionError("child did not publish descendant pid")
 
@@ -98,6 +101,21 @@ def wait_for_path(path: Path, timeout: float = 3.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError(f"path was not published: {path}")
+
+
+def test_wait_for_pid_retries_empty_or_partial_file(tmp_path):
+    pid_path = tmp_path / "descendant.pid"
+    pid_path.write_text("")
+
+    def publish_pid():
+        time.sleep(0.05)
+        pid_path.write_text("12345")
+
+    thread = threading.Thread(target=publish_pid, daemon=True)
+    thread.start()
+
+    assert wait_for_pid(pid_path, timeout=1) == 12345
+    thread.join(timeout=1)
 
 
 def process_exists(pid: int) -> bool:

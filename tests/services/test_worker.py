@@ -10,15 +10,17 @@ from forge.repositories.connection import Database
 from forge.repositories.operacao import OperacaoRepository
 from forge.repositories.schema import init_db
 from forge.services.control_plane import ControlPlaneService
+from forge.services.redacao import Redactor
 from forge.services.worker import LeaseHeartbeat, StageResult, StudioWorker
 
 FIXED_NOW = datetime(2026, 9, 12, 15, 30, tzinfo=UTC)
 
 
 class FakeExecutor:
-    def __init__(self, result: StageResult) -> None:
+    def __init__(self, result: StageResult, *, event_payload: dict | None = None) -> None:
         self.result = result
         self.contexts = []
+        self.event_payload = event_payload or {"current_items": 1}
 
     def execute(self, context, emit):
         self.contexts.append(context)
@@ -26,7 +28,7 @@ class FakeExecutor:
             kind="executor.progress",
             level="info",
             message="Item processado",
-            payload={"current_items": 1},
+            payload=self.event_payload,
         )
         return self.result
 
@@ -246,11 +248,11 @@ def test_run_once_persists_sanitized_failure_evidence_on_stage_failed(
     run = enqueue(control_plane)
     evidence = {
         "adapter": "tts",
-        "command": ["tts", "--device", "vulkan"],
+        "command": ["tts", "--token", "secret-token"],
         "attempt": 3,
         "item_key": "b001",
-        "stack_trace": "RuntimeError: super-secret",
-        "services": {"api_key": "super-secret", "status": "down"},
+        "stack_trace": "RuntimeError: secret-token",
+        "services": {"status": "down"},
         "gpu": {"memory_free_mb": 12},
         "retriable": False,
         "recommended_action": "liberar GPU e tentar novamente",
@@ -265,9 +267,11 @@ def test_run_once_persists_sanitized_failure_evidence_on_stage_failed(
                     failure_code="tts_vulkan_oom",
                     failure_message="Memória insuficiente",
                     outputs={"failure": evidence},
-                )
+                ),
+                event_payload={"stack_trace": "secret-token", "argv": ["secret-token"]},
             )
         },
+        redactor=Redactor(secrets=["secret-token"]),
         now=lambda: FIXED_NOW,
     )
 
@@ -280,14 +284,23 @@ def test_run_once_persists_sanitized_failure_evidence_on_stage_failed(
     )
     failure = failed_event.payload["failure"]
     assert failure["adapter"] == "tts"
-    assert failure["command"] == ["tts", "--device", "vulkan"]
+    assert failure["command"] == ["tts", "--token", "[REDACTED]"]
     assert failure["attempt"] == 3
     assert failure["item_key"] == "b001"
-    assert failure["stack_trace"] == "RuntimeError: super-secret"
-    assert failure["services"] == {"api_key": "[REDACTED]", "status": "down"}
+    assert failure["stack_trace"] == "RuntimeError: [REDACTED]"
+    assert failure["services"] == {"status": "down"}
     assert failure["gpu"] == {"memory_free_mb": 12}
     assert failure["retriable"] is False
     assert failure["recommended_action"] == "liberar GPU e tentar novamente"
+    progress_event = next(
+        event
+        for event in control_plane.events_after(0, run_id=run.id)
+        if event.kind == "executor.progress"
+    )
+    assert progress_event.payload == {
+        "stack_trace": "[REDACTED]",
+        "argv": ["[REDACTED]"],
+    }
 
 
 def test_run_once_records_missing_executor_without_advancing_the_pending_stage(

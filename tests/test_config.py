@@ -28,6 +28,17 @@ def test_api_key_fallback(monkeypatch):
     assert s.anthropic_api_key == "sk-test"
 
 
+def test_secret_values_exposes_configured_provider_keys_for_redaction():
+    s = Settings(
+        _env_file=None,
+        api_key="sk-generic",
+        anthropic_api_key="sk-anthropic",
+        openai_api_key="sk-openai",
+    )
+
+    assert s.secret_values() == ["sk-generic", "sk-anthropic", "sk-openai"]
+
+
 def test_get_settings_cached():
     assert get_settings() is get_settings()
 

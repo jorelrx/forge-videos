@@ -61,3 +61,30 @@ Testes de contrato foram escritos antes dos módulos novos e a execução RED co
 - A evidência completa só é anexada no ramo `stage.failed`; dados credenciais em chaves reconhecidas são redigidos antes da persistência.
 - O snapshot é validado antes de qualquer import de implementação, impedindo executar módulo de outro stage por flag adulterada.
 - Não houve alteração em timeout, cancelamento, contenção ou protocolo JSONL.
+
+## Round 2 — injeção de segredos no redator
+
+### Mudanças
+
+- `Settings.secret_values()` reúne chaves configuradas, sem valores vazios ou duplicados.
+- `build_worker` injeta `Redactor(settings.secret_values())` no `StudioWorker`.
+- `StudioWorker` mantém uma única instância injetada e a reutiliza em `_event_sink` e no payload de `stage.failed`. Call sites diretos continuam compatíveis com fallback explícito de redaction por nomes de credencial, sem alegar conhecer segredos de ambiente.
+- Stack traces e argv/command com segredo efetivo agora viram `[REDACTED]` antes da persistência do evento.
+
+### Arquivos
+
+- Modificados: `src/forge/infrastructure/config.py`, `src/forge/services/studio.py`, `src/forge/services/worker.py`.
+- Testes modificados: `tests/test_config.py`, `tests/services/test_worker.py`.
+
+### TDD e verificação
+
+- RED: `uv run --no-cache pytest tests/services/test_worker.py::test_run_once_persists_sanitized_failure_evidence_on_stage_failed tests/test_config.py::test_secret_values_exposes_configured_provider_keys_for_redaction -q` — `2 failed`: `redactor` não era aceito e `Settings.secret_values` não existia.
+- GREEN mínimo: mesmo comando mais `tests/services/test_studio.py` — `4 passed`.
+- Foco afetado: `uv run --no-cache pytest tests/services/test_worker.py tests/services/test_catalogo.py tests/services/test_redacao.py tests/services/test_studio.py tests/test_config.py -q` — `63 passed`.
+- Suíte completa: `uv run --no-cache pytest -q` — `501 passed, 1 skipped, 1 deselected`.
+
+### Autorrevisão
+
+- Segredos efetivos configurados chegam ao mesmo redator usado pelos eventos normais e por `stage.failed`; não há nova instância vazia no caminho de produção.
+- O teste cobre segredo dentro de stack trace e lista de argv, além de verificar redaction do evento emitido pelo `_event_sink`.
+- Call sites antigos de `StudioWorker` seguem funcionais, mas só recebem mascaramento estrutural quando não fornecem configuração de segredos.

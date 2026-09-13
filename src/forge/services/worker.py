@@ -127,6 +127,7 @@ class StudioWorker:
         executors: Mapping[StageName, StageExecutor],
         now: Callable[[], datetime] | None = None,
         heartbeat_seconds: float = 5,
+        redactor: Redactor | None = None,
     ) -> None:
         self.db = db
         self.worker_id = worker_id
@@ -134,6 +135,9 @@ class StudioWorker:
         self.executors = executors
         self.now = now or (lambda: datetime.now(UTC))
         self.heartbeat_seconds = heartbeat_seconds
+        # Production construction injects Settings.secret_values(). Direct
+        # test/legacy callers remain compatible, with key-name masking only.
+        self.redactor = redactor if redactor is not None else Redactor(secrets=[])
         self.control_plane = ControlPlaneService(db, now=self.now)
 
     def run_once(self) -> Run | None:
@@ -394,9 +398,7 @@ class StudioWorker:
                 event_payload: JSON_OBJECT = {"failure_code": result.failure_code}
                 failure_evidence = result.outputs.get("failure")
                 if failure_evidence is not None:
-                    event_payload["failure"] = Redactor(secrets=[]).clean(
-                        failure_evidence
-                    )
+                    event_payload["failure"] = self.redactor.clean(failure_evidence)
             else:
                 finished_run = run
                 finished_stage = stage.model_copy(
@@ -482,16 +484,14 @@ class StudioWorker:
 
     def _event_sink(self, context: StageContext) -> EventSink:
         from forge.services.catalogo import ChildEventProjector
-        from forge.services.redacao import Redactor
         projector = ChildEventProjector(
             self.db, context.run_dir or Path("."), context.stage_run.id
         )
-        redactor = Redactor(secrets=[])
 
         def emit(
             *, kind: str, level: str, message: str, payload: JSON_OBJECT
         ) -> None:
-            cleaned_payload = redactor.clean(payload)
+            cleaned_payload = self.redactor.clean(payload)
             self._append_event(
                 run_id=context.run.id,
                 stage_run_id=context.stage_run.id,

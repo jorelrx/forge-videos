@@ -128,6 +128,20 @@ class Settings(BaseSettings):
             )
         return chave
 
+    def secret_values(self) -> list[str]:
+        """Return configured credential values for event/error redaction."""
+        return list(
+            dict.fromkeys(
+                value
+                for value in (
+                    self.api_key,
+                    self.anthropic_api_key,
+                    self.openai_api_key,
+                )
+                if value
+            )
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:

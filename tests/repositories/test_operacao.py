@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -111,7 +111,8 @@ def test_queue_ordena_prioridade_posicao_e_list_runs_tem_paginacao_deterministic
 def test_claim_next_eh_atomico_e_valida_entrada(db):
     with db.transaction(immediate=True) as conn:
         repo = OperacaoRepository(conn)
-        _, run = create_run(repo)
+        _, run = create_run(repo, tema="Primeira")
+        _, queued = create_run(repo, tema="Segunda")
         prior_start = "2026-01-01T12:00:00+00:00"
         conn.execute("UPDATE runs SET started_at = ? WHERE id = ?", (prior_start, run.id))
 
@@ -133,11 +134,85 @@ def test_claim_next_eh_atomico_e_valida_entrada(db):
     with db.transaction(immediate=True) as conn:
         repo = OperacaoRepository(conn)
         assert repo.claim_next("worker-c", lease_seconds=60) is None
-        assert repo.list_queue() == []
+        assert [item.id for item in repo.list_queue()] == [queued.id]
         with pytest.raises(ValueError):
             repo.claim_next("   ", lease_seconds=60)
         with pytest.raises(ValueError):
             repo.claim_next("worker-c", lease_seconds=0)
+
+
+def test_renew_lease_requires_the_active_owner(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = create_run(repo)
+        claimed = repo.claim_next("worker-a", lease_seconds=60)
+        assert claimed is not None
+        original_expiry = claimed.lease_expires_at
+
+        assert repo.renew_lease(run.id, "worker-b", lease_seconds=120) is None
+        renewed = repo.renew_lease(run.id, "worker-a", lease_seconds=120)
+
+    assert renewed is not None
+    assert renewed.lease_owner == "worker-a"
+    assert renewed.lease_expires_at is not None
+    assert renewed.lease_expires_at > original_expiry
+
+
+def test_interrupt_expired_marks_run_and_active_stage_interrupted(db):
+    expired_at = datetime(2026, 9, 12, 15, 30, tzinfo=UTC)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = create_run(repo)
+        claimed = repo.claim_next("worker-a", lease_seconds=60)
+        assert claimed is not None
+        current_stage = repo.current_stages(run.id)[0]
+        conn.execute(
+            "UPDATE runs SET status = ?, lease_expires_at = ? WHERE id = ?",
+            (
+                RunStatus.RUNNING.value,
+                (expired_at - timedelta(seconds=1)).isoformat(),
+                run.id,
+            ),
+        )
+        conn.execute(
+            "UPDATE stage_runs SET status = ? WHERE id = ?",
+            (StageStatus.RUNNING.value, current_stage.id),
+        )
+
+        interrupted = repo.interrupt_expired(expired_at)
+        persisted = repo.get_run(run.id)
+        stages = repo.current_stages(run.id)
+
+    assert [item.id for item in interrupted] == [run.id]
+    assert persisted is not None
+    assert persisted.status is RunStatus.INTERRUPTED
+    assert persisted.lease_owner is None
+    assert persisted.lease_expires_at is None
+    assert (
+        next(item for item in stages if item.id == current_stage.id).status
+        is StageStatus.INTERRUPTED
+    )
+
+
+def test_save_stage_persists_current_stage_fields(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = create_run(repo)
+        stage = repo.current_stages(run.id)[0]
+        saved = repo.save_stage(
+            stage.model_copy(
+                update={
+                    "status": StageStatus.RUNNING,
+                    "current_items": 1,
+                    "total_items": 2,
+                    "progress": 0.5,
+                    "gate_status": "in_progress",
+                }
+            )
+        )
+        persisted = repo.current_stages(run.id)[0]
+
+    assert saved == persisted
 
 
 def test_current_stages_usa_maior_attempt_em_ordem_canonica_e_mutacoes_desconhecidas_falham(db):

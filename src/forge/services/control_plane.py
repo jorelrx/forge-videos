@@ -109,6 +109,39 @@ class ControlPlaneService:
             )
             return run
 
+    def renew_lease(
+        self, run_id: str, worker_id: str, *, lease_seconds: int
+    ) -> Run | None:
+        with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            run = operacao.renew_lease(
+                run_id, worker_id, lease_seconds=lease_seconds
+            )
+            if run is None:
+                return None
+            EventosRepository(conn).append(
+                kind="run.lease_renewed",
+                level="info",
+                message="Lease da run renovado",
+                payload={"worker_id": worker_id, "lease_seconds": lease_seconds},
+                run_id=run.id,
+            )
+            return run
+
+    def interrupt_expired(self) -> list[Run]:
+        with self.db.transaction(immediate=True) as conn:
+            runs = OperacaoRepository(conn).interrupt_expired(self.now())
+            eventos = EventosRepository(conn)
+            for run in runs:
+                eventos.append(
+                    kind="run.interrupted",
+                    level="warning",
+                    message="Lease da run expirou",
+                    payload={"reason": "lease_expired"},
+                    run_id=run.id,
+                )
+            return runs
+
     def request_pause(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
             comandos = ComandosRepository(conn)

@@ -17,6 +17,14 @@ from forge.domain.operacao import (
     dependentes_de,
 )
 
+_ACTIVE_RUN_STATUSES = (
+    RunStatus.PREPARING,
+    RunStatus.RUNNING,
+    RunStatus.PAUSING,
+    RunStatus.VALIDATING,
+)
+_ACTIVE_STAGE_STATUSES = (StageStatus.RUNNING, StageStatus.PAUSING)
+
 
 class OperacaoRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -143,10 +151,15 @@ class OperacaoRepository:
         return [_stage_from_row(row) for row in rows]
 
     def claim_next(self, worker_id: str, *, lease_seconds: int) -> Run | None:
-        if not worker_id.strip():
-            raise ValueError("worker_id must not be blank")
-        if lease_seconds <= 0:
-            raise ValueError("lease_seconds must be positive")
+        _validate_lease_request(worker_id, lease_seconds)
+
+        active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
+        active_run = self.conn.execute(
+            f"SELECT 1 FROM runs WHERE status IN ({active_placeholders}) LIMIT 1",
+            tuple(status.value for status in _ACTIVE_RUN_STATUSES),
+        ).fetchone()
+        if active_run is not None:
+            return None
 
         row = self.conn.execute(
             """
@@ -181,6 +194,91 @@ class OperacaoRepository:
             return None
         return self.get_run(row["id"])
 
+    def renew_lease(
+        self, run_id: str, worker_id: str, *, lease_seconds: int
+    ) -> Run | None:
+        _validate_lease_request(worker_id, lease_seconds)
+        now = _now()
+        active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
+        result = self.conn.execute(
+            f"""
+            UPDATE runs
+            SET lease_expires_at = ?
+            WHERE id = ?
+              AND lease_owner = ?
+              AND lease_expires_at > ?
+              AND status IN ({active_placeholders})
+            """,
+            (
+                _iso(now + timedelta(seconds=lease_seconds)),
+                run_id,
+                worker_id,
+                _iso(now),
+                *(status.value for status in _ACTIVE_RUN_STATUSES),
+            ),
+        )
+        if result.rowcount != 1:
+            return None
+        return self.get_run(run_id)
+
+    def interrupt_expired(self, now: datetime) -> list[Run]:
+        active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
+        rows = self.conn.execute(
+            f"""
+            SELECT id FROM runs
+            WHERE status IN ({active_placeholders})
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at <= ?
+            """,
+            (*(status.value for status in _ACTIVE_RUN_STATUSES), _iso(now)),
+        ).fetchall()
+        run_ids = [row["id"] for row in rows]
+        if not run_ids:
+            return []
+
+        run_placeholders = ", ".join("?" for _ in run_ids)
+        self.conn.execute(
+            f"""
+            UPDATE runs
+            SET status = ?, lease_owner = NULL, lease_expires_at = NULL
+            WHERE id IN ({run_placeholders})
+            """,
+            (RunStatus.INTERRUPTED.value, *run_ids),
+        )
+        stage_placeholders = ", ".join("?" for _ in _ACTIVE_STAGE_STATUSES)
+        self.conn.execute(
+            f"""
+            UPDATE stage_runs
+            SET status = ?
+            WHERE run_id IN ({run_placeholders})
+              AND status IN ({stage_placeholders})
+              AND id IN (
+                  SELECT current_stage.id FROM stage_runs AS current_stage
+                  JOIN (
+                      SELECT run_id, stage, MAX(attempt) AS attempt
+                      FROM stage_runs
+                      WHERE run_id IN ({run_placeholders})
+                      GROUP BY run_id, stage
+                  ) current
+                    ON current.run_id = current_stage.run_id
+                   AND current.stage = current_stage.stage
+                   AND current.attempt = current_stage.attempt
+              )
+            """,
+            (
+                StageStatus.INTERRUPTED.value,
+                *run_ids,
+                *(status.value for status in _ACTIVE_STAGE_STATUSES),
+                *run_ids,
+            ),
+        )
+        interrupted: list[Run] = []
+        for run_id in run_ids:
+            run = self.get_run(run_id)
+            if run is not None:
+                interrupted.append(run)
+        return interrupted
+
     def save_run(self, run: Run) -> Run:
         result = self.conn.execute(
             """
@@ -211,6 +309,33 @@ class OperacaoRepository:
         if result.rowcount != 1:
             raise KeyError(run.id)
         return run
+
+    def save_stage(self, stage: StageRun) -> StageRun:
+        result = self.conn.execute(
+            """
+            UPDATE stage_runs
+            SET status = ?, current_items = ?, total_items = ?, progress = ?,
+                gate_status = ?, input_hash = ?, started_at = ?, finished_at = ?,
+                failure_code = ?, failure_message = ?
+            WHERE id = ?
+            """,
+            (
+                stage.status.value,
+                stage.current_items,
+                stage.total_items,
+                stage.progress,
+                stage.gate_status,
+                stage.input_hash,
+                _iso(stage.started_at),
+                _iso(stage.finished_at),
+                stage.failure_code,
+                stage.failure_message,
+                stage.id,
+            ),
+        )
+        if result.rowcount != 1:
+            raise KeyError(stage.id)
+        return stage
 
     def invalidate_from_stage(self, run_id: str, stage: StageName) -> list[StageRun]:
         if self.conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
@@ -352,6 +477,13 @@ class OperacaoRepository:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _validate_lease_request(worker_id: str, lease_seconds: int) -> None:
+    if not worker_id.strip():
+        raise ValueError("worker_id must not be blank")
+    if lease_seconds <= 0:
+        raise ValueError("lease_seconds must be positive")
 
 
 def _iso(value: datetime | None) -> str | None:

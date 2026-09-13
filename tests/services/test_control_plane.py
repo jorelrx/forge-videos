@@ -201,6 +201,62 @@ def test_claim_validation_errors_propagate_without_events(control_plane, worker_
     assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == ["run.queued"]
 
 
+def test_renew_lease_emits_event_only_for_active_owner(control_plane):
+    _, run = enqueue(control_plane)
+    claimed = control_plane.claim_next("worker-a", lease_seconds=45)
+    assert claimed is not None
+
+    assert control_plane.renew_lease(run.id, "worker-b", lease_seconds=45) is None
+    renewed = control_plane.renew_lease(run.id, "worker-a", lease_seconds=45)
+
+    assert renewed is not None
+    assert renewed.lease_owner == "worker-a"
+    assert [
+        (event.kind, event.payload)
+        for event in control_plane.events_after(0, run_id=run.id)
+    ] == [
+        ("run.queued", {}),
+        ("run.claimed", {"worker_id": "worker-a", "lease_seconds": 45}),
+        ("run.lease_renewed", {"worker_id": "worker-a", "lease_seconds": 45}),
+    ]
+
+
+def test_interrupt_expired_records_recoverable_interruption(control_plane, db):
+    _, run = enqueue(control_plane)
+    claimed = control_plane.claim_next("worker-a", lease_seconds=45)
+    assert claimed is not None
+    stage = stage_for(db, run.id, StageName.PREPARACAO)
+    with db.transaction(immediate=True) as conn:
+        conn.execute(
+            "UPDATE runs SET status = ?, lease_expires_at = ? WHERE id = ?",
+            (
+                RunStatus.RUNNING.value,
+                (FIXED_NOW - timedelta(seconds=1)).isoformat(),
+                run.id,
+            ),
+        )
+        conn.execute(
+            "UPDATE stage_runs SET status = ? WHERE id = ?",
+            (StageStatus.RUNNING.value, stage.id),
+        )
+
+    interrupted = control_plane.interrupt_expired()
+
+    assert [item.id for item in interrupted] == [run.id]
+    assert control_plane.get_run(run.id).run.status is RunStatus.INTERRUPTED
+    assert next(
+        item for item in control_plane.get_run(run.id).stages if item.id == stage.id
+    ).status is StageStatus.INTERRUPTED
+    assert [
+        (event.kind, event.payload)
+        for event in control_plane.events_after(0, run_id=run.id)
+    ] == [
+        ("run.queued", {}),
+        ("run.claimed", {"worker_id": "worker-a", "lease_seconds": 45}),
+        ("run.interrupted", {"reason": "lease_expired"}),
+    ]
+
+
 @pytest.mark.parametrize(
     "initial_status",
     [RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.VALIDATING],

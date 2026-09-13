@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier, Event
 
 import pytest
 
@@ -139,6 +140,67 @@ def test_claim_next_eh_atomico_e_valida_entrada(db):
             repo.claim_next("   ", lease_seconds=60)
         with pytest.raises(ValueError):
             repo.claim_next("worker-c", lease_seconds=0)
+
+
+def test_claim_next_autocommit_nao_reivindica_duas_runs_apos_guardas_concorrentes(db):
+    """O guard de run ativa precisa valer também fora de uma transação do service."""
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, first = create_run(repo, tema="Primeira")
+        _, second = create_run(repo, tema="Segunda")
+
+    guards_completed = Barrier(2)
+    first_claim_completed = Event()
+
+    class ConnectionAfterActiveGuard:
+        def __init__(
+            self,
+            conn: sqlite3.Connection,
+            *,
+            wait_for_first_claim: bool = False,
+            signal_first_claim: bool = False,
+        ) -> None:
+            self._conn = conn
+            self._wait_for_first_claim = wait_for_first_claim
+            self._signal_first_claim = signal_first_claim
+
+        def execute(self, sql: str, parameters=()):
+            normalized_sql = " ".join(sql.split())
+            if (
+                self._wait_for_first_claim
+                and normalized_sql.startswith("SELECT id FROM runs WHERE status")
+            ):
+                assert first_claim_completed.wait(timeout=2)
+            result = self._conn.execute(sql, parameters)
+            if normalized_sql.startswith("SELECT 1 FROM runs WHERE status IN"):
+                guards_completed.wait(timeout=2)
+            if (
+                self._signal_first_claim
+                and normalized_sql.startswith("UPDATE runs SET status")
+            ):
+                first_claim_completed.set()
+            return result
+
+    def claim(worker_id: str):
+        with db.connection() as conn:
+            wrapped_conn = ConnectionAfterActiveGuard(
+                conn,
+                wait_for_first_claim=worker_id == "worker-a",
+                signal_first_claim=worker_id == "worker-b",
+            )
+            return OperacaoRepository(wrapped_conn).claim_next(
+                worker_id, lease_seconds=60
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claimed = list(executor.map(claim, ["worker-a", "worker-b"]))
+
+    claimed_runs = [run for run in claimed if run is not None]
+    assert len(claimed_runs) == 1
+    assert claimed_runs[0].id == first.id
+
+    with db.connection() as conn:
+        assert [run.id for run in OperacaoRepository(conn).list_queue()] == [second.id]
 
 
 def test_renew_lease_requires_the_active_owner(db):

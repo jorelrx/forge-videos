@@ -154,45 +154,37 @@ class OperacaoRepository:
         _validate_lease_request(worker_id, lease_seconds)
 
         active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
-        active_run = self.conn.execute(
-            f"SELECT 1 FROM runs WHERE status IN ({active_placeholders}) LIMIT 1",
-            tuple(status.value for status in _ACTIVE_RUN_STATUSES),
-        ).fetchone()
-        if active_run is not None:
-            return None
-
-        row = self.conn.execute(
-            """
-            SELECT id FROM runs
-            WHERE status = ?
-            ORDER BY priority DESC, queue_position ASC, created_at ASC
-            LIMIT 1
-            """,
-            (RunStatus.QUEUED.value,),
-        ).fetchone()
-        if row is None:
-            return None
-
         now = _now()
-        result = self.conn.execute(
-            """
+        row = self.conn.execute(
+            f"""
             UPDATE runs
             SET status = ?, lease_owner = ?, lease_expires_at = ?,
                 started_at = COALESCE(started_at, ?)
-            WHERE id = ? AND status = ?
+            WHERE id = (
+                SELECT id FROM runs
+                WHERE status = ?
+                ORDER BY priority DESC, queue_position ASC, created_at ASC
+                LIMIT 1
+            )
+              AND status = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM runs WHERE status IN ({active_placeholders})
+              )
+            RETURNING *
             """,
             (
                 RunStatus.PREPARING.value,
                 worker_id,
                 _iso(now + timedelta(seconds=lease_seconds)),
                 _iso(now),
-                row["id"],
                 RunStatus.QUEUED.value,
+                RunStatus.QUEUED.value,
+                *(status.value for status in _ACTIVE_RUN_STATUSES),
             ),
-        )
-        if result.rowcount != 1:
+        ).fetchone()
+        if row is None:
             return None
-        return self.get_run(row["id"])
+        return _run_from_row(row)
 
     def renew_lease(
         self, run_id: str, worker_id: str, *, lease_seconds: int

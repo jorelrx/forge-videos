@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Sequence
+from threading import Thread
 from typing import Any, Protocol
 
 from forge.domain.operacao import StageResult
@@ -16,6 +17,23 @@ from forge.domain.operacao import StageResult
 
 class EventSink(Protocol):
     def __call__(self, *, kind: str, level: str, message: str, payload: dict) -> None: ...
+
+
+class _BoundedText:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._chunks: list[str] = []
+        self._size = 0
+
+    def append(self, chunk: str) -> None:
+        if self._size >= self.limit:
+            return
+        kept = chunk[: self.limit - self._size]
+        self._chunks.append(kept)
+        self._size += len(kept)
+
+    def value(self) -> str:
+        return "".join(self._chunks)
 
 
 class SubprocessExecutor:
@@ -42,30 +60,67 @@ class SubprocessExecutor:
             encoding="utf-8",
             errors="replace",
         )
-        stdout, stderr = process.communicate()
+        stderr = _BoundedText(self.stderr_limit)
         invalid = False
-        for line in stdout.splitlines():
-            event = self._parse_event(line)
-            if event is None:
-                invalid = True
-                emit(
-                    kind="worker.invalid_event",
-                    level="error",
-                    message="Evento JSONL inválido",
-                    payload={"line": line},
-                )
-            else:
-                emit(**event)
+        reader_errors: list[Exception] = []
+
+        def remember_error(error: Exception) -> None:
+            if not reader_errors:
+                reader_errors.append(error)
+
+        def read_stdout() -> None:
+            nonlocal invalid
+            assert process.stdout is not None
+            try:
+                for raw_line in process.stdout:
+                    try:
+                        line = raw_line.rstrip("\r\n")
+                        event = self._parse_event(line)
+                        if event is None:
+                            invalid = True
+                            emit(
+                                kind="worker.invalid_event",
+                                level="error",
+                                message="Evento JSONL inválido",
+                                payload={"line": line},
+                            )
+                        else:
+                            emit(**event)
+                    except Exception as error:  # noqa: BLE001 - keep draining stdout
+                        remember_error(error)
+            except Exception as error:  # noqa: BLE001 - propagate after draining pipes
+                remember_error(error)
+            finally:
+                process.stdout.close()
+
+        def read_stderr() -> None:
+            assert process.stderr is not None
+            try:
+                for chunk in iter(lambda: process.stderr.read(8192), ""):
+                    stderr.append(chunk)
+            except Exception as error:  # noqa: BLE001 - propagate after draining pipes
+                reader_errors.append(error)
+            finally:
+                process.stderr.close()
+
+        stdout_thread = Thread(target=read_stdout, daemon=True)
+        stderr_thread = Thread(target=read_stderr, daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+        if reader_errors:
+            raise reader_errors[0]
 
         if process.returncode != 0:
-            invalid = True
             emit(
                 kind="subprocess_failed",
                 level="error",
                 message="Subprocesso terminou com erro",
                 payload={
                     "exit_code": process.returncode,
-                    "stderr": stderr[: self.stderr_limit],
+                    "stderr": stderr.value(),
                 },
             )
             return StageResult(

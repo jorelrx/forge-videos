@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from datetime import UTC, datetime
 
 import pytest
 
+from forge.domain.operacao import RunStatus, StageName, StageStatus
+from forge.repositories.connection import Database
+from forge.repositories.schema import init_db
+from forge.services.control_plane import ControlPlaneService
 from forge.services.subprocesso import SubprocessExecutor
+from forge.services.worker import StudioWorker
 
 
 def child(*lines: str, exit_code: int = 0, stderr: str = "") -> list[str]:
@@ -15,6 +22,16 @@ def child(*lines: str, exit_code: int = 0, stderr: str = "") -> list[str]:
     if stderr:
         script += f"; print({stderr!r}, file=sys.stderr)"
     script += f"; raise SystemExit({exit_code})"
+    return [sys.executable, "-c", script]
+
+
+def slow_child(line: str, *, delay_seconds: float, exit_code: int = 0) -> list[str]:
+    script = (
+        "import sys, time; "
+        f"print({line!r}, flush=True); "
+        f"time.sleep({delay_seconds}); "
+        f"raise SystemExit({exit_code})"
+    )
     return [sys.executable, "-c", script]
 
 
@@ -44,6 +61,58 @@ def test_malformed_stdout_emits_invalid_event_and_fails():
     assert result.failure_code == "invalid_event"
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "[]",
+        json.dumps({}),
+        json.dumps({"kind": "", "level": "info", "message": "ok", "payload": {}}),
+        json.dumps({"kind": "progress", "level": " ", "message": "ok", "payload": {}}),
+        json.dumps({"kind": "progress", "level": "info", "message": 1, "payload": {}}),
+        json.dumps({"kind": "progress", "level": "info", "message": "ok", "payload": []}),
+    ],
+    ids=["array", "missing-fields", "empty-kind", "blank-level", "non-string-message", "non-object-payload"],
+)
+def test_invalid_event_schema_is_rejected(line):
+    events: list[dict] = []
+
+    result = SubprocessExecutor(child(line)).execute(
+        None, lambda **event: events.append(event)
+    )
+
+    assert result.failure_code == "invalid_event"
+    assert events == [
+        {
+            "kind": "worker.invalid_event",
+            "level": "error",
+            "message": "Evento JSONL inválido",
+            "payload": {"line": line},
+        }
+    ]
+
+
+def test_stdout_event_is_emitted_before_subprocess_exits():
+    line = json.dumps(
+        {"kind": "progress", "level": "info", "message": "early", "payload": {}}
+    )
+    emitted = threading.Event()
+    events: list[dict] = []
+
+    def execute() -> None:
+        result = SubprocessExecutor(
+            slow_child(line, delay_seconds=1.0, exit_code=3)
+        ).execute(None, lambda **event: (events.append(event), emitted.set()))
+        events.append({"result": result})
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    assert emitted.wait(timeout=0.25)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert events[0]["kind"] == "progress"
+    assert events[-1]["result"].failure_code == "subprocess_failed"
+
+
 def test_nonzero_exit_emits_bounded_stderr_and_fails():
     events: list[dict] = []
     executor = SubprocessExecutor(child(exit_code=3, stderr="x" * 100), stderr_limit=16)
@@ -63,3 +132,48 @@ def test_empty_argv_is_rejected():
 def test_string_argv_is_rejected_instead_of_being_split_into_characters():
     with pytest.raises(ValueError, match="argv"):
         SubprocessExecutor("python")
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "forge.db")
+    init_db(database)
+    return database
+
+
+def test_worker_persists_live_subprocess_event_in_database(db):
+    now = datetime(2026, 9, 13, 4, 0, tzinfo=UTC)
+    control_plane = ControlPlaneService(db, now=lambda: now)
+    run = control_plane.enqueue_video(
+        tema="Tema",
+        tese="Tese",
+        priority=50,
+        config_snapshot={"locale": "pt-BR"},
+        workflow_version=2,
+        git_commit="abc123",
+    )[1]
+    line = json.dumps(
+        {
+            "kind": "subprocess.progress",
+            "level": "info",
+            "message": "Item emitido",
+            "payload": {"current_items": 1},
+        }
+    )
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: SubprocessExecutor(child(line))},
+        now=lambda: now,
+    )
+
+    worker.run_once()
+
+    detail = control_plane.get_run(run.id)
+    events = control_plane.events_after(0, run_id=run.id)
+    persisted = next(event for event in events if event.kind == "subprocess.progress")
+    stage = next(item for item in detail.stages if item.stage is StageName.PREPARACAO)
+    assert detail.run.status is RunStatus.RUNNING
+    assert stage.status is StageStatus.SUCCEEDED
+    assert persisted.payload == {"current_items": 1}

@@ -172,3 +172,22 @@ def test_studio_db_path_aceita_construtor_direto(tmp_path):
     studio_db_path = tmp_path / "forge.db"
 
     assert Settings(_env_file=None, studio_db_path=studio_db_path).studio_db_path == studio_db_path
+
+
+def test_worker_lease_e_heartbeat_tem_defaults_coerentes():
+    settings = Settings(_env_file=None)
+
+    assert settings.worker_lease_seconds == 15
+    assert settings.worker_heartbeat_seconds == 5
+    assert settings.worker_heartbeat_seconds < settings.worker_lease_seconds
+
+
+def test_worker_rejeita_heartbeat_maior_ou_igual_ao_lease():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(
+            _env_file=None,
+            worker_lease_seconds=15,
+            worker_heartbeat_seconds=15,
+        )

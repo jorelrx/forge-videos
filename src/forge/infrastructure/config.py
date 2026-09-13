@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.infrastructure.logging import get_logger
@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     effort: str = "high"
     output_dir: Path = Path("output/roteiros")
     studio_db_path: Path = Path("data/forge.db")
+    worker_lease_seconds: int = Field(default=15, gt=0)
+    worker_heartbeat_seconds: int = Field(default=5, gt=0)
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20
@@ -86,6 +88,14 @@ class Settings(BaseSettings):
     # LM Studio ficou 12 min sem responder e sem erro.
     llm_timeout: float = 600.0
     llm_max_retries: int = 1
+
+    @model_validator(mode="after")
+    def heartbeat_must_precede_lease(self) -> "Settings":
+        if self.worker_heartbeat_seconds >= self.worker_lease_seconds:
+            raise ValueError(
+                "worker_heartbeat_seconds must be less than worker_lease_seconds"
+            )
+        return self
 
     @property
     def resolved_model(self) -> str:

@@ -37,3 +37,27 @@ Testes de contrato foram escritos antes dos módulos novos e a execução RED co
 
 - Os módulos concretos dos oito stages ainda serão entregues nas tasks seguintes; o dispatcher retorna erro de filho se um stage allowlisted ainda não estiver instalado.
 - `StageProcessExecutor` exige `video` no `StageContext`; o worker agora o carrega do repositório.
+
+## Round 1 — correções de revisão
+
+### Mudanças
+
+- `StudioWorker._finish_stage` agora copia `result.outputs["failure"]` para o payload de `stage.failed`, usando `Redactor` para sanitização recursiva. A evidência preserva adapter, comando/argv, tentativa, item, stack trace, serviços/GPU, `retriable` e ação recomendada.
+- `forge.executors.entrypoint` valida que `--stage` coincide com `RunSnapshot.stage` antes de chamar o dispatcher/import dinâmico; divergência encerra o filho com erro estável.
+
+### Arquivos
+
+- Modificados: `src/forge/services/worker.py`, `src/forge/executors/entrypoint.py`.
+- Testes modificados: `tests/services/test_worker.py`, `tests/executors/test_entrypoint.py`.
+
+### TDD e verificação
+
+- RED: `uv run --no-cache pytest tests/services/test_worker.py::test_run_once_persists_sanitized_failure_evidence_on_stage_failed tests/executors/test_entrypoint.py::test_entrypoint_rejects_stage_flag_mismatch_before_importing_executor -q` — `2 failed`: chave `failure` ausente e dispatcher chamado com stage divergente.
+- GREEN focado: `uv run --no-cache pytest tests/services/test_worker.py tests/executors/test_entrypoint.py -q` — `16 passed`.
+- Suíte completa: `uv run --no-cache pytest -q` — `500 passed, 1 skipped, 1 deselected`.
+
+### Autorrevisão
+
+- A evidência completa só é anexada no ramo `stage.failed`; dados credenciais em chaves reconhecidas são redigidos antes da persistência.
+- O snapshot é validado antes de qualquer import de implementação, impedindo executar módulo de outro stage por flag adulterada.
+- Não houve alteração em timeout, cancelamento, contenção ou protocolo JSONL.

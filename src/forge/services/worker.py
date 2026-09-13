@@ -29,6 +29,7 @@ from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
 from forge.services.control_plane import ControlPlaneService
 from forge.services.maquina_estados import mudar_etapa, mudar_run
+from forge.services.redacao import Redactor
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +392,11 @@ class StudioWorker:
                 event_level = "error"
                 event_message = "Etapa falhou"
                 event_payload: JSON_OBJECT = {"failure_code": result.failure_code}
+                failure_evidence = result.outputs.get("failure")
+                if failure_evidence is not None:
+                    event_payload["failure"] = Redactor(secrets=[]).clean(
+                        failure_evidence
+                    )
             else:
                 finished_run = run
                 finished_stage = stage.model_copy(

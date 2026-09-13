@@ -240,6 +240,56 @@ def test_run_once_marks_run_and_stage_failed_for_a_failed_executor_result(db, co
     ]
 
 
+def test_run_once_persists_sanitized_failure_evidence_on_stage_failed(
+    db, control_plane
+):
+    run = enqueue(control_plane)
+    evidence = {
+        "adapter": "tts",
+        "command": ["tts", "--device", "vulkan"],
+        "attempt": 3,
+        "item_key": "b001",
+        "stack_trace": "RuntimeError: super-secret",
+        "services": {"api_key": "super-secret", "status": "down"},
+        "gpu": {"memory_free_mb": 12},
+        "retriable": False,
+        "recommended_action": "liberar GPU e tentar novamente",
+    }
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={
+            StageName.PREPARACAO: FakeExecutor(
+                StageResult(
+                    failure_code="tts_vulkan_oom",
+                    failure_message="Memória insuficiente",
+                    outputs={"failure": evidence},
+                )
+            )
+        },
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    failed_event = next(
+        event
+        for event in control_plane.events_after(0, run_id=run.id)
+        if event.kind == "stage.failed"
+    )
+    failure = failed_event.payload["failure"]
+    assert failure["adapter"] == "tts"
+    assert failure["command"] == ["tts", "--device", "vulkan"]
+    assert failure["attempt"] == 3
+    assert failure["item_key"] == "b001"
+    assert failure["stack_trace"] == "RuntimeError: super-secret"
+    assert failure["services"] == {"api_key": "[REDACTED]", "status": "down"}
+    assert failure["gpu"] == {"memory_free_mb": 12}
+    assert failure["retriable"] is False
+    assert failure["recommended_action"] == "liberar GPU e tentar novamente"
+
+
 def test_run_once_records_missing_executor_without_advancing_the_pending_stage(
     db, control_plane
 ):

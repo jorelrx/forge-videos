@@ -55,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         snapshot = RunSnapshot.model_validate_json(args.context.read_text(encoding="utf-8"))
+        if snapshot.stage is not stage:
+            raise ValueError(
+                f"stage flag {stage.value!r} does not match context stage "
+                f"{snapshot.stage.value!r}"
+            )
         implementation = _implementation(stage)
         result = implementation.run(snapshot, emit)
         child_result = StageChildResult.model_validate(result)

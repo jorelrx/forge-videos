@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from forge.gpu.broker import Broker, GPUOcupada
@@ -161,3 +163,46 @@ def test_escrita_interrompida_nao_apaga_o_residente(tmp_path, monkeypatch):
         b._gravar("imagem")
 
     assert b.residente() == "llm"
+
+
+def test_dono_morto_libera_todos_os_consumidores_antes_de_reivindicar(tmp_path):
+    """Remover a recuperação de PID morto deixaria o modelo do crash na VRAM."""
+    registro = []
+
+    class InspectorFalso:
+        def is_alive(self, pid):
+            return False
+
+    (tmp_path / "residente.json").write_text(
+        json.dumps({
+            "recurso": "imagem",
+            "pid": 4455,
+            "claimed_at": "2026-09-13T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    b = _broker(tmp_path, registro, inspector=InspectorFalso())
+
+    with b.exclusivo("tts"):
+        pass
+
+    assert sorted(registro) == ["imagem", "llm", "tts"]
+    estado = json.loads((tmp_path / "residente.json").read_text(encoding="utf-8"))
+    assert estado["recurso"] == "tts"
+    assert isinstance(estado["pid"], int) and estado["pid"] > 0
+    assert estado["claimed_at"].endswith("+00:00")
+
+
+def test_comfy_manual_e_liberado_sem_residente_registrado(tmp_path):
+    """Remover as probes externas deixaria um Comfy iniciado à mão na VRAM."""
+    registro = []
+    b = _broker(
+        tmp_path,
+        registro,
+        probes={"imagem": lambda: True, "llm": lambda: False},
+    )
+
+    with b.exclusivo("tts"):
+        pass
+
+    assert registro == ["imagem"]

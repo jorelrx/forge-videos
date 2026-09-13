@@ -14,6 +14,8 @@ Três modos de falha, tratados de forma diferente de propósito:
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -28,6 +30,11 @@ from forge.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 INTERVALO_POLL = 0.5
+
+# Só um launcher que passou por este módulo pode autorizar encerramento. Um
+# processo Python grande detectado na máquina é evidência para o operador, não
+# licença para derrubar trabalho alheio.
+_COMFY_LAUNCHED_PIDS: set[int] = set()
 
 # Falha de conexão: o serviço não está no ar. `ConnectTimeout` entra aqui por
 # semântica, não por hierarquia — no httpx ela é subclasse de
@@ -131,6 +138,165 @@ def liberar_imagem(settings: Settings, *, cliente: httpx.Client | None = None) -
             cliente.close()
 
 
+def liberar_para_tts(
+    settings: Settings,
+    *,
+    cliente: httpx.Client | None = None,
+    shutdown: Callable[[], None] | None = None,
+) -> None:
+    """Prepara Vulkan para TTS sem assumir que o Comfy veio do broker.
+
+    `/free` sozinho nem sempre desfaz o heap Vulkan. Só nesta transição o
+    Comfy é encerrado, e somente pelo callback que conhece um PID lançado pelo
+    forge; sem esse PID, registramos diagnóstico em vez de matar Python amplo.
+    """
+    fechar = cliente is None
+    cliente = cliente or httpx.Client(base_url=settings.comfy_url, timeout=10.0)
+    try:
+        try:
+            resp = cliente.post(
+                "/free", json={"unload_models": True, "free_memory": True}
+            )
+            resp.raise_for_status()
+        except FORA_DO_AR as e:
+            logger.warning("ComfyUI fora do ar; nada a liberar", error=str(e))
+            return
+        except httpx.HTTPError as e:
+            logger.warning("ComfyUI não respondeu ao /free; conferindo a VRAM",
+                           error=str(e))
+
+        if _vram_livre(cliente, settings) is False:
+            (shutdown or (lambda: shutdown_comfy(settings)))()
+    finally:
+        if fechar:
+            cliente.close()
+
+
+def registrar_comfy_lancado(pid: int) -> None:
+    """Registra a única árvore que o forge pode encerrar automaticamente."""
+    if pid <= 0:
+        raise ValueError("PID do ComfyUI deve ser positivo")
+    _COMFY_LAUNCHED_PIDS.add(pid)
+
+
+def shutdown_comfy(
+    settings: Settings,
+    *,
+    pid: int | None = None,
+    executar: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> bool:
+    """Encerra exclusivamente uma árvore previamente lançada pelo forge."""
+    alvo = pid if pid is not None else next(iter(_COMFY_LAUNCHED_PIDS), None)
+    if alvo is None or alvo not in _COMFY_LAUNCHED_PIDS:
+        diagnose_gpu_orphans(settings, executar=executar)
+        return False
+    try:
+        if os.name == "nt":
+            executar(
+                ["taskkill", "/PID", str(alvo), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=settings.comfy_process_timeout,
+            )
+        else:
+            os.killpg(os.getpgid(alvo), 15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("Falha ao encerrar ComfyUI lançado pelo forge",
+                       pid=alvo, error=str(e))
+        return False
+    _COMFY_LAUNCHED_PIDS.discard(alvo)
+    logger.info("ComfyUI encerrado para TTS", pid=alvo)
+    return True
+
+
+def diagnose_gpu_orphans(
+    settings: Settings,
+    *,
+    executar: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> list[dict[str, object]]:
+    """Lista consumidores grandes para diagnóstico; nunca termina processos."""
+    try:
+        if os.name == "nt":
+            proc = executar(
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine,WorkingSetSize | ConvertTo-Json -Compress",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=settings.comfy_process_timeout,
+            )
+            registros = json.loads(proc.stdout or "[]")
+            if isinstance(registros, dict):
+                registros = [registros]
+            candidatos = [
+                {
+                    "pid": item.get("ProcessId"),
+                    "command_line": item.get("CommandLine") or "",
+                    "working_set_mb": int(item.get("WorkingSetSize") or 0) // 1_000_000,
+                }
+                for item in registros
+            ]
+        else:
+            proc = executar(
+                ["ps", "-eo", "pid=,rss=,args="], capture_output=True,
+                text=True, timeout=settings.comfy_process_timeout,
+            )
+            candidatos = []
+            for linha in proc.stdout.splitlines():
+                partes = linha.strip().split(maxsplit=2)
+                if len(partes) == 3:
+                    candidatos.append({
+                        "pid": int(partes[0]),
+                        "working_set_mb": int(partes[1]) // 1024,
+                        "command_line": partes[2],
+                    })
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as e:
+        logger.warning("Diagnóstico de órfãos GPU indisponível", error=str(e))
+        return []
+
+    orfaos = [
+        item for item in candidatos
+        if item["working_set_mb"] >= settings.gpu_orphan_diagnostic_threshold_mb
+    ]
+    for item in orfaos:
+        logger.warning("Possível órfão de GPU", **item)
+    return orfaos
+
+
+def probe_lm_studio(settings: Settings, *, cliente: httpx.Client | None = None) -> bool:
+    """Serviço que responde (mesmo com erro HTTP) pode reter VRAM."""
+    fechar = cliente is None
+    cliente = cliente or httpx.Client(base_url=_base_lm_studio(settings), timeout=2.0)
+    try:
+        try:
+            cliente.get("/api/v0/models")
+        except FORA_DO_AR:
+            return False
+        except httpx.HTTPError:
+            return True
+        return True
+    finally:
+        if fechar:
+            cliente.close()
+
+
+def probe_comfy(settings: Settings, *, cliente: httpx.Client | None = None) -> bool:
+    fechar = cliente is None
+    cliente = cliente or httpx.Client(base_url=settings.comfy_url, timeout=2.0)
+    try:
+        try:
+            cliente.get("/system_stats")
+        except FORA_DO_AR:
+            return False
+        except httpx.HTTPError:
+            return True
+        return True
+    finally:
+        if fechar:
+            cliente.close()
+
+
 def _vram_livre(cliente: httpx.Client, settings: Settings) -> bool | None:
     try:
         resp = cliente.get("/system_stats")
@@ -201,4 +367,9 @@ def montar_broker(settings: Settings, *, base: Path | None = None) -> Broker:
         liberadores=montar_liberadores(settings),
         timeout_lock=settings.gpu_lock_timeout,
         sem_gpu=frozenset(sem_gpu),
+        probes={
+            "llm": lambda: probe_lm_studio(settings),
+            "imagem": lambda: probe_comfy(settings),
+        },
+        preparadores={"tts": lambda: liberar_para_tts(settings)},
     )

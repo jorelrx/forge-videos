@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     comfy_vram_livre_min: int = 6_000_000_000
     lms_bin: str = str(Path.home() / ".lmstudio" / "bin" / "lms.exe")
     gpu_liberacao_timeout: float = 60.0
+    # Prazo para encerrar a árvore que o launcher configurado do ComfyUI abriu.
+    comfy_process_timeout: float = Field(default=60.0, gt=0)
+    # Processo grande fora da posse registrada vira diagnóstico, nunca kill amplo.
+    gpu_orphan_diagnostic_threshold_mb: int = Field(default=600, gt=0)
 
     # Chamada de modelo sem prazo pendura o pipeline: no primeiro run real o
     # LM Studio ficou 12 min sem responder e sem erro.

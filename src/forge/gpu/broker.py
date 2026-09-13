@@ -13,16 +13,58 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator, Literal
 
 from filelock import FileLock, Timeout
+from pydantic import BaseModel, Field, ValidationError
 
 from forge.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
 Recurso = Literal["llm", "tts", "imagem"]
+
+
+class GPUState(BaseModel):
+    """Reivindicação persistida do consumidor que carregou a GPU."""
+
+    recurso: Recurso
+    pid: int = Field(gt=0)
+    claimed_at: datetime
+
+
+class ProcessInspector:
+    """Consulta conservadora de processo: dúvida nunca vira PID morto."""
+
+    def is_alive(self, pid: int) -> bool:
+        try:
+            if os.name == "nt":
+                return self._is_alive_windows(pid)
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except Exception:
+            # Falha de permissão, API indisponível ou diagnóstico incompleto não
+            # autoriza roubar um claim que ainda pode ser válido.
+            return True
+        return True
+
+    @staticmethod
+    def _is_alive_windows(pid: int) -> bool:
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        invalid_parameter = 87
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        # ERROR_INVALID_PARAMETER é a resposta documentada para PID inexistente.
+        # Todo outro erro (especialmente acesso negado) é dono possivelmente vivo.
+        return ctypes.get_last_error() != invalid_parameter
 
 
 class GPUOcupada(RuntimeError):
@@ -59,6 +101,9 @@ class Broker:
         liberadores: dict[str, Callable[[], None]],
         timeout_lock: float = 900.0,
         sem_gpu: frozenset[str] = frozenset(),
+        inspector: ProcessInspector | None = None,
+        probes: dict[str, Callable[[], bool]] | None = None,
+        preparadores: dict[str, Callable[[], None]] | None = None,
     ) -> None:
         self.lock_path = Path(lock_path)
         self.estado_path = Path(estado_path)
@@ -67,6 +112,11 @@ class Broker:
         # Recursos que declaram não usar a placa (TTS na CPU, por exemplo).
         # Eles não disputam o slot nem deslocam o residente.
         self.sem_gpu = sem_gpu
+        self.inspector = inspector or ProcessInspector()
+        # Serviços iniciados fora do forge não deixam estado no broker. As probes
+        # impedem que um Comfy/LM Studio manual sobreviva ao próximo claim.
+        self.probes = probes or {}
+        self.preparadores = preparadores or {}
 
     @contextmanager
     def exclusivo(self, recurso: Recurso) -> Iterator[None]:
@@ -100,16 +150,25 @@ class Broker:
         liberador do residente REGISTRADO, então tratar estado corrompido como
         placa vazia deixaria o modelo carregado para sempre.
         """
+        estado = self._estado()
+        if isinstance(estado, GPUState):
+            return estado.recurso
+        return estado
+
+    def _estado(self) -> GPUState | None | _Ilegivel:
         if not self.estado_path.exists():
             return None
         try:
-            return json.loads(self.estado_path.read_text(encoding="utf-8"))["recurso"]
-        except (OSError, ValueError, KeyError):
+            return GPUState.model_validate_json(
+                self.estado_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError, ValueError):
             logger.warning("Estado do broker ilegível", path=str(self.estado_path))
             return ILEGIVEL
 
     def _trocar(self, recurso: str) -> None:
-        atual = self.residente()
+        atual = self._estado()
+        ativos = self._probar_servicos()
         if atual is ILEGIVEL:
             # Algo foi reivindicado e não sabemos o quê. Liberar todo mundo é
             # caro (paga reloads) mas é o único caminho seguro: o caro é um
@@ -117,19 +176,60 @@ class Broker:
             # de LLM.
             logger.warning("Estado perdido; liberando todos os recursos",
                            para=recurso, liberadores=sorted(self.liberadores))
-            for nome in sorted(self.liberadores):
-                self.liberadores[nome]()
+            self._liberar_todos()
             self._gravar(recurso)
             return
-        if atual == recurso:
+        if atual is not None and not self.inspector.is_alive(atual.pid):
+            logger.warning(
+                "Dono morto; liberando todos os recursos",
+                recurso=atual.recurso,
+                pid=atual.pid,
+                para=recurso,
+            )
+            self._liberar_todos()
+            self._gravar(recurso)
+            return
+
+        preparador = self.preparadores.get(recurso)
+        if preparador is not None:
+            preparador()
+
+        atual_recurso = atual.recurso if atual is not None else None
+        self._liberar_servicos_externos(recurso, atual_recurso, ativos)
+        if atual_recurso == recurso:
             logger.debug("Recurso já residente", recurso=recurso)
             return
-        if atual is not None:
-            logger.info("Liberando GPU", de=atual, para=recurso)
-            liberador = self.liberadores.get(atual)
+        if atual_recurso is not None:
+            logger.info("Liberando GPU", de=atual_recurso, para=recurso)
+            liberador = self.liberadores.get(atual_recurso)
             if liberador is not None:
                 liberador()
         self._gravar(recurso)
+
+    def _liberar_todos(self) -> None:
+        for nome in sorted(self.liberadores):
+            self.liberadores[nome]()
+
+    def _probar_servicos(self) -> dict[str, bool]:
+        ativos = {}
+        for nome, probe in self.probes.items():
+            try:
+                ativos[nome] = probe()
+            except Exception as e:  # uma probe não confiável não declara VRAM livre
+                logger.warning("Probe de GPU falhou; tratando serviço como ativo",
+                               recurso=nome, error=str(e))
+                ativos[nome] = True
+        return ativos
+
+    def _liberar_servicos_externos(
+        self, recurso: str, registrado: str | None, ativos: dict[str, bool]
+    ) -> None:
+        for nome, ativo in ativos.items():
+            if ativo and nome != recurso and nome != registrado:
+                logger.info("Liberando serviço externo", de=nome, para=recurso)
+                liberador = self.liberadores.get(nome)
+                if liberador is not None:
+                    liberador()
 
     def _gravar(self, recurso: str) -> None:
         self.estado_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,5 +237,17 @@ class Broker:
         # ESTÁ carregado, então um corte no meio da escrita o truncaria no pior
         # momento possível — e estado truncado força liberar tudo depois.
         temporario = self.estado_path.with_suffix(".json.tmp")
-        temporario.write_text(json.dumps({"recurso": recurso}), encoding="utf-8")
+        estado = GPUState(
+            recurso=recurso,
+            pid=os.getpid(),
+            claimed_at=datetime.now(UTC),
+        )
+        temporario.write_text(
+            json.dumps({
+                "recurso": estado.recurso,
+                "pid": estado.pid,
+                "claimed_at": estado.claimed_at.isoformat(),
+            }),
+            encoding="utf-8",
+        )
         os.replace(temporario, self.estado_path)

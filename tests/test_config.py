@@ -119,7 +119,21 @@ def test_liberadores_tem_defaults():
     assert s.comfy_url == "http://127.0.0.1:8188"
     assert s.comfy_vram_livre_min == 6_000_000_000
     assert s.gpu_liberacao_timeout == 60.0
+    assert s.comfy_process_timeout == 60.0
+    assert s.gpu_orphan_diagnostic_threshold_mb == 600
     assert s.lms_bin.endswith("lms.exe")
+
+
+@pytest.mark.parametrize(
+    "campo, valor",
+    [("comfy_process_timeout", 0), ("gpu_orphan_diagnostic_threshold_mb", 0)],
+)
+def test_limites_de_processos_gpu_devem_ser_positivos(campo, valor):
+    """Aceitar zero desliga silenciosamente timeout/diagnóstico de órfãos."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, **{campo: valor})
 
 
 def test_llm_tem_prazo():

@@ -5,6 +5,7 @@ from forge.gpu.broker import LiberacaoFalhou
 from forge.gpu.liberadores import (
     liberar_imagem,
     liberar_llm,
+    liberar_para_tts,
     liberar_tts,
     montar_broker,
     montar_liberadores,
@@ -113,6 +114,31 @@ def test_liberar_imagem_com_comfy_fora_do_ar_apenas_avisa():
 def test_liberar_tts_e_no_op():
     """O audiocpp_cli morre sozinho ao terminar o trecho; não há o que descarregar."""
     liberar_tts(_settings())
+
+
+def test_tts_desliga_comfy_quando_free_nao_esvazia_heap():
+    """Ignorar VRAM após /free deixa o heap Vulkan disputar a placa com o TTS."""
+    chamadas = []
+
+    def handler(request):
+        chamadas.append((request.method, request.url.path))
+        if request.url.path == "/free":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"devices": [
+            {"name": "rx580", "vram_free": 2_000_000_000},
+        ]})
+
+    cliente = httpx.Client(transport=httpx.MockTransport(handler),
+                           base_url="http://comfy.test")
+    desligamentos = []
+    liberar_para_tts(
+        _settings(comfy_vram_livre_min=6_000_000_000),
+        cliente=cliente,
+        shutdown=lambda: desligamentos.append("shutdown_comfy"),
+    )
+
+    assert chamadas == [("POST", "/free"), ("GET", "/system_stats")]
+    assert desligamentos == ["shutdown_comfy"]
 
 
 def test_montar_liberadores_tem_as_tres_chaves_e_sao_chamaveis():

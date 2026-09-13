@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from forge.domain.operacao import (
+    ItemStatus,
     ETAPAS,
     Artifact,
     Run,
@@ -14,6 +15,7 @@ from forge.domain.operacao import (
     StageRun,
     StageStatus,
     Video,
+    WorkItem,
     dependentes_de,
 )
 
@@ -481,6 +483,81 @@ class OperacaoRepository:
         return [_artifact_from_row(row) for row in rows]
 
 
+    def get_video(self, video_id: str) -> Video | None:
+        row = self.conn.execute(
+            "SELECT * FROM videos WHERE id = ?", (video_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _video_from_row(row)
+
+    def upsert_work_items(
+        self, stage_run_id: str, plans: list[WorkItemPlan]
+    ) -> list[WorkItem]:
+        if self.conn.execute(
+            "SELECT 1 FROM stage_runs WHERE id = ?", (stage_run_id,)
+        ).fetchone() is None:
+            raise KeyError(stage_run_id)
+        for plan in plans:
+            plan_key = plan["item_key"] if isinstance(plan, dict) else plan.item_key
+            plan_input = plan["input"] if isinstance(plan, dict) else plan.input
+            plan_hash = plan["input_hash"] if isinstance(plan, dict) else plan.input_hash
+            row = self.conn.execute(
+                "SELECT * FROM work_items WHERE stage_run_id = ? AND item_key = ?",
+                (stage_run_id, plan_key),
+            ).fetchone()
+            if row is None:
+                self.conn.execute(
+                    "INSERT INTO work_items "
+                    "(id, stage_run_id, item_key, status, input_json, input_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()), stage_run_id, plan_key,
+                        ItemStatus.PENDING.value, _json(plan_input), plan_hash,
+                    ),
+                )
+            elif row["input_hash"] != plan_hash:
+                self.conn.execute(
+                    "UPDATE artifacts SET is_current = 0 WHERE work_item_id = ?",
+                    (row["id"],),
+                )
+                self.conn.execute(
+                    "UPDATE work_items SET status = ?, input_json = ?, input_hash = ?, "
+                    "duration_ms = NULL, failure_code = NULL, failure_message = NULL "
+                    "WHERE id = ?",
+                    (ItemStatus.PENDING.value, _json(plan_input), plan_hash, row["id"]),
+                )
+        return self.list_work_items(stage_run_id)
+
+    def list_work_items(self, stage_run_id: str) -> list[WorkItem]:
+        rows = self.conn.execute(
+            "SELECT * FROM work_items WHERE stage_run_id = ? ORDER BY item_key",
+            (stage_run_id,),
+        ).fetchall()
+        return [_work_item_from_row(row) for row in rows]
+
+    def start_work_item(self, work_item_id: str) -> WorkItem:
+        row = self.conn.execute(
+            "UPDATE work_items SET status = ?, attempts = attempts + 1 "
+            "WHERE id = ? AND status IN (?, ?) RETURNING *",
+            (
+                ItemStatus.RUNNING.value, work_item_id,
+                ItemStatus.PENDING.value, ItemStatus.FAILED.value,
+            ),
+        ).fetchone()
+        if row is None:
+            raise KeyError(work_item_id)
+        return _work_item_from_row(row)
+
+    def finish_work_item(self, work_item_id: str, status: ItemStatus) -> WorkItem:
+        row = self.conn.execute(
+            "UPDATE work_items SET status = ? WHERE id = ? AND status = ? RETURNING *",
+            (status.value, work_item_id, ItemStatus.RUNNING.value),
+        ).fetchone()
+        if row is None:
+            raise KeyError(work_item_id)
+        return _work_item_from_row(row)
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -566,4 +643,22 @@ def _artifact_from_row(row: sqlite3.Row) -> Artifact:
         metadata=json.loads(row["metadata_json"]),
         is_current=bool(row["is_current"]),
         created_at=_datetime(row["created_at"]),
+    )
+
+
+def _video_from_row(row: sqlite3.Row) -> Video:
+    return Video(
+        id=row["id"], tema=row["tema"], tese=row["tese"],
+        created_at=_datetime(row["created_at"]),
+        updated_at=_datetime(row["updated_at"]),
+    )
+
+
+def _work_item_from_row(row: sqlite3.Row) -> WorkItem:
+    return WorkItem(
+        id=row["id"], stage_run_id=row["stage_run_id"], item_key=row["item_key"],
+        status=ItemStatus(row["status"]), input=json.loads(row["input_json"]),
+        input_hash=row["input_hash"], attempts=row["attempts"],
+        duration_ms=_datetime(row["duration_ms"]),
+        failure_code=row["failure_code"], failure_message=row["failure_message"],
     )

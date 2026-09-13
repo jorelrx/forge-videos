@@ -468,17 +468,26 @@ class StudioWorker:
         return comandos.get(row["id"]) if row is not None else None
 
     def _event_sink(self, context: StageContext) -> EventSink:
+        from forge.services.catalogo import ChildEventProjector
+        from forge.services.redacao import Redactor
+        projector = ChildEventProjector(
+            self.db, context.run_dir or Path("."), context.stage_run.id
+        )
+        redactor = Redactor(secrets=[])
+
         def emit(
             *, kind: str, level: str, message: str, payload: JSON_OBJECT
         ) -> None:
+            cleaned_payload = redactor.clean(payload)
             self._append_event(
                 run_id=context.run.id,
                 stage_run_id=context.stage_run.id,
                 kind=kind,
                 level=level,
                 message=message,
-                payload=payload,
+                payload=cleaned_payload,
             )
+            projector.project(kind, cleaned_payload)
 
         return emit
 

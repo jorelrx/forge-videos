@@ -23,11 +23,12 @@ _ACTIVE_RUN_STATUSES = (
     RunStatus.PAUSING,
     RunStatus.VALIDATING,
 )
-_INTERRUPTIBLE_STAGE_STATUSES = (
-    StageStatus.PENDING,
-    StageStatus.RUNNING,
-    StageStatus.PAUSING,
-)
+_CURRENT_STAGE_STATUS = {
+    RunStatus.PREPARING: StageStatus.PENDING,
+    RunStatus.RUNNING: StageStatus.RUNNING,
+    RunStatus.PAUSING: StageStatus.PAUSING,
+    RunStatus.VALIDATING: StageStatus.RUNNING,
+}
 
 
 class OperacaoRepository:
@@ -221,7 +222,7 @@ class OperacaoRepository:
         active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
         rows = self.conn.execute(
             f"""
-            SELECT id FROM runs
+            SELECT id, status FROM runs
             WHERE status IN ({active_placeholders})
               AND lease_expires_at IS NOT NULL
               AND lease_expires_at <= ?
@@ -232,6 +233,27 @@ class OperacaoRepository:
         if not run_ids:
             return []
 
+        stage_ids = []
+        for row in rows:
+            expected_status = _CURRENT_STAGE_STATUS[RunStatus(row["status"])]
+            current_stage = next(
+                (
+                    stage
+                    for stage in self.current_stages(row["id"])
+                    if stage.status is expected_status
+                ),
+                None,
+            )
+            if current_stage is not None:
+                stage_ids.append(current_stage.id)
+
+        if stage_ids:
+            stage_placeholders = ", ".join("?" for _ in stage_ids)
+            self.conn.execute(
+                f"UPDATE stage_runs SET status = ? WHERE id IN ({stage_placeholders})",
+                (StageStatus.INTERRUPTED.value, *stage_ids),
+            )
+
         run_placeholders = ", ".join("?" for _ in run_ids)
         self.conn.execute(
             f"""
@@ -240,33 +262,6 @@ class OperacaoRepository:
             WHERE id IN ({run_placeholders})
             """,
             (RunStatus.INTERRUPTED.value, *run_ids),
-        )
-        stage_placeholders = ", ".join("?" for _ in _INTERRUPTIBLE_STAGE_STATUSES)
-        self.conn.execute(
-            f"""
-            UPDATE stage_runs
-            SET status = ?
-            WHERE run_id IN ({run_placeholders})
-              AND status IN ({stage_placeholders})
-              AND id IN (
-                  SELECT current_stage.id FROM stage_runs AS current_stage
-                  JOIN (
-                      SELECT run_id, stage, MAX(attempt) AS attempt
-                      FROM stage_runs
-                      WHERE run_id IN ({run_placeholders})
-                      GROUP BY run_id, stage
-                  ) current
-                    ON current.run_id = current_stage.run_id
-                   AND current.stage = current_stage.stage
-                   AND current.attempt = current_stage.attempt
-              )
-            """,
-            (
-                StageStatus.INTERRUPTED.value,
-                *run_ids,
-                *(status.value for status in _INTERRUPTIBLE_STAGE_STATUSES),
-                *run_ids,
-            ),
         )
         interrupted: list[Run] = []
         for run_id in run_ids:

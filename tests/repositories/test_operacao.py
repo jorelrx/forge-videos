@@ -242,6 +242,10 @@ def test_interrupt_expired_marks_current_active_stage_interrupted(
         next(item for item in stages if item.id == current_stage.id).status
         is StageStatus.INTERRUPTED
     )
+    assert all(
+        item.status is StageStatus.PENDING
+        for item in stages[ETAPAS.index(current_stage.stage) + 1 :]
+    )
 
 
 def test_save_stage_persists_current_stage_fields(db):

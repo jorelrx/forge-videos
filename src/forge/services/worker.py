@@ -139,6 +139,9 @@ class StudioWorker:
         stage = self._current_pending_stage(run.id)
         if stage is None:
             return run
+        paused_run = self._pause_before_stage(run, stage)
+        if paused_run is not None:
+            return paused_run
         executor = self.executors.get(stage.stage)
         if executor is None:
             self._append_event(
@@ -219,6 +222,41 @@ class StudioWorker:
                 stage_run_id=stage.id,
             )
         return StageContext(run=started_run, stage_run=started_stage)
+
+    def _pause_before_stage(self, run: Run, stage: StageRun) -> Run | None:
+        with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            current_run = operacao.get_run(run.id)
+            if (
+                current_run is None
+                or current_run.lease_owner != self.worker_id
+                or current_run.status is not RunStatus.PAUSING
+            ):
+                return None
+            pause_command = self._accepted_pause(ComandosRepository(conn), run.id)
+            if pause_command is None:
+                return None
+            paused_run = operacao.save_run(
+                current_run.model_copy(
+                    update={
+                        "status": mudar_run(current_run.status, RunStatus.PAUSED),
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                    }
+                )
+            )
+            ComandosRepository(conn).set_status(
+                pause_command.id, CommandStatus.APPLIED, result=pause_command.result
+            )
+            EventosRepository(conn).append(
+                kind="run.paused",
+                level="info",
+                message="Run pausada entre etapas",
+                payload={"stage": stage.stage.value},
+                run_id=run.id,
+                stage_run_id=stage.id,
+            )
+            return paused_run
 
     def _finish_stage(self, context: StageContext, result: StageResult) -> Run:
         now = self.now()

@@ -119,6 +119,51 @@ def test_run_once_resumes_its_owned_run_for_the_next_pending_stage(
     ]
 
 
+def test_run_once_applies_pause_between_stages_before_starting_pending_executor(
+    db, control_plane
+):
+    run = enqueue(control_plane)
+    preparation_executor = FakeExecutor(StageResult(current_items=1, total_items=1))
+    research_executor = FakeExecutor(StageResult(current_items=1, total_items=1))
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={
+            StageName.PREPARACAO: preparation_executor,
+            StageName.PESQUISA: research_executor,
+        },
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+    command = control_plane.request_pause(run.id, idempotency_key="pause-between-stages")
+    worker.run_once()
+
+    detail = control_plane.get_run(run.id)
+    pending_stage = stage_for(control_plane, run.id, StageName.PESQUISA)
+    with db.connection() as conn:
+        persisted_command = ComandosRepository(conn).get(command.id)
+
+    assert detail.run.status is RunStatus.PAUSED
+    assert detail.run.lease_owner is None
+    assert detail.run.lease_expires_at is None
+    assert pending_stage.status is StageStatus.PENDING
+    assert research_executor.contexts == []
+    assert persisted_command is not None
+    assert persisted_command.status is CommandStatus.APPLIED
+    assert persisted_command.applied_at is not None
+    assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == [
+        "run.queued",
+        "run.claimed",
+        "stage.started",
+        "executor.progress",
+        "stage.succeeded",
+        "command.pause_requested",
+        "run.paused",
+    ]
+
+
 def test_run_once_marks_run_and_stage_failed_for_a_failed_executor_result(db, control_plane):
     run = enqueue(control_plane)
     worker = StudioWorker(

@@ -160,6 +160,8 @@ class ControlPlaneService:
                     "status": mudar_run(run.status, RunStatus.QUEUED),
                     "lease_owner": None,
                     "lease_expires_at": None,
+                    "pause_requested_at": None,
+                    "finished_at": None,
                     "failure_code": None,
                     "failure_message": None,
                 }
@@ -191,13 +193,31 @@ class ControlPlaneService:
 
             operacao = OperacaoRepository(conn)
             run = self._require_run(operacao, run_id)
+            if run.status not in {
+                RunStatus.PAUSED,
+                RunStatus.FAILED,
+                RunStatus.COMPLETED,
+            }:
+                raise TransicaoInvalida(f"run: {run.status.value} -> queued")
             queued_status = mudar_run(
                 run.status, RunStatus.QUEUED, motivo="retry_stage"
             )
             dependent_stages = dependentes_de(stage)
             operacao.invalidate_from_stage(run_id, stage)
             operacao.invalidate_artifacts(run_id, dependent_stages)
-            operacao.save_run(run.model_copy(update={"status": queued_status}))
+            operacao.save_run(
+                run.model_copy(
+                    update={
+                        "status": queued_status,
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "pause_requested_at": None,
+                        "finished_at": None,
+                        "failure_code": None,
+                        "failure_message": None,
+                    }
+                )
+            )
             eventos = EventosRepository(conn)
             eventos.append(
                 kind="stages.invalidated",

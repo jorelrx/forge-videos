@@ -246,6 +246,8 @@ def test_resume_requeues_clears_fields_and_duplicate_wins(control_plane, db, sta
         status,
         lease_owner="worker-a",
         lease_expires_at=FIXED_NOW + timedelta(minutes=1),
+        pause_requested_at=FIXED_NOW - timedelta(minutes=1),
+        finished_at=FIXED_NOW,
         failure_code="boom",
         failure_message="failure",
     )
@@ -264,6 +266,8 @@ def test_resume_requeues_clears_fields_and_duplicate_wins(control_plane, db, sta
     assert resumed.status is RunStatus.QUEUED
     assert resumed.lease_owner is None
     assert resumed.lease_expires_at is None
+    assert resumed.pause_requested_at is None
+    assert resumed.finished_at is None
     assert resumed.failure_code is None
     assert resumed.failure_message is None
     assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == [
@@ -287,12 +291,24 @@ def test_resume_invalid_transition_rolls_back_command_and_side_effects(control_p
     assert control_plane.events_after(0, run_id=run.id) == before_events
 
 
-@pytest.mark.parametrize("initial_status", [RunStatus.FAILED, RunStatus.COMPLETED])
+@pytest.mark.parametrize(
+    "initial_status", [RunStatus.PAUSED, RunStatus.FAILED, RunStatus.COMPLETED]
+)
 def test_retry_invalidates_exact_downstream_artifacts_and_preserves_history(
     control_plane, db, initial_status
 ):
     _, run = enqueue(control_plane)
-    save_run_status(db, run.id, initial_status)
+    save_run_status(
+        db,
+        run.id,
+        initial_status,
+        lease_owner="worker-a",
+        lease_expires_at=FIXED_NOW + timedelta(minutes=1),
+        pause_requested_at=FIXED_NOW - timedelta(minutes=1),
+        finished_at=FIXED_NOW,
+        failure_code="boom",
+        failure_message="failure",
+    )
     roteiro = stage_for(db, run.id, StageName.ROTEIRO)
     pesquisa = stage_for(db, run.id, StageName.PESQUISA)
     with db.transaction(immediate=True) as conn:
@@ -330,6 +346,12 @@ def test_retry_invalidates_exact_downstream_artifacts_and_preserves_history(
     assert persisted_command.applied_at is not None
     assert duplicate.id == command.id
     assert detail.run.status is RunStatus.QUEUED
+    assert detail.run.lease_owner is None
+    assert detail.run.lease_expires_at is None
+    assert detail.run.pause_requested_at is None
+    assert detail.run.finished_at is None
+    assert detail.run.failure_code is None
+    assert detail.run.failure_message is None
     assert [current_by_stage[stage].attempt for stage in dependent] == [2] * len(dependent)
     assert [current_by_stage[stage].attempt for stage in ETAPAS[:2]] == [1, 1]
     assert all(attempts_by_stage[stage.value][0] == (1, StageStatus.INVALIDATED.value) for stage in dependent)
@@ -343,9 +365,12 @@ def test_retry_invalidates_exact_downstream_artifacts_and_preserves_history(
     assert count_rows(db, "stage_runs", run.id) == 8 + len(dependent)
 
 
-def test_retry_invalid_transition_keeps_commands_attempts_artifacts_and_events_unchanged(control_plane, db):
+@pytest.mark.parametrize("status", [RunStatus.RUNNING, RunStatus.INTERRUPTED])
+def test_retry_invalid_transition_keeps_commands_attempts_artifacts_and_events_unchanged(
+    control_plane, db, status
+):
     _, run = enqueue(control_plane)
-    save_run_status(db, run.id, RunStatus.RUNNING)
+    save_run_status(db, run.id, status)
     roteiro = stage_for(db, run.id, StageName.ROTEIRO)
     with db.transaction(immediate=True) as conn:
         OperacaoRepository(conn).register_artifact(
@@ -353,11 +378,15 @@ def test_retry_invalid_transition_keeps_commands_attempts_artifacts_and_events_u
         )
     before_events = control_plane.events_after(0, run_id=run.id)
     before_stages = control_plane.get_run(run.id).stages
+    before_run = control_plane.get_run(run.id).run
 
     with pytest.raises(TransicaoInvalida):
-        control_plane.request_retry_stage(run.id, StageName.ROTEIRO, idempotency_key="retry-invalid")
+        control_plane.request_retry_stage(
+            run.id, StageName.ROTEIRO, idempotency_key=f"retry-invalid-{status.value}"
+        )
 
     assert count_rows(db, "commands", run.id) == 0
+    assert control_plane.get_run(run.id).run == before_run
     assert control_plane.get_run(run.id).stages == before_stages
     assert [artifact.id for artifact in control_plane.get_run(run.id).artifacts] == ["roteiro-current"]
     assert control_plane.events_after(0, run_id=run.id) == before_events

@@ -153,16 +153,13 @@ def test_current_stages_usa_maior_attempt_em_ordem_canonica_e_mutacoes_desconhec
         current = repo.current_stages(run.id)
 
         assert [stage.stage for stage in created] == list(ETAPAS[2:])
-        assert (created[0].gate_status, created[0].input_hash) == (
-            "approved",
-            "input-roteiro",
-        )
+        assert (created[0].gate_status, created[0].input_hash) == (None, None)
         assert [(stage.stage, stage.attempt, stage.status) for stage in current] == [
             (stage, 1 if stage in ETAPAS[:2] else 2, StageStatus.PENDING)
             for stage in ETAPAS
         ]
         old_dependent = conn.execute(
-            "SELECT stage, attempt, status FROM stage_runs "
+            "SELECT stage, attempt, status, gate_status, input_hash FROM stage_runs "
             "WHERE run_id = ? AND attempt = 1 AND stage IN (?, ?, ?, ?, ?, ?) "
             "ORDER BY CASE stage "
             "WHEN 'roteiro' THEN 1 WHEN 'plano_midia' THEN 2 WHEN 'audio' THEN 3 "
@@ -172,6 +169,10 @@ def test_current_stages_usa_maior_attempt_em_ordem_canonica_e_mutacoes_desconhec
         assert [(row[0], row[1], row[2]) for row in old_dependent] == [
             (stage.value, 1, StageStatus.INVALIDATED.value) for stage in ETAPAS[2:]
         ]
+        assert (old_dependent[0][3], old_dependent[0][4]) == (
+            "approved",
+            "input-roteiro",
+        )
         assert repo.current_stages("missing") == []
         with pytest.raises(KeyError):
             repo.invalidate_from_stage("missing", StageName.ROTEIRO)

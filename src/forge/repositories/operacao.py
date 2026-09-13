@@ -246,8 +246,6 @@ class OperacaoRepository:
                 stage=StageName(row["stage"]),
                 attempt=row["attempt"] + 1,
                 status=StageStatus.PENDING,
-                gate_status=row["gate_status"],
-                input_hash=row["input_hash"],
                 created_at=now,
             )
             for row in rows

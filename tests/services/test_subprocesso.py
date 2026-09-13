@@ -58,3 +58,8 @@ def test_nonzero_exit_emits_bounded_stderr_and_fails():
 def test_empty_argv_is_rejected():
     with pytest.raises(ValueError, match="argv"):
         SubprocessExecutor([])
+
+
+def test_string_argv_is_rejected_instead_of_being_split_into_characters():
+    with pytest.raises(ValueError, match="argv"):
+        SubprocessExecutor("python")

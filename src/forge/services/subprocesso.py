@@ -22,7 +22,7 @@ class SubprocessExecutor:
     """Run an argv without a shell and translate its JSONL output to events."""
 
     def __init__(self, argv: Sequence[str], *, stderr_limit: int = 4096) -> None:
-        if not argv:
+        if isinstance(argv, (str, bytes)) or not argv:
             raise ValueError("argv must not be empty")
         if any(not isinstance(part, str) or not part for part in argv):
             raise ValueError("argv entries must be non-empty strings")

@@ -137,6 +137,19 @@ class OperacaoRepository:
         ).fetchall()
         return [_run_from_row(row) for row in rows]
 
+    def active_owned_by(self, worker_id: str) -> Run | None:
+        active_placeholders = ", ".join("?" for _ in _ACTIVE_RUN_STATUSES)
+        row = self.conn.execute(
+            f"""
+            SELECT * FROM runs
+            WHERE lease_owner = ? AND status IN ({active_placeholders})
+            ORDER BY started_at ASC, id ASC
+            LIMIT 1
+            """,
+            (worker_id, *(status.value for status in _ACTIVE_RUN_STATUSES)),
+        ).fetchone()
+        return _run_from_row(row) if row is not None else None
+
     def current_stages(self, run_id: str) -> list[StageRun]:
         rows = self.conn.execute(
             f"""

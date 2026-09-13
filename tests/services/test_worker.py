@@ -91,6 +91,33 @@ def test_run_once_marks_the_current_pending_stage_succeeded_and_persists_events(
     ]
 
 
+def test_run_once_resumes_its_owned_run_for_the_next_pending_stage(
+    db, control_plane
+):
+    run = enqueue(control_plane)
+    preparation_executor = FakeExecutor(StageResult(current_items=1, total_items=1))
+    research_executor = FakeExecutor(StageResult(current_items=1, total_items=1))
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={
+            StageName.PREPARACAO: preparation_executor,
+            StageName.PESQUISA: research_executor,
+        },
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+    worker.run_once()
+
+    assert stage_for(control_plane, run.id, StageName.PREPARACAO).status is StageStatus.SUCCEEDED
+    assert stage_for(control_plane, run.id, StageName.PESQUISA).status is StageStatus.SUCCEEDED
+    assert [context.stage_run.stage for context in research_executor.contexts] == [
+        StageName.PESQUISA
+    ]
+
+
 def test_run_once_marks_run_and_stage_failed_for_a_failed_executor_result(db, control_plane):
     run = enqueue(control_plane)
     worker = StudioWorker(
@@ -117,6 +144,8 @@ def test_run_once_marks_run_and_stage_failed_for_a_failed_executor_result(db, co
         "gate_rejected",
         "A etapa não passou no gate",
     )
+    assert detail.run.lease_owner is None
+    assert detail.run.lease_expires_at is None
     assert stage.status is StageStatus.FAILED
     assert (stage.failure_code, stage.failure_message) == (
         "gate_rejected",

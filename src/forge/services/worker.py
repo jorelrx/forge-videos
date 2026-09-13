@@ -61,9 +61,11 @@ class StudioWorker:
 
     def run_once(self) -> Run | None:
         self.control_plane.interrupt_expired()
-        run = self.control_plane.claim_next(
-            self.worker_id, lease_seconds=self.lease_seconds
-        )
+        run = self._active_run_owned_by_worker()
+        if run is None:
+            run = self.control_plane.claim_next(
+                self.worker_id, lease_seconds=self.lease_seconds
+            )
         if run is None:
             return None
 
@@ -92,6 +94,10 @@ class StudioWorker:
             )
         return self._finish_stage(context, result)
 
+    def _active_run_owned_by_worker(self) -> Run | None:
+        with self.db.connection() as conn:
+            return OperacaoRepository(conn).active_owned_by(self.worker_id)
+
     def _current_pending_stage(self, run_id: str) -> StageRun | None:
         with self.db.connection() as conn:
             return next(
@@ -108,7 +114,15 @@ class StudioWorker:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
             started_run = operacao.save_run(
-                run.model_copy(update={"status": mudar_run(run.status, RunStatus.RUNNING)})
+                run.model_copy(
+                    update={
+                        "status": (
+                            RunStatus.RUNNING
+                            if run.status is RunStatus.RUNNING
+                            else mudar_run(run.status, RunStatus.RUNNING)
+                        )
+                    }
+                )
             )
             started_stage = operacao.save_stage(
                 stage.model_copy(
@@ -151,6 +165,8 @@ class StudioWorker:
                             "failure_code": result.failure_code,
                             "failure_message": result.failure_message,
                             "finished_at": now,
+                            "lease_owner": None,
+                            "lease_expires_at": None,
                         }
                     )
                 )

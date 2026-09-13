@@ -113,3 +113,26 @@ def test_media_item_hash_is_derived_from_canonical_model_json():
     assert hash_json(block) == (
         "62f76a572160931687da9d507320736df04d0d747839594435f08cf89c5132eb"
     )
+
+
+def test_media_plan_rejects_crossed_block_and_beat_id_prefixes(tmp_path, monkeypatch, scripted):
+    snapshot = _snapshot(tmp_path)
+    invalid = PlanoMidia(
+        blocos=[
+            {"id": "i001", "secao": "Gancho", "texto": "A primeira frase abre o problema. A segunda mantém a tensão."},
+            {"id": "i002", "secao": "Fecho", "texto": "A última frase devolve a pergunta ao público."},
+        ],
+        beats=[
+            Beat(id="b001", bloco_id="i001", prompt="a door opening"),
+            Beat(id="b002", bloco_id="i002", prompt="a road at dusk"),
+        ],
+    )
+    monkeypatch.setattr("forge.executors.plano_midia.planejar_midia", lambda *args, **kwargs: invalid)
+
+    result = MediaPlanExecutor(
+        model=scripted(), settings=Settings(_env_file=None, provider="anthropic")
+    ).run(snapshot, lambda **event: None)
+
+    assert {finding.code for finding in result.gate.findings} >= {
+        "block_id_invalid", "beat_id_invalid"
+    }

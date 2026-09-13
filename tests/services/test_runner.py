@@ -47,6 +47,61 @@ def test_runner_accepts_sqlite_items_as_resume_source(tmp_path):
     assert result.itens[0].estado == "ok"
 
 
+def test_runner_projects_item_events_and_checkpoints_manifest(tmp_path):
+    class Projector:
+        def __init__(self):
+            self.events = []
+
+        def project(self, kind, payload):
+            self.events.append((kind, payload))
+
+    items = [
+        WorkItem(
+            id="db-i001", stage_run_id="stage-1", item_key="i001",
+            status=ItemStatus.PENDING, input={"prompt": "uma ampulheta"},
+            input_hash="b" * 64,
+        )
+    ]
+    projector = Projector()
+
+    result = executar(
+        tmp_path, items, {"imagem": _ok}, BrokerFalso(), projector=projector
+    )
+
+    assert [kind for kind, _ in projector.events] == [
+        "item.started", "item.succeeded"
+    ]
+    assert result.itens[0].estado == "ok"
+    assert carregar(tmp_path).itens[0].estado == "ok"
+
+
+def test_runner_resume_does_not_execute_succeeded_sqlite_item(tmp_path):
+    seen = []
+    items = [
+        WorkItem(
+            id="db-b001", stage_run_id="stage-1", item_key="b001",
+            status=ItemStatus.SUCCEEDED, input={"texto": "já pronto"},
+            input_hash="a" * 64, attempts=1, duration_ms=900,
+        ),
+        WorkItem(
+            id="db-i001", stage_run_id="stage-1", item_key="i001",
+            status=ItemStatus.PENDING, input={"prompt": "uma ampulheta"},
+            input_hash="b" * 64,
+        ),
+    ]
+
+    def imagem(item, run_dir):
+        seen.append(item.id)
+        _ok(item, run_dir)
+
+    result = executar(tmp_path, items, {"imagem": imagem}, BrokerFalso())
+
+    assert seen == ["i001"]
+    assert {item.id: item.estado for item in result.itens} == {
+        "b001": "ok", "i001": "ok",
+    }
+
+
 class BrokerFalso:
     def __init__(self):
         self.slots = []

@@ -659,6 +659,6 @@ def _work_item_from_row(row: sqlite3.Row) -> WorkItem:
         id=row["id"], stage_run_id=row["stage_run_id"], item_key=row["item_key"],
         status=ItemStatus(row["status"]), input=json.loads(row["input_json"]),
         input_hash=row["input_hash"], attempts=row["attempts"],
-        duration_ms=_datetime(row["duration_ms"]),
+        duration_ms=row["duration_ms"],
         failure_code=row["failure_code"], failure_message=row["failure_message"],
     )

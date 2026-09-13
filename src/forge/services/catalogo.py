@@ -7,8 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 import sqlite3
+from pydantic import ValidationError
 
-from forge.domain.operacao import ItemStatus
+from forge.domain.execucao import WorkItemPlan
+from forge.domain.operacao import ItemStatus, StageName
 from forge.repositories.operacao import OperacaoRepository
 
 
@@ -183,21 +185,77 @@ class ChildEventProjector:
         return item_key
 
     def _project_item_planned(self, payload: dict) -> None:
-        item_key = self._validate_item_key(payload)
+        item_key = payload.get("item_key")
+        if not item_key:
+            raise ChildProtocolError("item_key is required")
         kind = payload.get("kind")
         if kind is None:
             raise ChildProtocolError("kind is required for item.planned")
+        destination = payload.get("stage")
+        if destination not in {StageName.AUDIO.value, StageName.IMAGENS.value}:
+            raise ChildProtocolError(
+                "item.planned stage must be 'audio' or 'imagens'"
+            )
+        expected_kind = (
+            "audio" if destination == StageName.AUDIO.value else "imagem"
+        )
+        if kind != expected_kind:
+            raise ChildProtocolError(
+                f"item.planned kind does not match stage: {kind!r}/{destination!r}"
+            )
+        if "input" not in payload or "input_hash" not in payload:
+            raise ChildProtocolError(
+                "item.planned requires input and input_hash"
+            )
+        if self._stage_run_id is None:
+            raise ChildProtocolError("stage_run_id is required for item.planned")
+        source = self._conn.execute(
+            "SELECT run_id FROM stage_runs WHERE id = ?",
+            (self._stage_run_id,),
+        ).fetchone()
+        if source is None:
+            raise ChildProtocolError(f"unknown stage_run_id: {self._stage_run_id}")
+        target_stage = next(
+            (
+                stage
+                for stage in self._repo.current_stages(source["run_id"])
+                if stage.stage.value == destination
+            ),
+            None,
+        )
+        if target_stage is None:
+            raise ChildProtocolError(
+                f"destination stage is not available: {destination}"
+            )
+        try:
+            plan = WorkItemPlan(
+                item_key=item_key,
+                input=payload["input"],
+                input_hash=payload["input_hash"],
+            )
+        except (ValidationError, TypeError) as error:
+            raise ChildProtocolError(
+                f"invalid item.planned payload: {error}"
+            ) from error
+        self._repo.upsert_work_items(target_stage.id, [plan])
 
     def _project_item_started(self, payload: dict) -> None:
         item_key = self._validate_item_key(payload)
         duration_ms = payload.get("duration_ms")
         if duration_ms is None:
             raise ChildProtocolError("duration_ms is required for item.started")
+        self._conn.execute(
+            "UPDATE work_items SET status = ?, attempts = attempts + 1, duration_ms = ? "
+            "WHERE stage_run_id = ? AND item_key = ?",
+            (ItemStatus.RUNNING.value, duration_ms, self._stage_run_id, item_key),
+        )
 
     def _project_item_succeeded(self, payload: dict) -> None:
         item_key = self._validate_item_key(payload)
         self._conn.execute(
-            "UPDATE work_items SET status = ?, duration_ms = ? WHERE stage_run_id = ? AND item_key = ?",
+            "UPDATE work_items SET status = ?, duration_ms = ?, "
+            "failure_code = NULL, failure_message = NULL "
+            "WHERE stage_run_id = ? AND item_key = ?",
             (ItemStatus.SUCCEEDED.value, payload.get("duration_ms"), self._stage_run_id, item_key),
         )
 

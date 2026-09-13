@@ -52,7 +52,8 @@ class _NoopBroker:
         return nullcontext()
 
 
-_ID = re.compile(r"^[bi][0-9]+$")
+_BLOCK_ID = re.compile(r"^b[0-9]+$")
+_BEAT_ID = re.compile(r"^i[0-9]+$")
 
 
 def hash_json(value: Any) -> str:
@@ -241,6 +242,7 @@ class MediaPlanExecutor(StageImplementation):
                 payload={
                     **item.model_dump(mode="json"),
                     "kind": "audio" if item.item_key.startswith("b") else "imagem",
+                    "stage": "audio" if item.item_key.startswith("b") else "imagens",
                 },
             )
         output = ArtifactOutput(
@@ -307,11 +309,18 @@ class MediaPlanExecutor(StageImplementation):
             findings.append(
                 GateFinding(code="beat_id_duplicate", message="Ids de beat não são únicos")
             )
-        if any(not _ID.fullmatch(item_id) for item_id in block_ids):
+        if len(block_ids + beat_ids) != len(set(block_ids + beat_ids)):
+            findings.append(
+                GateFinding(
+                    code="item_id_duplicate",
+                    message="Ids de bloco e beat não são únicos entre si",
+                )
+            )
+        if any(not _BLOCK_ID.fullmatch(item_id) for item_id in block_ids):
             findings.append(
                 GateFinding(code="block_id_invalid", message="Id de bloco não é estável")
             )
-        if any(not _ID.fullmatch(item_id) for item_id in beat_ids):
+        if any(not _BEAT_ID.fullmatch(item_id) for item_id in beat_ids):
             findings.append(
                 GateFinding(code="beat_id_invalid", message="Id de beat não é estável")
             )

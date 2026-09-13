@@ -5,7 +5,7 @@ import hashlib
 
 import pytest
 
-from forge.domain.operacao import Artifact, StageName
+from forge.domain.operacao import Artifact, ItemStatus, StageName
 from forge.repositories.operacao import OperacaoRepository
 from forge.services.catalogo import (
     CatalogoArtefatos,
@@ -131,6 +131,66 @@ def test_projector_allows_known_item_key_on_artifact(tmp_path, db):
         "relative_path": "video/audio/b001.wav",
         "mime_type": "audio/wav", "metadata": {},
     })
+
+
+def test_projector_creates_media_item_in_destination_stage(tmp_path, db):
+    from services.conftest import prepared_run
+
+    _cm = db.connection()
+    ChildEventProjector._cm_holder.append(_cm)
+    conn = _cm.__enter__()
+    run_dir, run, _ = prepared_run(tmp_path, db, conn=conn)
+    repo = OperacaoRepository(conn)
+    media_stage = next(
+        item for item in repo.current_stages(run.id) if item.stage is StageName.PLANO_MIDIA
+    )
+    audio_stage = next(
+        item for item in repo.current_stages(run.id) if item.stage is StageName.AUDIO
+    )
+    projector = ChildEventProjector(db, run_dir, media_stage.id, conn=conn)
+    projector.project("item.planned", {
+        "item_key": "b001", "kind": "audio", "stage": "audio",
+        "input": {"id": "b001", "secao": "Gancho", "texto": "fala"},
+        "input_hash": "a" * 64,
+    })
+
+    created = repo.list_work_items(audio_stage.id)
+    media_items = repo.list_work_items(media_stage.id)
+
+    assert len(created) == 1
+    assert created[0].item_key == "b001"
+    assert created[0].status is ItemStatus.PENDING
+    assert media_items == []
+
+
+def test_projector_transitions_item_started_succeeded_and_failed(tmp_path, db):
+    from services.conftest import prepared_run, item_plan
+
+    _cm = db.connection()
+    ChildEventProjector._cm_holder.append(_cm)
+    conn = _cm.__enter__()
+    run_dir, run, audio_stage = prepared_run(tmp_path, db, conn=conn)
+    repo = OperacaoRepository(conn)
+    repo.upsert_work_items(audio_stage.id, [item_plan("b001", "a" * 64)])
+    projector = ChildEventProjector(db, run_dir, audio_stage.id, conn=conn)
+
+    projector.project("item.started", {"item_key": "b001", "duration_ms": 0})
+    running = repo.list_work_items(audio_stage.id)[0]
+    projector.project("item.succeeded", {"item_key": "b001", "duration_ms": 900})
+    succeeded = repo.list_work_items(audio_stage.id)[0]
+    # A failure event is terminal and must remain representable for retry.
+    projector.project("item.failed", {
+        "item_key": "b001", "failure_code": "item_failed",
+        "failure_message": "tts morreu",
+    })
+    failed = repo.list_work_items(audio_stage.id)[0]
+
+    assert running.status is ItemStatus.RUNNING
+    assert running.attempts == 1
+    assert succeeded.status is ItemStatus.SUCCEEDED
+    assert succeeded.duration_ms == 900
+    assert failed.status is ItemStatus.FAILED
+    assert failed.failure_code == "item_failed"
 
 
 # --- Redactor tests ---

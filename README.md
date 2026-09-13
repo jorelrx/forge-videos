@@ -62,13 +62,13 @@ tema ──► research ──► plan ──► write ──► review ──�
 
 | Node | Módulo | O que faz |
 |---|---|---|
-| `tema` | `writer/tema.py` | Usa o tema recebido, ou pede um ao LLM |
-| `research` | `writer/research.py` | Pesquisa na web e extrai `Fonte`s citáveis |
-| `plan` | `writer/plan.py` | Produz `tese` + `esboco` |
-| `write` | `writer/write.py` | Escreve as seções; reaproveita as notas do review anterior |
-| `review` | `writer/review.py` | Devolve `aprovado: bool` + `notas` estruturadas |
+| `tema` | `agents/tema.py` | Usa o tema recebido, ou pede um ao LLM |
+| `research` | `agents/research.py` | Pesquisa no acervo (`FORGE_ACERVO_URL`) — sem fallback web |
+| `plan` | `agents/plan.py` | Produz `tese` + `esboco` |
+| `write` | `agents/write.py` | Escreve 9 seções (Gancho → Fecho) com gate objetivo |
+| `review` | `agents/review.py` | Devolve `aprovado` + `notas` + `findings` (métricas objetivas) |
 
-O loop volta para `write` enquanto o review reprovar, até o teto de `FORGE_MAX_REVIEW_ROUNDS` (padrão: 8). O estado compartilhado está em `orchestrator/state.py`.
+O loop volta para `write` enquanto o review reprovar, até o teto de `FORGE_MAX_REVIEW_ROUNDS` (padrão: 8). O estado compartilhado está em `domain/execucao.py` (RunSnapshot, StagePlan, GateResult) e `repositories/operacao.py` (SQLite transacional: work_items, artifacts, videos). O Marco 3 adiciona executores isolados por subprocesso (`executors/`), catálogo de artefatos com SHA-256 (`services/catalogo.py`), reconciliação (`services/reconciliacao.py`) e gate final (`executors/validacao.py`).
 
 ### Pesquisa web
 
@@ -79,13 +79,15 @@ Duas estratégias, escolhidas pelo provider:
 
 ### Seções do roteiro
 
-Fixas em `writer/models.py`:
+Fixas em `domain/roteiro.py` (9 seções, arquitetura narrativa):
 
-`Hook` · `Problema` · `História` · `Explicação` · `Filósofo` · `Psicologia` · `Aplicação` · `Resumo` · `Conclusão`
+`Gancho` · `Estake` · `Tensao` · `Virada` · `Filosofo` · `Prova` · `Espelho` · `Aplicacao` · `Fecho`
+
+Cada seção tem `papel`, `alvo_palavras`, `abre_loop`/`fecha_loop`/`rehook` definido. A arquitetura é imutável (`frozen=True`).
 
 ### Prompts
 
-Todos os prompts vivem como Markdown em `src/forge/writer/prompts/` e são carregados por nome via `load_prompt()`. Editar um prompt não exige tocar em código Python.
+Todos os prompts continuam em `src/forge/prompts/` (Markdown, carregados por nome via `load_prompt()`) e os skills em `src/forge/skills/` (frontmatter: `nome`, `dono`, `dominio`; seções `Critérios` / `Anti-padrões` / `Procedimento` — esta última visível apenas ao agente dono). Editar um prompt ou skill não exige mudança em código Python.
 
 ## Configuração
 
@@ -148,19 +150,30 @@ uv run pytest -k research  # um módulo
 
 Os testes cobrem cada estágio do writer, o grafo, storage, config e logging — todos com o modelo mockado, sem chamadas de rede. O teste de integração em `tests/test_integration.py` é gated e só roda quando as credenciais estão presentes.
 
-### Layout
+### Layout atual
 
 ```
 src/forge/
-  agents/          tema, research, plan, write, review
-  orchestration/   grafo LangGraph e estado compartilhado
-  llms/            providers (anthropic, openai, lm-studio) e parsing
-  knowledge/       camada Knowledge — ver docs/knowledge.md
-  prompts/         markdown carregado por nome
-  skills/          markdown com frontmatter, injetado nos prompts
-  services/        artefatos de run e escrita do roteiro final
-  domain/          modelos do roteiro
-  infrastructure/  config e logging
+  agents/          tema, research, plan, write, review, midia
+  orchestration/   grafo LangGraph (StateGraph, RoteiroState)
+  executors/       8 executores de stage (subprocesso isolado) + base/process/retry
+  executors/audio/ audio + audio_generate (tts, WAV 24kHz, seed 42)
+  executors/estilo/ estilo_visual (Cosmos Interior, SDXL), comfy (client ComfyUI), imagens
+  executors/video/ ffmpeg (H.264/AAC 1920x1080), montagem
+  domain/          execucao (contratos), operacao (SQLite transacional),
+                    roteiro (9 seções), models, midia
+  llms/            model.py (anthropic, openai, lm-studio; contexto 16384; qwen3.8-27b não no preset)
+  services/        catalogo (SHA-256 + MIME), reconciliacao (órfãos, is_current=false),
+                    qualidade_roteiro (métricas objetivas), worker, manifesto, storage
+  gpu/             broker (PID, .gpu.lock, dead-owner), liberadores (VRAM, ComfyUI shutdown)
+  prompts/         markdown por nome
+  skills/          markdown com frontmatter (Procedimento visível só ao dono)
+  infrastructure/  config (FORGE_* env), logging
 ```
 
-Detalhes de logging em [`docs/logging.md`](docs/logging.md).
+### Marco 3 — Executores (entregue)
+
+Plano completo em `docs/superpowers/plans/2026-09-13-forge-studio-executors.md`. Todos os 8 executores implementados com isolamento por subprocesso (`python -m forge.executors.entrypoint`), checkpoint por item (`work_items`), catálogo de artefatos (`services/catalogo.py` com SHA-256), gates objetivos (`domain/execucao.py`) e retomada sem repetir saídas válidas (`reusable_outputs`, `reconciliacao`). Gate final (`validacao`) confirma H.264+AAC, 1920x1080, frames amostrados e zero silêncio não planejado acima do limite.
+
+Detalhes de logging em [`docs/logging.md`](docs/logging.md). Veja também `docs/2026-09-13-marco3-status.md` para o resumo do Marco 3.
+

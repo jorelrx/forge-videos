@@ -41,6 +41,7 @@ class StageContext:
     run_dir: Path | None = None
     artifacts: list[Artifact] = field(default_factory=list)
     work_items: list[WorkItem] = field(default_factory=list)
+    db: Database | None = None
 
 
 class EventSink(Protocol):
@@ -267,6 +268,7 @@ class StudioWorker:
             video=video,
             artifacts=artifacts,
             work_items=work_items,
+            db=self.db,
         )
 
     def _pause_before_stage(self, run: Run, stage: StageRun) -> Run | None:
@@ -484,23 +486,30 @@ class StudioWorker:
 
     def _event_sink(self, context: StageContext) -> EventSink:
         from forge.services.catalogo import ChildEventProjector
-        projector = ChildEventProjector(
-            self.db, context.run_dir or Path("."), context.stage_run.id
-        )
 
         def emit(
             *, kind: str, level: str, message: str, payload: JSON_OBJECT
         ) -> None:
             cleaned_payload = self.redactor.clean(payload)
-            self._append_event(
-                run_id=context.run.id,
-                stage_run_id=context.stage_run.id,
-                kind=kind,
-                level=level,
-                message=message,
-                payload=cleaned_payload,
-            )
-            projector.project(kind, cleaned_payload)
+            # A child event is not public until its parent-side mutation is
+            # accepted. Keeping both operations on one transaction prevents an
+            # audit record from claiming an artifact/item state that SQLite
+            # never committed.
+            with self.db.transaction(immediate=True) as conn:
+                ChildEventProjector(
+                    self.db,
+                    context.run_dir or Path("."),
+                    context.stage_run.id,
+                    conn=conn,
+                ).project(kind, cleaned_payload)
+                EventosRepository(conn).append(
+                    kind=kind,
+                    level=level,
+                    message=message,
+                    payload=cleaned_payload,
+                    run_id=context.run.id,
+                    stage_run_id=context.stage_run.id,
+                )
 
         return emit
 

@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     # `cpu` faz a narração não disputar o slot, liberando-a para rodar
     # concorrente com a fase de imagem.
     tts_backend: Literal["vulkan", "cpu"] = "vulkan"
+    audio_generate_dir: Path = Path(r"C:\dev\audio-generate")
+    tts_binary: Path | None = None
+    tts_model: Path | None = None
+    tts_voice_reference: Path | None = None
+    tts_seed: int = 42
+    tts_batch_size: int = Field(default=3, ge=1, le=8)
+    tts_item_timeout: float = Field(default=900, gt=0)
+    tts_batch_timeout: float = Field(default=3600, gt=0)
+    tts_sample_rate: int = Field(default=24000, gt=0)
     comfy_url: str = "http://127.0.0.1:8188"
     # VRAM que precisa estar livre para o ComfyUI aceitar a próxima geração.
     # 6 GB numa placa de 8 GB: o SDXL não entra abaixo disso.
@@ -106,6 +115,18 @@ class Settings(BaseSettings):
                 "worker_heartbeat_seconds must be less than worker_lease_seconds"
             )
         return self
+
+    @property
+    def resolved_tts_binary(self) -> Path:
+        return self.tts_binary or self.audio_generate_dir / "audio-generate.exe"
+
+    @property
+    def resolved_tts_model(self) -> Path:
+        return self.tts_model or self.audio_generate_dir / "model.gguf"
+
+    @property
+    def resolved_tts_voice_reference(self) -> Path:
+        return self.tts_voice_reference or self.audio_generate_dir / "voice.wav"
 
     @property
     def resolved_model(self) -> str:

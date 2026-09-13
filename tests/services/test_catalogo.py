@@ -96,9 +96,14 @@ def test_projector_rejects_unallowed_mime(tmp_path, db):
 
 
 def test_projector_allows_markdown_artifact_from_research(tmp_path, db):
-    from services.conftest import child_projector
+    from services.conftest import child_projector, prepared_run
 
-    projector = child_projector(tmp_path, db)
+    _cm = db.connection()
+    ChildEventProjector._cm_holder.append(_cm)
+    conn = _cm.__enter__()
+    run_dir, run, stage = prepared_run(tmp_path, db, conn=conn)
+    (run_dir / "01-research.md").write_text("pesquisa", encoding="utf-8")
+    projector = ChildEventProjector(db, run_dir, stage.id, conn=conn)
 
     projector.project("artifact.created", {
         "item_key": "", "kind": "research",
@@ -106,10 +111,15 @@ def test_projector_allows_markdown_artifact_from_research(tmp_path, db):
         "mime_type": "text/markdown", "metadata": {"passage_count": 2},
     })
 
+    assert len(OperacaoRepository(conn).list_artifacts(run.id)) == 1
+
 
 def test_projector_rejects_missing_item_key_on_artifact(tmp_path, db):
     from services.conftest import child_projector
     projector = child_projector(tmp_path, db)
+    target = projector._run_dir / "video" / "audio" / "b001.wav"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"RIFF payload")
     with pytest.raises(ChildProtocolError, match="unknown item_key"):
         projector.project("artifact.created", {
             "item_key": None, "kind": "audio.wav",
@@ -125,7 +135,11 @@ def test_projector_allows_known_item_key_on_artifact(tmp_path, db):
     conn = _cm.__enter__()
     repo, run, stage = audio_stage(conn)
     repo.upsert_work_items(stage.id, [item_plan("b001", "abc")])
-    projector = child_projector(tmp_path, db, conn=conn, run=run, stage=stage)
+    run_dir = tmp_path / "runs" / run.id
+    target = run_dir / "video" / "audio" / "b001.wav"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"RIFF payload")
+    projector = ChildEventProjector(db, run_dir, stage.id, conn=conn)
     projector.project("artifact.created", {
         "item_key": "b001", "kind": "audio.wav",
         "relative_path": "video/audio/b001.wav",

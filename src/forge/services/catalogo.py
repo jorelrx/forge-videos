@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PureWindowsPath
+from typing import Iterator
 
 import sqlite3
 from pydantic import ValidationError
 
-from forge.domain.execucao import WorkItemPlan
-from forge.domain.operacao import ItemStatus, StageName
+from forge.domain.execucao import ReusableOutput, WorkItemPlan
+from forge.domain.operacao import Artifact, ItemStatus, StageName
 from forge.repositories.operacao import OperacaoRepository
-
 
 ALLOWED_MIME = {
     "audio/wav", "audio/mpeg", "audio/ogg", "audio/flac",
@@ -23,117 +22,125 @@ ALLOWED_MIME = {
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as source:
+    with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
+def _resolved_run_file(run_dir: Path, relative_path: str) -> Path | None:
+    if not isinstance(relative_path, str) or not relative_path:
+        return None
+    normalized = relative_path.replace("\\", "/")
+    if (
+        Path(normalized).is_absolute()
+        or PureWindowsPath(normalized).is_absolute()
+        or ".." in normalized.split("/")
+    ):
+        return None
+    try:
+        root = run_dir.resolve(strict=True)
+        path = (root / normalized).resolve(strict=True)
+        path.relative_to(root)
+    except (FileNotFoundError, ValueError):
+        return None
+    return path if path.is_file() else None
+
+
 class CatalogoArtefatos:
+    """Parent-owned artifact catalog; children submit only run-relative events."""
+
+    # Compatibility for test fixtures that keep manually-entered connections alive.
     _cm_holder: list = []
 
     def __init__(self, db, run_dir: Path, conn: sqlite3.Connection | None = None) -> None:
         self._db = db
-        if conn is not None:
-            self._conn = conn
-        else:
-            self._cm = db.connection()
-            CatalogoArtefatos._cm_holder.append(self._cm)
-            self._conn = self._cm.__enter__()
-        self._run_dir = run_dir
-        self._repo = OperacaoRepository(self._conn)
+        self._run_dir = Path(run_dir)
+        self._conn = conn
 
-    def register_file(
-        self, *, run, stage_run, item, kind, path, mime_type, metadata
-    ) -> Artifact:
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        if self._conn is not None:
+            class _Existing:
+                def __enter__(inner):
+                    return self._conn
+
+                def __exit__(inner, *args):
+                    return False
+
+            return _Existing()
+        return self._db.transaction(immediate=True)
+
+    def register_file(self, *, run, stage_run, item, kind, path, mime_type, metadata) -> Artifact:
+        path = Path(path).resolve()
+        root = self._run_dir.resolve(strict=True)
         try:
-            resolved = path.resolve(strict=True)
-        except FileNotFoundError:
-            raise ValueError(f"outside: {path}")
-        try:
-            resolved.relative_to(self._run_dir.resolve(strict=True))
-        except ValueError:
+            path.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"outside: {path}") from error
+        if not path.is_file():
             raise ValueError(f"outside: {path}")
         if mime_type not in ALLOWED_MIME:
             raise ValueError(f"MIME não permitido: {mime_type}")
-        return self._persist(
-            run=run, stage_run=stage_run, item=item, kind=kind,
-            relative_path=resolved.relative_to(self._run_dir).as_posix(),
-            sha256=sha256_file(resolved), size_bytes=resolved.stat().st_size,
-            mime_type=mime_type, metadata=metadata,
+        artifact = Artifact(
+            id=str(uuid.uuid4()), run_id=run.id, stage_run_id=stage_run.id,
+            work_item_id=item.id if item is not None else None, kind=kind,
+            relative_path=path.relative_to(root).as_posix(), sha256=sha256_file(path),
+            size_bytes=path.stat().st_size, mime_type=mime_type, metadata=metadata,
+            is_current=True, created_at=datetime.now(UTC),
         )
+        with self._connection() as conn:
+            return OperacaoRepository(conn).register_artifact(artifact)
 
-    def _persist(
-        self, *, run, stage_run, item, kind, relative_path, sha256,
-        size_bytes, mime_type, metadata
-    ) -> Artifact:
-        work_item_id = item.id if item is not None else None
-        artifact_id = str(uuid.uuid4())
-        self._conn.execute(
-            "INSERT INTO artifacts "
-            "(id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256, "
-            "size_bytes, mime_type, metadata_json, is_current, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (artifact_id, run.id, stage_run.id, work_item_id, kind,
-             relative_path, sha256, size_bytes, mime_type,
-             json.dumps(metadata), True, datetime.now().isoformat()),
-        )
-        self._conn.commit()
-        return _artifact_from_row(
-            self._conn.execute(
-                "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-            ).fetchone()
-        )
+    def find_reusable_output(
+        self, *, run_id: str, stage: StageName, item_key: str, input_hash: str,
+        current_stage_run_id: str | None = None,
+    ) -> Artifact | None:
+        """Return only a prior succeeded item with an intact current file."""
+        with self._connection() as conn:
+            repo = OperacaoRepository(conn)
+            query = """
+                SELECT artifacts.* FROM artifacts
+                JOIN work_items ON work_items.id = artifacts.work_item_id
+                JOIN stage_runs ON stage_runs.id = work_items.stage_run_id
+                WHERE artifacts.run_id = ?
+                  AND artifacts.is_current = 1
+                  AND work_items.item_key = ?
+                  AND work_items.input_hash = ?
+                  AND work_items.status = ?
+                  AND stage_runs.stage = ?
+            """
+            params: list[object] = [
+                run_id, item_key, input_hash, ItemStatus.SUCCEEDED.value, stage.value,
+            ]
+            if current_stage_run_id is not None:
+                query += " AND stage_runs.id != ?"
+                params.append(current_stage_run_id)
+            query += " ORDER BY stage_runs.attempt DESC, artifacts.created_at DESC LIMIT 1"
+            row = conn.execute(query, params).fetchone()
+            if row is None:
+                return None
+            artifact = repo.list_artifacts(run_id, current_only=False)
+            candidate = next(item for item in artifact if item.id == row["id"])
+            path = _resolved_run_file(self._run_dir, candidate.relative_path)
+            if path is None or path.stat().st_size != candidate.size_bytes:
+                return None
+            if sha256_file(path) != candidate.sha256:
+                return None
+            return candidate
 
-    def register_artifact(self, artifact: Artifact) -> Artifact:
-        if self._conn.execute(
-            "SELECT 1 FROM runs WHERE id = ?", (artifact.run_id,)
-        ).fetchone() is None:
-            raise ValueError(f"run {artifact.run_id} não encontrada")
-        result = self._conn.execute(
-            "INSERT INTO artifacts "
-            "(id, run_id, stage_run_id, work_item_id, kind, relative_path, sha256, "
-            "size_bytes, mime_type, metadata_json, is_current, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (artifact.id, artifact.run_id, artifact.stage_run_id,
-             artifact.work_item_id, artifact.kind, artifact.relative_path,
-             artifact.sha256, artifact.size_bytes, artifact.mime_type,
-             json.dumps(artifact.metadata), artifact.is_current,
-             artifact.created_at.isoformat()),
-        )
-        artifact_id = result.lastrowid
-        artifact_row = self._conn.execute(
-            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-        ).fetchone()
-        return _artifact_from_row(artifact_row)
-
-    def list_artifacts(self, run_id: str) -> list[Artifact]:
-        rows = self._conn.execute(
-            "SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at", (run_id,)
-        ).fetchall()
-        return [_artifact_from_row(row) for row in rows]
-
-    def invalidate_artifacts(self, run_id: str) -> None:
-        self._conn.execute("UPDATE artifacts SET is_current = 0 WHERE run_id = ?", (run_id,))
-
-    def list_artifacts_by_item(self, work_item_id: str) -> list[Artifact]:
-        rows = self._conn.execute(
-            "SELECT * FROM artifacts WHERE work_item_id = ?", (work_item_id,)
-        ).fetchall()
-        return [_artifact_from_row(row) for row in rows]
-
-
-def _artifact_from_row(row: sqlite3.Row) -> Artifact:
-    from forge.domain.operacao import Artifact
-    return Artifact(
-        id=row["id"], run_id=row["run_id"], stage_run_id=row["stage_run_id"],
-        work_item_id=row["work_item_id"], kind=row["kind"],
-        relative_path=row["relative_path"], sha256=row["sha256"],
-        size_bytes=row["size_bytes"], mime_type=row["mime_type"],
-        metadata=json.loads(row["metadata_json"]),
-        is_current=bool(row["is_current"]),
-        created_at=datetime.fromisoformat(row["created_at"]).replace(tzinfo=__import__("datetime").timezone.utc),
-    )
+    def reusable_outputs(
+        self, *, run_id: str, stage: StageName, current_stage_run_id: str,
+        items: list[WorkItemPlan],
+    ) -> list[ReusableOutput]:
+        outputs: list[ReusableOutput] = []
+        for item in items:
+            artifact = self.find_reusable_output(
+                run_id=run_id, stage=stage, item_key=item.item_key,
+                input_hash=item.input_hash, current_stage_run_id=current_stage_run_id,
+            )
+            if artifact is not None:
+                outputs.append(ReusableOutput(artifact=artifact, input_hash=item.input_hash))
+        return outputs
 
 
 class ChildProtocolError(Exception):
@@ -141,21 +148,41 @@ class ChildProtocolError(Exception):
 
 
 class ChildEventProjector:
+    # Compatibility for test fixtures that keep manually-entered connections alive.
     _cm_holder: list = []
 
-    def __init__(self, db, run_dir: Path, stage_run_id: str | None = None, conn: sqlite3.Connection | None = None) -> None:
+    def __init__(
+        self, db, run_dir: Path, stage_run_id: str | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
         self._db = db
-        if conn is not None:
-            self._conn = conn
-        else:
-            self._cm = db.connection()
-            ChildEventProjector._cm_holder.append(self._cm)
-            self._conn = self._cm.__enter__()
-        self._run_dir = run_dir
-        self._repo = OperacaoRepository(self._conn)
+        self._run_dir = Path(run_dir)
         self._stage_run_id = stage_run_id
+        self._conn = conn
+        self._active_conn: sqlite3.Connection | None = None
 
     def project(self, kind: str, payload: dict) -> None:
+        if self._conn is None:
+            with self._db.transaction(immediate=True) as conn:
+                self._active_conn = conn
+                self._project(kind, payload)
+                self._active_conn = None
+            return
+        self._active_conn = self._conn
+        self._project(kind, payload)
+        self._active_conn = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._active_conn is None:
+            raise RuntimeError("projector is not active")
+        return self._active_conn
+
+    @property
+    def repo(self) -> OperacaoRepository:
+        return OperacaoRepository(self.conn)
+
+    def _project(self, kind: str, payload: dict) -> None:
         if kind == "item.planned":
             self._project_item_planned(payload)
         elif kind == "item.started":
@@ -166,36 +193,26 @@ class ChildEventProjector:
             self._project_item_failed(payload)
         elif kind == "artifact.created":
             self._project_artifact_created(payload)
-        elif kind == "stage.progress":
-            self._project_stage_progress(payload)
-        elif kind == "stage.result":
-            self._project_stage_result(payload)
+        elif kind in {"stage.progress", "stage.result"}:
+            return
 
-    def _validate_item_key(self, payload: dict) -> str:
+    def _validate_item_key(self, payload: dict) -> tuple[str, sqlite3.Row]:
         item_key = payload.get("item_key")
         if item_key is None:
             raise ChildProtocolError("item_key is required")
-        stage_run_id = self._stage_run_id
-        row = self._conn.execute(
-            "SELECT 1 FROM work_items WHERE stage_run_id = ? AND item_key = ?",
-            (stage_run_id, item_key),
-        ).fetchone()
-        if row is None:
-            raise ChildProtocolError(f"unknown item_key: {item_key}")
-        return item_key
-
-    def _item_status(self, item_key: str) -> ItemStatus:
-        row = self._conn.execute(
-            "SELECT status FROM work_items WHERE stage_run_id = ? AND item_key = ?",
+        row = self.conn.execute(
+            "SELECT * FROM work_items WHERE stage_run_id = ? AND item_key = ?",
             (self._stage_run_id, item_key),
         ).fetchone()
         if row is None:
             raise ChildProtocolError(f"unknown item_key: {item_key}")
+        return item_key, row
+
+    def _item_status(self, item_key: str) -> ItemStatus:
+        _, row = self._validate_item_key({"item_key": item_key})
         return ItemStatus(row["status"])
 
-    def _require_transition(
-        self, item_key: str, kind: str, allowed: set[ItemStatus]
-    ) -> None:
+    def _require_transition(self, item_key: str, kind: str, allowed: set[ItemStatus]) -> None:
         current = self._item_status(item_key)
         if current not in allowed:
             allowed_values = ", ".join(sorted(status.value for status in allowed))
@@ -206,126 +223,116 @@ class ChildEventProjector:
 
     def _project_item_planned(self, payload: dict) -> None:
         item_key = payload.get("item_key")
+        kind = payload.get("kind")
+        destination = payload.get("stage")
         if not item_key:
             raise ChildProtocolError("item_key is required")
-        kind = payload.get("kind")
-        if kind is None:
-            raise ChildProtocolError("kind is required for item.planned")
-        destination = payload.get("stage")
         if destination not in {StageName.AUDIO.value, StageName.IMAGENS.value}:
-            raise ChildProtocolError(
-                "item.planned stage must be 'audio' or 'imagens'"
-            )
-        expected_kind = (
-            "audio" if destination == StageName.AUDIO.value else "imagem"
-        )
+            raise ChildProtocolError("item.planned stage must be 'audio' or 'imagens'")
+        expected_kind = "audio" if destination == StageName.AUDIO.value else "imagem"
         if kind != expected_kind:
-            raise ChildProtocolError(
-                f"item.planned kind does not match stage: {kind!r}/{destination!r}"
-            )
+            raise ChildProtocolError(f"item.planned kind does not match stage: {kind!r}/{destination!r}")
         if "input" not in payload or "input_hash" not in payload:
-            raise ChildProtocolError(
-                "item.planned requires input and input_hash"
-            )
+            raise ChildProtocolError("item.planned requires input and input_hash")
         if self._stage_run_id is None:
             raise ChildProtocolError("stage_run_id is required for item.planned")
-        source = self._conn.execute(
-            "SELECT run_id FROM stage_runs WHERE id = ?",
-            (self._stage_run_id,),
+        source = self.conn.execute(
+            "SELECT run_id FROM stage_runs WHERE id = ?", (self._stage_run_id,)
         ).fetchone()
         if source is None:
             raise ChildProtocolError(f"unknown stage_run_id: {self._stage_run_id}")
-        target_stage = next(
-            (
-                stage
-                for stage in self._repo.current_stages(source["run_id"])
-                if stage.stage.value == destination
-            ),
-            None,
-        )
-        if target_stage is None:
-            raise ChildProtocolError(
-                f"destination stage is not available: {destination}"
+        if destination == self.conn.execute(
+            "SELECT stage FROM stage_runs WHERE id = ?", (self._stage_run_id,)
+        ).fetchone()["stage"]:
+            target_stage_id = self._stage_run_id
+        else:
+            target = next(
+                (stage for stage in self.repo.current_stages(source["run_id"]) if stage.stage.value == destination),
+                None,
             )
+            if target is None:
+                raise ChildProtocolError(f"destination stage is not available: {destination}")
+            target_stage_id = target.id
         try:
             plan = WorkItemPlan(
-                item_key=item_key,
-                input=payload["input"],
-                input_hash=payload["input_hash"],
+                item_key=item_key, input=payload["input"], input_hash=payload["input_hash"],
             )
         except (ValidationError, TypeError) as error:
-            raise ChildProtocolError(
-                f"invalid item.planned payload: {error}"
-            ) from error
-        self._repo.upsert_work_items(target_stage.id, [plan])
+            raise ChildProtocolError(f"invalid item.planned payload: {error}") from error
+        self.repo.upsert_work_items(target_stage_id, [plan])
 
     def _project_item_started(self, payload: dict) -> None:
-        item_key = self._validate_item_key(payload)
+        item_key, _ = self._validate_item_key(payload)
         duration_ms = payload.get("duration_ms")
         if duration_ms is None:
             raise ChildProtocolError("duration_ms is required for item.started")
-        self._require_transition(
-            item_key, "item.started", {ItemStatus.PENDING, ItemStatus.FAILED}
-        )
-        result = self._conn.execute(
+        self._require_transition(item_key, "item.started", {ItemStatus.PENDING, ItemStatus.FAILED})
+        result = self.conn.execute(
             "UPDATE work_items SET status = ?, attempts = attempts + 1, duration_ms = ?, "
-            "failure_code = NULL, failure_message = NULL "
-            "WHERE stage_run_id = ? AND item_key = ? "
-            "AND status IN (?, ?)",
-            (
-                ItemStatus.RUNNING.value, duration_ms, self._stage_run_id, item_key,
-                ItemStatus.PENDING.value, ItemStatus.FAILED.value,
-            ),
+            "failure_code = NULL, failure_message = NULL WHERE stage_run_id = ? "
+            "AND item_key = ? AND status IN (?, ?)",
+            (ItemStatus.RUNNING.value, duration_ms, self._stage_run_id, item_key,
+             ItemStatus.PENDING.value, ItemStatus.FAILED.value),
         )
         if result.rowcount != 1:
             raise ChildProtocolError("item.started transition was not applied")
 
     def _project_item_succeeded(self, payload: dict) -> None:
-        item_key = self._validate_item_key(payload)
+        item_key, _ = self._validate_item_key(payload)
         self._require_transition(item_key, "item.succeeded", {ItemStatus.RUNNING})
-        result = self._conn.execute(
-            "UPDATE work_items SET status = ?, duration_ms = ?, "
-            "failure_code = NULL, failure_message = NULL "
-            "WHERE stage_run_id = ? AND item_key = ? AND status = ?",
-            (
-                ItemStatus.SUCCEEDED.value, payload.get("duration_ms"),
-                self._stage_run_id, item_key, ItemStatus.RUNNING.value,
-            ),
+        result = self.conn.execute(
+            "UPDATE work_items SET status = ?, duration_ms = ?, failure_code = NULL, "
+            "failure_message = NULL WHERE stage_run_id = ? AND item_key = ? AND status = ?",
+            (ItemStatus.SUCCEEDED.value, payload.get("duration_ms"), self._stage_run_id,
+             item_key, ItemStatus.RUNNING.value),
         )
         if result.rowcount != 1:
             raise ChildProtocolError("item.succeeded transition was not applied")
 
     def _project_item_failed(self, payload: dict) -> None:
-        item_key = self._validate_item_key(payload)
+        item_key, _ = self._validate_item_key(payload)
         failure_code = payload.get("failure_code")
         failure_message = payload.get("failure_message")
         self._require_transition(item_key, "item.failed", {ItemStatus.RUNNING})
-        result = self._conn.execute(
+        result = self.conn.execute(
             "UPDATE work_items SET status = ?, failure_code = ?, failure_message = ? "
             "WHERE stage_run_id = ? AND item_key = ? AND status = ?",
-            (
-                ItemStatus.FAILED.value, failure_code, failure_message,
-                self._stage_run_id, item_key, ItemStatus.RUNNING.value,
-            ),
+            (ItemStatus.FAILED.value, failure_code, failure_message, self._stage_run_id,
+             item_key, ItemStatus.RUNNING.value),
         )
         if result.rowcount != 1:
             raise ChildProtocolError("item.failed transition was not applied")
 
     def _project_artifact_created(self, payload: dict) -> None:
         item_key = payload.get("item_key")
-        relative_path = payload.get("relative_path", "")
-        if ".." in relative_path.split("/"):
-            raise ChildProtocolError("path outside run_dir")
         mime_type = payload.get("mime_type", "")
         if mime_type not in ALLOWED_MIME:
             raise ValueError(f"MIME não permitido: {mime_type}")
+        path = _resolved_run_file(self._run_dir, payload.get("relative_path", ""))
+        if path is None:
+            raise ChildProtocolError("path outside run_dir or not a regular file")
         if item_key is None:
             raise ChildProtocolError("unknown item_key")
-        if item_key is not None and item_key != "":
-            self._validate_item_key(payload)
+        stage_row = self.conn.execute(
+            "SELECT run_id FROM stage_runs WHERE id = ?", (self._stage_run_id,)
+        ).fetchone()
+        if stage_row is None:
+            raise ChildProtocolError(f"unknown stage_run_id: {self._stage_run_id}")
+        work_item_id = None
+        if item_key != "":
+            _, item = self._validate_item_key(payload)
+            work_item_id = item["id"]
+        artifact = Artifact(
+            id=str(uuid.uuid4()), run_id=stage_row["run_id"], stage_run_id=self._stage_run_id,
+            work_item_id=work_item_id, kind=payload.get("kind", ""),
+            relative_path=path.relative_to(self._run_dir.resolve(strict=True)).as_posix(),
+            sha256=sha256_file(path), size_bytes=path.stat().st_size, mime_type=mime_type,
+            metadata=payload.get("metadata", {}), is_current=True, created_at=datetime.now(UTC),
+        )
+        self.repo.register_artifact(artifact)
 
-    def _project_stage_progress(self, payload: dict) -> None:
-        pass
 
-    def _project_stage_result(self, payload: dict) -> None:
-        pass
+__all__ = [
+    "ALLOWED_MIME", "CatalogoArtefatos", "ChildEventProjector", "ChildProtocolError",
+    "sha256_file",
+]

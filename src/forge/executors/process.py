@@ -78,7 +78,7 @@ class StageProcessExecutor:
             if context.run_dir is not None
             else self.output_root / context.run.id
         ).resolve()
-        return RunSnapshot(
+        snapshot = RunSnapshot(
             run_id=context.run.id,
             video_id=context.run.video_id,
             tema=context.video.tema,
@@ -91,6 +91,25 @@ class StageProcessExecutor:
             artifacts=context.artifacts,
             work_items=context.work_items,
         )
+        if self.stage is StageName.AUDIO and context.db is not None:
+            # Only the parent reads operational history. The child receives
+            # already verified, run-relative candidates and remains DB-free.
+            from forge.executors.audio import AudioExecutor
+            from forge.services.catalogo import CatalogoArtefatos
+
+            plan = AudioExecutor().prepare(snapshot)
+            reusable_outputs = CatalogoArtefatos(
+                context.db, run_dir
+            ).reusable_outputs(
+                run_id=context.run.id,
+                stage=self.stage,
+                current_stage_run_id=context.stage_run.id,
+                items=plan.items,
+            )
+            snapshot = snapshot.model_copy(
+                update={"reusable_outputs": reusable_outputs}
+            )
+        return snapshot
 
     @staticmethod
     def _write_context(snapshot: RunSnapshot) -> Path:

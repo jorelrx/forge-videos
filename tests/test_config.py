@@ -112,6 +112,36 @@ def test_broker_tem_defaults():
     assert s.tts_backend == "vulkan"
 
 
+def test_audio_generation_defaults_and_resolved_paths_stay_under_tool_dir():
+    s = Settings(_env_file=None)
+
+    assert s.audio_generate_dir == Path(r"C:\\dev\\audio-generate")
+    assert s.tts_seed == 42
+    assert s.tts_batch_size == 3
+    assert s.tts_item_timeout == 900
+    assert s.tts_batch_timeout == 3600
+    assert s.tts_sample_rate == 24000
+    for path in (s.resolved_tts_binary, s.resolved_tts_model, s.resolved_tts_voice_reference):
+        assert path.is_relative_to(s.audio_generate_dir)
+
+
+def test_audio_generation_resolved_paths_preserve_explicit_overrides(tmp_path):
+    binary, model, voice = tmp_path / "bin.exe", tmp_path / "model.gguf", tmp_path / "voice.wav"
+    s = Settings(_env_file=None, tts_binary=binary, tts_model=model, tts_voice_reference=voice)
+
+    assert (s.resolved_tts_binary, s.resolved_tts_model, s.resolved_tts_voice_reference) == (
+        binary, model, voice,
+    )
+
+
+@pytest.mark.parametrize("field, value", [("tts_batch_size", 0), ("tts_batch_size", 9), ("tts_item_timeout", 0), ("tts_batch_timeout", 0), ("tts_sample_rate", 0)])
+def test_audio_generation_limits_are_validated(field, value):
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, **{field: value})
+
+
 def test_liberadores_tem_defaults():
     from forge.infrastructure.config import Settings
 

@@ -114,6 +114,13 @@ class StageChildResult(StageExecutionResult):
     gate: GateResult
 
 
+class ReusableOutput(BaseModel):
+    """A parent-verified prior-stage artifact safe for child reuse."""
+
+    artifact: Artifact
+    input_hash: Sha256
+
+
 class RunSnapshot(BaseModel):
     run_id: str
     video_id: str
@@ -126,6 +133,7 @@ class RunSnapshot(BaseModel):
     config_snapshot: JSON_OBJECT
     artifacts: list[Artifact]
     work_items: list[WorkItem]
+    reusable_outputs: list[ReusableOutput] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def run_dir_is_canonical(self):

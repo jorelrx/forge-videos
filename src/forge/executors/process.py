@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from forge.domain.execucao import RunSnapshot
 from forge.domain.operacao import StageName, StageResult
+from forge.executors.preparacao import PreparationExecutor
 from forge.services.subprocesso import SubprocessExecutor
 from forge.services.worker import EventSink, StageContext
 
@@ -40,6 +41,11 @@ class StageProcessExecutor:
 
     def execute(self, context: StageContext, emit: EventSink) -> StageResult:
         snapshot = self._snapshot(context)
+        if self.stage is StageName.PREPARACAO:
+            # Validate the strict StudioPreset before creating the child
+            # context file. Invalid/credential-bearing snapshots must not
+            # touch the canonical run directory at all.
+            PreparationExecutor().prepare(snapshot)
         context_path = self._write_context(snapshot)
         argv = [
             sys.executable,

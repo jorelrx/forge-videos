@@ -290,6 +290,29 @@ def test_nenhuma_query_acha_nada_registra_lacunas_sem_juiz(scripted, acervo_fake
     assert sorted(r["query"] for r in registros) == ["a", "b"]
 
 
+def test_query_vazia_em_pool_parcial_sem_juiz_registra_evidencia(
+    scripted, acervo_fake, tmp_path
+):
+    from forge.infrastructure.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        juiz_relevancia=False,
+        gaps_file=tmp_path / "gaps.txt",
+        respostas_ruins_file=tmp_path / "ruins.jsonl",
+    )
+    acervo = acervo_fake(por_query={"boa": [_passagem("p1", 0.9)], "vazia": []})
+    model = scripted(invoke_texts=["boa\nvazia", "notas densas"])
+
+    pesquisar(model, "vontade", acervo, settings=settings)
+
+    registros = [
+        json.loads(linha)
+        for linha in settings.respostas_ruins_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [registro["query"] for registro in registros] == ["vazia"]
+
+
 def test_sem_settings_o_juiz_nao_roda(scripted, acervo_fake):
     """Chamada sem settings mantém o comportamento antigo — é o que os testes
     existentes e qualquer chamador antigo esperam."""

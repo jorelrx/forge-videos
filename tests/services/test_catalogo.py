@@ -95,6 +95,18 @@ def test_projector_rejects_unallowed_mime(tmp_path, db):
         })
 
 
+def test_projector_allows_markdown_artifact_from_research(tmp_path, db):
+    from services.conftest import child_projector
+
+    projector = child_projector(tmp_path, db)
+
+    projector.project("artifact.created", {
+        "item_key": "", "kind": "research",
+        "relative_path": "01-research.md",
+        "mime_type": "text/markdown", "metadata": {"passage_count": 2},
+    })
+
+
 def test_projector_rejects_missing_item_key_on_artifact(tmp_path, db):
     from services.conftest import child_projector
     projector = child_projector(tmp_path, db)

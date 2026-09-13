@@ -15,7 +15,7 @@ from forge.repositories.operacao import OperacaoRepository
 ALLOWED_MIME = {
     "audio/wav", "audio/mpeg", "audio/ogg", "audio/flac",
     "video/mp4", "video/quicktime", "video/x-msvideo",
-    "application/json",
+    "application/json", "text/markdown",
 }
 
 

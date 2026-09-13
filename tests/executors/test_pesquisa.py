@@ -1,9 +1,12 @@
 from pathlib import Path
+import os
 from types import SimpleNamespace
 
 from forge.domain.execucao import FailureClass, RunSnapshot
 from forge.domain.operacao import StageName
 from forge.executors.pesquisa import ResearchExecutor
+from forge.agents.research import ResearchBundle
+from forge.domain.models import Fonte
 from forge.infrastructure.config import Settings
 from forge.services.acervo import AcervoIndisponivel
 
@@ -108,6 +111,37 @@ def test_research_persists_bundle_and_emits_counts_without_passage_bodies(tmp_pa
     for event in events:
         assert "evidência literal" not in str(event["payload"])
     assert [event["payload"]["metadata"]["passage_count"] for event in events] == [1, 1, 1]
+
+
+def test_research_markdown_artifacts_use_atomic_replace(tmp_path, monkeypatch):
+    import forge.executors.pesquisa as pesquisa_module
+
+    run_dir = tmp_path / "run"
+    bundle = ResearchBundle(
+        brief="brief",
+        fontes=[Fonte(titulo="Livro", path="1/ch1/p1")],
+        raw_markdown="raw",
+        passages=[
+            {"path": "1/ch1/p1", "title": "Livro", "text": "evidência"}
+        ],
+        passage_count=1,
+        canonical_paths=["1/ch1/p1"],
+    )
+    replaced = []
+    real_replace = os.replace
+
+    def record_replace(source, target):
+        replaced.append(Path(target).name)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(pesquisa_module.os, "replace", record_replace)
+
+    pesquisa_module.ResearchExecutor._write_artifacts(
+        run_dir, bundle, lambda **event: None
+    )
+
+    assert "01-research.md" in replaced
+    assert "01-research.raw.md" in replaced
 
 
 def test_research_unavailable_has_stable_transient_failure(tmp_path):

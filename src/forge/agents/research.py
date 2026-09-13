@@ -153,6 +153,15 @@ def pesquisar(
             unanswered_queries=list(por_query),
         )
 
+    if settings is not None and not julgou:
+        # With the relevance judge disabled, a partial pool still contains
+        # queries the acervo answered with zero passages. Record those as
+        # evidence just as in the all-empty branch; otherwise the lacuna would
+        # disappear merely because another query happened to succeed.
+        vazias = {query: achadas for query, achadas in por_query.items() if not achadas}
+        if vazias:
+            _registrar_lacunas_de_busca_vazia(vazias, tema, settings)
+
     brief = _sintetizar(model, tema, pedido, passagens)
     if progresso:
         progresso.log("research", "sintese_concluida",

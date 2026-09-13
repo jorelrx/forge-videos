@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
 from forge.llms.model import build_chat_model
 from forge.services.acervo import Acervo, AcervoIndisponivel
-from forge.services.artefatos import gravar_artefato, gravar_bruto
+from forge.services.artefatos import _render
 from forge.services.persistencia import gravar_modelo
 from forge.services.worker import EventSink
 
@@ -32,6 +33,16 @@ from forge.services.worker import EventSink
 class _NoopBroker:
     def exclusivo(self, recurso: str):
         return nullcontext()
+
+
+def _gravar_texto_atomico(destino: Path, conteudo: str) -> Path:
+    """Replace a markdown artifact atomically in its destination directory."""
+    destino = Path(destino)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    temporario = destino.with_suffix(destino.suffix + ".tmp")
+    temporario.write_text(conteudo, encoding="utf-8")
+    os.replace(temporario, destino)
+    return destino
 
 
 class ResearchExecutor(StageImplementation):
@@ -138,12 +149,16 @@ class ResearchExecutor(StageImplementation):
     def _write_artifacts(
         run_dir: Path, bundle: ResearchBundle, emit: EventSink
     ) -> list[ArtifactOutput]:
-        human = gravar_artefato(
-            run_dir,
-            "research",
-            {"fontes": bundle.fontes, "research_notes": bundle.brief},
+        human = _gravar_texto_atomico(
+            run_dir / "01-research.md",
+            _render(
+                "research",
+                {"fontes": bundle.fontes, "research_notes": bundle.brief},
+            ),
         )
-        raw = gravar_bruto(run_dir, "research", bundle.raw_markdown)
+        raw = _gravar_texto_atomico(
+            run_dir / "01-research.raw.md", bundle.raw_markdown
+        )
         structured = gravar_modelo(run_dir / "video" / "research.json", bundle)
         outputs = [
             ArtifactOutput(

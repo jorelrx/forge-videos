@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from forge.domain.operacao import Run, RunStatus, StageName, StageResult, StageRun, StageStatus, Video
 from forge.executors.process import StageProcessExecutor
@@ -75,3 +78,34 @@ def test_process_executor_uses_argv_and_absolute_context_file(tmp_path, monkeypa
     assert child.argv[:3] == [sys.executable, "-m", "forge.executors.entrypoint"]
     context_path = Path(child.argv[child.argv.index("--context") + 1])
     assert context_path.is_absolute()
+
+
+def test_process_executor_rejects_secret_preparation_snapshot_before_disk_touch(
+    tmp_path, monkeypatch
+):
+    original = stage_context(tmp_path)
+    preparation_stage = original.stage_run.model_copy(update={"stage": StageName.PREPARACAO})
+    context = replace(
+        original,
+        run=original.run.model_copy(update={"config_snapshot": {"api_key": "secret"}}),
+        stage_run=preparation_stage,
+    )
+
+    started = []
+
+    class ChildMustNotStart:
+        def __init__(self, *args, **kwargs):
+            started.append(True)
+
+        def execute(self, *args, **kwargs):
+            return StageResult(gate_status="approved")
+
+    monkeypatch.setattr("forge.executors.process.SubprocessExecutor", ChildMustNotStart)
+
+    with pytest.raises(Exception, match="api_key|extra|snapshot"):
+        StageProcessExecutor(
+            StageName.PREPARACAO, output_root=tmp_path / "runs", timeout_seconds=90
+        ).execute(context, lambda **event: None)
+
+    assert started == []
+    assert not context.run_dir.exists()

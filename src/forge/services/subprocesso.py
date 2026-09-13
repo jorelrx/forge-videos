@@ -12,9 +12,10 @@ import signal
 import subprocess
 import time
 from collections.abc import Iterator, Sequence
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, Protocol
 
+from forge.domain.execucao import StageChildResult
 from forge.domain.operacao import StageResult
 
 
@@ -218,6 +219,9 @@ class SubprocessExecutor:
         process, process_group_id, windows_job = self._spawn_process()
         stderr = _BoundedText(self.stderr_limit)
         invalid = False
+        duplicate_result = False
+        child_result: StageChildResult | None = None
+        result_lock = Lock()
         reader_errors: list[Exception] = []
         cancel_event = getattr(context, "cancel_event", None)
 
@@ -245,7 +249,7 @@ class SubprocessExecutor:
             )
 
         def read_stdout() -> None:
-            nonlocal invalid
+            nonlocal child_result, duplicate_result, invalid
             assert process.stdout is not None
             try:
                 for line, truncated in _bounded_lines(
@@ -260,6 +264,20 @@ class SubprocessExecutor:
                         invalid = True
                         invalid_event(line, False)
                     else:
+                        if event["kind"] == "stage.result":
+                            try:
+                                parsed_result = StageChildResult.model_validate(
+                                    event["payload"]
+                                )
+                            except Exception:  # noqa: BLE001 - protocol boundary
+                                invalid = True
+                                invalid_event(line, False)
+                                continue
+                            with result_lock:
+                                if child_result is None:
+                                    child_result = parsed_result
+                                else:
+                                    duplicate_result = True
                         safe_emit(event)
             except Exception as error:  # noqa: BLE001 - propagate after draining pipes
                 remember_error(error)
@@ -377,7 +395,37 @@ class SubprocessExecutor:
                 failure_code="invalid_event",
                 failure_message="Subprocesso emitiu evento JSONL inválido",
             )
-        return StageResult(gate_status="approved")
+        with result_lock:
+            parsed_result = child_result
+            has_duplicate = duplicate_result
+        if has_duplicate:
+            return StageResult(
+                failure_code="duplicate_stage_result",
+                failure_message="Subprocesso emitiu mais de um stage.result",
+            )
+        if parsed_result is None:
+            return StageResult(
+                failure_code="missing_stage_result",
+                failure_message="Subprocesso não emitiu stage.result",
+            )
+        failure = parsed_result.failure
+        gate = parsed_result.gate
+        return StageResult(
+            gate_status=gate.code,
+            current_items=parsed_result.current_items,
+            total_items=parsed_result.total_items,
+            failure_code=(
+                failure.code
+                if failure is not None
+                else None if gate.approved else gate.code
+            ),
+            failure_message=(
+                failure.message
+                if failure is not None
+                else None if gate.approved else gate.findings[0].message
+            ),
+            outputs=parsed_result.model_dump(mode="json"),
+        )
 
     @staticmethod
     def _popen_kwargs() -> dict[str, Any]:
@@ -626,6 +674,11 @@ class SubprocessExecutor:
                 return None
         if not isinstance(value.get("payload"), dict):
             return None
+        if value["kind"] == "stage.result":
+            try:
+                StageChildResult.model_validate(value["payload"])
+            except Exception:  # noqa: BLE001 - malformed child protocol
+                return None
         return {
             "kind": value["kind"],
             "level": value["level"],

@@ -168,16 +168,53 @@ def wait_for_process_exit(pid: int, timeout: float = 3.0) -> bool:
 
 def test_valid_jsonl_line_is_emitted_as_event():
     events: list[dict] = []
-    executor = SubprocessExecutor(
-        child(json.dumps({"kind": "progress", "level": "info", "message": "ok", "payload": {"n": 1}}))
-    )
+    executor = SubprocessExecutor(child(
+        json.dumps({"kind": "progress", "level": "info", "message": "ok", "payload": {"n": 1}}),
+        json.dumps({
+            "kind": "stage.result", "level": "info", "message": "done",
+            "payload": {
+                "current_items": 1, "total_items": 1, "artifacts": [],
+                "failure": None,
+                "gate": {"approved": True, "code": "approved", "findings": [], "metrics": {}},
+            },
+        }),
+    ))
 
     result = executor.execute(None, lambda **event: events.append(event))
 
-    assert events == [
-        {"kind": "progress", "level": "info", "message": "ok", "payload": {"n": 1}}
-    ]
+    assert events[0] == {
+        "kind": "progress", "level": "info", "message": "ok", "payload": {"n": 1}
+    }
+    assert events[1]["kind"] == "stage.result"
     assert result.failed is False
+
+
+def test_subprocess_requires_exactly_one_stage_result():
+    line = json.dumps({
+        "kind": "stage.progress", "level": "info", "message": "progress",
+        "payload": {"current": 1, "total": 1},
+    })
+
+    result = SubprocessExecutor(child(line)).execute(None, lambda **event: None)
+
+    assert result.failure_code == "missing_stage_result"
+
+
+def test_subprocess_rejects_duplicate_stage_result():
+    line = json.dumps({
+        "kind": "stage.result", "level": "info", "message": "done",
+        "payload": {
+            "current_items": 1, "total_items": 1, "artifacts": [],
+            "failure": None,
+            "gate": {"approved": True, "code": "approved", "findings": [], "metrics": {}},
+        },
+    })
+
+    result = SubprocessExecutor(child(line, line)).execute(
+        None, lambda **event: None
+    )
+
+    assert result.failure_code == "duplicate_stage_result"
 
 
 def test_malformed_stdout_emits_invalid_event_and_fails():
@@ -251,6 +288,14 @@ def test_normal_exit_waits_for_slow_callback_and_delivers_all_events():
         )
         for index in range(50)
     ]
+    lines.append(json.dumps({
+        "kind": "stage.result", "level": "info", "message": "done",
+        "payload": {
+            "current_items": 1, "total_items": 1, "artifacts": [],
+            "failure": None,
+            "gate": {"approved": True, "code": "approved", "findings": [], "metrics": {}},
+        },
+    }))
     events: list[dict] = []
 
     def slow_emit(**event):
@@ -689,11 +734,19 @@ def test_worker_persists_live_subprocess_event_in_database(db):
             "payload": {"current_items": 1},
         }
     )
+    result_line = json.dumps({
+        "kind": "stage.result", "level": "info", "message": "done",
+        "payload": {
+            "current_items": 1, "total_items": 1, "artifacts": [],
+            "failure": None,
+            "gate": {"approved": True, "code": "approved", "findings": [], "metrics": {}},
+        },
+    })
     worker = StudioWorker(
         db,
         worker_id="worker-a",
         lease_seconds=45,
-        executors={StageName.PREPARACAO: SubprocessExecutor(child(line))},
+        executors={StageName.PREPARACAO: SubprocessExecutor(child(line, result_line))},
         now=lambda: now,
     )
 

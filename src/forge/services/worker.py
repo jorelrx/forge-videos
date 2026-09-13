@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
 from typing import Protocol
-
-from pydantic import Field
 
 from forge.domain.operacao import (
     JSON_OBJECT,
@@ -40,8 +38,8 @@ class StageContext:
     cancel_event: Event | None = None
     video: Video | None = None
     run_dir: Path | None = None
-    artifacts: list[Artifact] = Field(default_factory=list)
-    work_items: list[WorkItem] = Field(default_factory=list)
+    artifacts: list[Artifact] = field(default_factory=list)
+    work_items: list[WorkItem] = field(default_factory=list)
 
 
 class EventSink(Protocol):
@@ -255,7 +253,16 @@ class StudioWorker:
                 run_id=run.id,
                 stage_run_id=stage.id,
             )
-        return StageContext(run=started_run, stage_run=started_stage)
+            video = operacao.get_video(started_run.video_id)
+            artifacts = operacao.list_artifacts(started_run.id)
+            work_items = operacao.list_work_items(started_stage.id)
+        return StageContext(
+            run=started_run,
+            stage_run=started_stage,
+            video=video,
+            artifacts=artifacts,
+            work_items=work_items,
+        )
 
     def _pause_before_stage(self, run: Run, stage: StageRun) -> Run | None:
         with self.db.transaction(immediate=True) as conn:

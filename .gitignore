@@ -4,6 +4,8 @@ uv.lock
 .env
 __pycache__/
 .pytest_cache/
+.superpowers/
+.superpowers/*
 /output/
 
 .pi

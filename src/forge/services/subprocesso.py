@@ -7,6 +7,8 @@ diagnostic only and is never parsed as an event.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import time
 from collections.abc import Iterator, Sequence
@@ -109,6 +111,7 @@ class SubprocessExecutor:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **self._popen_kwargs(),
         )
         stderr = _BoundedText(self.stderr_limit)
         invalid = False
@@ -119,15 +122,23 @@ class SubprocessExecutor:
             if not reader_errors:
                 reader_errors.append(error)
 
+        def safe_emit(event: dict[str, Any]) -> None:
+            try:
+                emit(**event)
+            except Exception as error:  # noqa: BLE001 - propagate after draining pipes
+                remember_error(error)
+
         def invalid_event(line: str, truncated: bool) -> None:
             payload: dict[str, object] = {"line": line}
             if truncated:
                 payload["truncated"] = True
-            emit(
-                kind="worker.invalid_event",
-                level="error",
-                message="Evento JSONL inválido",
-                payload=payload,
+            safe_emit(
+                {
+                    "kind": "worker.invalid_event",
+                    "level": "error",
+                    "message": "Evento JSONL inválido",
+                    "payload": payload,
+                }
             )
 
         def read_stdout() -> None:
@@ -146,7 +157,7 @@ class SubprocessExecutor:
                         invalid = True
                         invalid_event(line, False)
                     else:
-                        emit(**event)
+                        safe_emit(event)
             except Exception as error:  # noqa: BLE001 - propagate after draining pipes
                 remember_error(error)
             finally:
@@ -185,10 +196,29 @@ class SubprocessExecutor:
 
         if timed_out or cancelled:
             self._terminate(process)
+            join_deadline = time.monotonic() + max(
+                1.0, self.terminate_grace_seconds
+            )
+            for reader in (stdout_thread, stderr_thread):
+                reader.join(timeout=max(0.0, join_deadline - time.monotonic()))
+            if stdout_thread.is_alive() or stderr_thread.is_alive():
+                self._close_pipes(process)
+                join_deadline = time.monotonic() + self.terminate_grace_seconds
+                for reader in (stdout_thread, stderr_thread):
+                    reader.join(timeout=max(0.0, join_deadline - time.monotonic()))
+            if stdout_thread.is_alive() or stderr_thread.is_alive():
+                reader_errors.append(
+                    RuntimeError(
+                        "Subprocesso não drenou stdout/stderr após término"
+                    )
+                )
         else:
             process.wait()
-        stdout_thread.join(timeout=max(1.0, self.terminate_grace_seconds))
-        stderr_thread.join(timeout=max(1.0, self.terminate_grace_seconds))
+            # A normally exited process has closed both pipes. Waiting without
+            # a timeout guarantees that every buffered event reaches ``emit``
+            # before execute returns.
+            stdout_thread.join()
+            stderr_thread.join()
         if reader_errors:
             raise reader_errors[0]
 
@@ -235,14 +265,69 @@ class SubprocessExecutor:
             )
         return StageResult(gate_status="approved")
 
+    @staticmethod
+    def _popen_kwargs() -> dict[str, Any]:
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            return {"creationflags": creation_flags} if creation_flags else {}
+        return {"start_new_session": True}
+
+    @staticmethod
+    def _close_pipes(process: subprocess.Popen) -> None:
+        for stream in (process.stdout, process.stderr):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - best effort unblock during teardown
+                pass
+
+    @staticmethod
+    def _taskkill(process: subprocess.Popen, *, force: bool) -> bool:
+        command = ["taskkill", "/PID", str(process.pid), "/T"]
+        if force:
+            command.append("/F")
+        try:
+            completed = subprocess.run(
+                command,
+                shell=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            return False
+        return completed.returncode == 0
+
+    @classmethod
+    def _signal_tree(cls, process: subprocess.Popen, *, force: bool) -> None:
+        if os.name == "nt":
+            if cls._taskkill(process, force=force):
+                return
+            (process.kill if force else process.terminate)()
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            (process.kill if force else process.terminate)()
+
     def _terminate(self, process: subprocess.Popen) -> None:
         if process.poll() is not None:
             return
-        process.terminate()
+        if os.name == "nt":
+            # Windows has no portable process-group signal equivalent. A
+            # forced taskkill with /T is the reliable tree teardown path.
+            self._signal_tree(process, force=True)
+            try:
+                process.wait(timeout=self.terminate_grace_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+            return
+        self._signal_tree(process, force=False)
         try:
             process.wait(timeout=self.terminate_grace_seconds)
         except subprocess.TimeoutExpired:
-            process.kill()
+            self._signal_tree(process, force=True)
             try:
                 process.wait(timeout=self.terminate_grace_seconds)
             except subprocess.TimeoutExpired:

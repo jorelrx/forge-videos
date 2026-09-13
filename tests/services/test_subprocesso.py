@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +38,77 @@ def slow_child(line: str, *, delay_seconds: float, exit_code: int = 0) -> list[s
         f"raise SystemExit({exit_code})"
     )
     return [sys.executable, "-c", script]
+
+
+def repeated_child(line: str, count: int) -> list[str]:
+    script = (
+        "import sys; "
+        f"line = {line!r}; "
+        f"[print(line) for _ in range({count})]; "
+        "raise SystemExit(0)"
+    )
+    return [sys.executable, "-c", script]
+
+
+def descendant_child(pid_path: str) -> list[str]:
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        "descendant = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)']); "
+        f"pathlib.Path({pid_path!r}).write_text(str(descendant.pid)); "
+        "print('ready', flush=True); "
+        "time.sleep(30)"
+    )
+    return [sys.executable, "-c", script]
+
+
+def wait_for_pid(path, timeout: float = 3.0) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return int(path.read_text())
+        time.sleep(0.01)
+    raise AssertionError("child did not publish descendant pid")
+
+
+def process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def terminate_process_tree(pid: int) -> None:
+    if not process_exists(pid):
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+
+def wait_for_process_exit(pid: int, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_exists(pid):
+            return True
+        time.sleep(0.02)
+    return not process_exists(pid)
 
 
 def test_valid_jsonl_line_is_emitted_as_event():
@@ -115,6 +189,51 @@ def test_stdout_event_is_emitted_before_subprocess_exits():
     assert events[-1]["result"].failure_code == "subprocess_failed"
 
 
+def test_normal_exit_waits_for_slow_callback_and_delivers_all_events():
+    lines = [
+        json.dumps(
+            {"kind": "progress", "level": "info", "message": str(index), "payload": {}}
+        )
+        for index in range(50)
+    ]
+    events: list[dict] = []
+
+    def slow_emit(**event):
+        time.sleep(0.03)
+        events.append(event)
+
+    started = time.monotonic()
+    result = SubprocessExecutor(child(*lines)).execute(None, slow_emit)
+
+    assert time.monotonic() - started >= 1.2
+    assert len(events) == len(lines)
+    assert result.failed is False
+
+
+def test_callback_failure_is_propagated_after_stdout_is_drained():
+    line = json.dumps(
+        {"kind": "progress", "level": "info", "message": "event", "payload": {}}
+    )
+    expected_events = 2048
+    events: list[dict] = []
+    calls = 0
+
+    def failing_emit(**event):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("sink failed")
+        events.append(event)
+
+    with pytest.raises(ValueError, match="sink failed"):
+        SubprocessExecutor(
+            repeated_child(line, expected_events), timeout_seconds=1
+        ).execute(None, failing_emit)
+
+    assert calls == expected_events
+    assert len(events) == expected_events - 1
+
+
 def test_nonzero_exit_emits_bounded_stderr_and_fails():
     events: list[dict] = []
     executor = SubprocessExecutor(child(exit_code=3, stderr="x" * 100), stderr_limit=16)
@@ -158,6 +277,52 @@ def test_cancellation_event_terminates_child_after_lease_loss():
     assert finished.wait(timeout=2)
     thread.join(timeout=1)
     assert result[0].failure_code == "subprocess_cancelled"
+
+
+def test_timeout_terminates_descendant_process(tmp_path):
+    pid_path = tmp_path / "descendant.pid"
+    descendant_pid = None
+    try:
+        result = SubprocessExecutor(
+            descendant_child(str(pid_path)), timeout_seconds=0.1
+        ).execute(None, lambda **event: None)
+        descendant_pid = wait_for_pid(pid_path)
+
+        assert result.failure_code == "subprocess_timeout"
+        assert wait_for_process_exit(descendant_pid)
+    finally:
+        if descendant_pid is not None:
+            terminate_process_tree(descendant_pid)
+
+
+def test_cancellation_terminates_descendant_process(tmp_path):
+    pid_path = tmp_path / "descendant.pid"
+    cancelled = threading.Event()
+    result: list = []
+    descendant_pid = None
+
+    def run():
+        result.append(
+            SubprocessExecutor(
+                descendant_child(str(pid_path)), timeout_seconds=10
+            ).execute(
+                SimpleNamespace(cancel_event=cancelled), lambda **event: None
+            )
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        descendant_pid = wait_for_pid(pid_path)
+        cancelled.set()
+        thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result[0].failure_code == "subprocess_cancelled"
+        assert wait_for_process_exit(descendant_pid)
+    finally:
+        if descendant_pid is not None:
+            terminate_process_tree(descendant_pid)
 
 
 def test_oversized_invalid_stdout_line_is_bounded_in_event_payload():

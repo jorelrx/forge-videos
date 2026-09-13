@@ -27,7 +27,8 @@ def test_runner_projects_current_sqlite_items_over_stale_manifest(tmp_path):
     stale = Manifesto(itens=[])
 
     result = executar(
-        tmp_path, stale, {"imagem": _ok}, BrokerFalso(), work_items=items
+        tmp_path, stale, {"imagem": _ok}, BrokerFalso(),
+        work_items=items, projector=ProjectorFalso(),
     )
 
     assert [(item.id, item.estado) for item in result.itens] == [("b001", "ok"), ("i001", "ok")]
@@ -42,7 +43,9 @@ def test_runner_accepts_sqlite_items_as_resume_source(tmp_path):
         )
     ]
 
-    result = executar(tmp_path, items, {"imagem": _ok}, BrokerFalso())
+    result = executar(
+        tmp_path, items, {"imagem": _ok}, BrokerFalso(), projector=ProjectorFalso()
+    )
 
     assert result.itens[0].estado == "ok"
 
@@ -94,12 +97,33 @@ def test_runner_resume_does_not_execute_succeeded_sqlite_item(tmp_path):
         seen.append(item.id)
         _ok(item, run_dir)
 
-    result = executar(tmp_path, items, {"imagem": imagem}, BrokerFalso())
+    result = executar(
+        tmp_path, items, {"imagem": imagem}, BrokerFalso(),
+        projector=ProjectorFalso(),
+    )
 
     assert seen == ["i001"]
     assert {item.id: item.estado for item in result.itens} == {
         "b001": "ok", "i001": "ok",
     }
+
+
+def test_runner_rejects_operational_items_without_projector(tmp_path):
+    items = [
+        WorkItem(
+            id="db-i001", stage_run_id="stage-1", item_key="i001",
+            status=ItemStatus.PENDING, input={"prompt": "uma ampulheta"},
+            input_hash="b" * 64,
+        )
+    ]
+
+    with pytest.raises(ValueError, match="projector"):
+        executar(tmp_path, items, {"imagem": _ok}, BrokerFalso())
+
+
+class ProjectorFalso:
+    def project(self, kind, payload):
+        pass
 
 
 class BrokerFalso:

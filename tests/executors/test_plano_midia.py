@@ -117,6 +117,7 @@ def test_media_item_hash_is_derived_from_canonical_model_json():
 
 def test_media_plan_rejects_crossed_block_and_beat_id_prefixes(tmp_path, monkeypatch, scripted):
     snapshot = _snapshot(tmp_path)
+    events = []
     invalid = PlanoMidia(
         blocos=[
             {"id": "i001", "secao": "Gancho", "texto": "A primeira frase abre o problema. A segunda mantém a tensão."},
@@ -131,8 +132,10 @@ def test_media_plan_rejects_crossed_block_and_beat_id_prefixes(tmp_path, monkeyp
 
     result = MediaPlanExecutor(
         model=scripted(), settings=Settings(_env_file=None, provider="anthropic")
-    ).run(snapshot, lambda **event: None)
+    ).run(snapshot, lambda **event: events.append(event))
 
     assert {finding.code for finding in result.gate.findings} >= {
         "block_id_invalid", "beat_id_invalid"
     }
+    assert not [event for event in events if event["kind"] == "item.planned"]
+    assert not (snapshot.run_dir / "video" / "midia.json").exists()

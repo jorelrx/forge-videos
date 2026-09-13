@@ -171,19 +171,35 @@ def test_projector_transitions_item_started_succeeded_and_failed(tmp_path, db):
     conn = _cm.__enter__()
     run_dir, run, audio_stage = prepared_run(tmp_path, db, conn=conn)
     repo = OperacaoRepository(conn)
-    repo.upsert_work_items(audio_stage.id, [item_plan("b001", "a" * 64)])
+    repo.upsert_work_items(audio_stage.id, [
+        item_plan("b001", "a" * 64), item_plan("b002", "b" * 64),
+    ])
     projector = ChildEventProjector(db, run_dir, audio_stage.id, conn=conn)
 
+    with pytest.raises(ChildProtocolError, match="invalid transition"):
+        projector.project("item.succeeded", {"item_key": "b001", "duration_ms": 900})
+    with pytest.raises(ChildProtocolError, match="invalid transition"):
+        projector.project("item.failed", {
+            "item_key": "b001", "failure_code": "item_failed",
+            "failure_message": "cedo demais",
+        })
     projector.project("item.started", {"item_key": "b001", "duration_ms": 0})
     running = repo.list_work_items(audio_stage.id)[0]
     projector.project("item.succeeded", {"item_key": "b001", "duration_ms": 900})
     succeeded = repo.list_work_items(audio_stage.id)[0]
+    with pytest.raises(ChildProtocolError, match="invalid transition"):
+        projector.project("item.failed", {
+            "item_key": "b001", "failure_code": "item_failed",
+            "failure_message": "tarde demais",
+        })
+
     # A failure event is terminal and must remain representable for retry.
+    projector.project("item.started", {"item_key": "b002", "duration_ms": 0})
     projector.project("item.failed", {
-        "item_key": "b001", "failure_code": "item_failed",
+        "item_key": "b002", "failure_code": "item_failed",
         "failure_message": "tts morreu",
     })
-    failed = repo.list_work_items(audio_stage.id)[0]
+    failed = repo.list_work_items(audio_stage.id)[1]
 
     assert running.status is ItemStatus.RUNNING
     assert running.attempts == 1
@@ -191,6 +207,8 @@ def test_projector_transitions_item_started_succeeded_and_failed(tmp_path, db):
     assert succeeded.duration_ms == 900
     assert failed.status is ItemStatus.FAILED
     assert failed.failure_code == "item_failed"
+    with pytest.raises(ChildProtocolError, match="invalid transition"):
+        projector.project("item.succeeded", {"item_key": "b002", "duration_ms": 901})
 
 
 # --- Redactor tests ---

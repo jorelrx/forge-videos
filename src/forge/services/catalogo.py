@@ -184,6 +184,26 @@ class ChildEventProjector:
             raise ChildProtocolError(f"unknown item_key: {item_key}")
         return item_key
 
+    def _item_status(self, item_key: str) -> ItemStatus:
+        row = self._conn.execute(
+            "SELECT status FROM work_items WHERE stage_run_id = ? AND item_key = ?",
+            (self._stage_run_id, item_key),
+        ).fetchone()
+        if row is None:
+            raise ChildProtocolError(f"unknown item_key: {item_key}")
+        return ItemStatus(row["status"])
+
+    def _require_transition(
+        self, item_key: str, kind: str, allowed: set[ItemStatus]
+    ) -> None:
+        current = self._item_status(item_key)
+        if current not in allowed:
+            allowed_values = ", ".join(sorted(status.value for status in allowed))
+            raise ChildProtocolError(
+                f"invalid transition for {kind}: {current.value} -> "
+                f"{kind.removeprefix('item.')} (expected {allowed_values})"
+            )
+
     def _project_item_planned(self, payload: dict) -> None:
         item_key = payload.get("item_key")
         if not item_key:
@@ -244,29 +264,52 @@ class ChildEventProjector:
         duration_ms = payload.get("duration_ms")
         if duration_ms is None:
             raise ChildProtocolError("duration_ms is required for item.started")
-        self._conn.execute(
-            "UPDATE work_items SET status = ?, attempts = attempts + 1, duration_ms = ? "
-            "WHERE stage_run_id = ? AND item_key = ?",
-            (ItemStatus.RUNNING.value, duration_ms, self._stage_run_id, item_key),
+        self._require_transition(
+            item_key, "item.started", {ItemStatus.PENDING, ItemStatus.FAILED}
         )
+        result = self._conn.execute(
+            "UPDATE work_items SET status = ?, attempts = attempts + 1, duration_ms = ?, "
+            "failure_code = NULL, failure_message = NULL "
+            "WHERE stage_run_id = ? AND item_key = ? "
+            "AND status IN (?, ?)",
+            (
+                ItemStatus.RUNNING.value, duration_ms, self._stage_run_id, item_key,
+                ItemStatus.PENDING.value, ItemStatus.FAILED.value,
+            ),
+        )
+        if result.rowcount != 1:
+            raise ChildProtocolError("item.started transition was not applied")
 
     def _project_item_succeeded(self, payload: dict) -> None:
         item_key = self._validate_item_key(payload)
-        self._conn.execute(
+        self._require_transition(item_key, "item.succeeded", {ItemStatus.RUNNING})
+        result = self._conn.execute(
             "UPDATE work_items SET status = ?, duration_ms = ?, "
             "failure_code = NULL, failure_message = NULL "
-            "WHERE stage_run_id = ? AND item_key = ?",
-            (ItemStatus.SUCCEEDED.value, payload.get("duration_ms"), self._stage_run_id, item_key),
+            "WHERE stage_run_id = ? AND item_key = ? AND status = ?",
+            (
+                ItemStatus.SUCCEEDED.value, payload.get("duration_ms"),
+                self._stage_run_id, item_key, ItemStatus.RUNNING.value,
+            ),
         )
+        if result.rowcount != 1:
+            raise ChildProtocolError("item.succeeded transition was not applied")
 
     def _project_item_failed(self, payload: dict) -> None:
         item_key = self._validate_item_key(payload)
         failure_code = payload.get("failure_code")
         failure_message = payload.get("failure_message")
-        self._conn.execute(
-            "UPDATE work_items SET status = ?, failure_code = ?, failure_message = ? WHERE stage_run_id = ? AND item_key = ?",
-            (ItemStatus.FAILED.value, failure_code, failure_message, self._stage_run_id, item_key),
+        self._require_transition(item_key, "item.failed", {ItemStatus.RUNNING})
+        result = self._conn.execute(
+            "UPDATE work_items SET status = ?, failure_code = ?, failure_message = ? "
+            "WHERE stage_run_id = ? AND item_key = ? AND status = ?",
+            (
+                ItemStatus.FAILED.value, failure_code, failure_message,
+                self._stage_run_id, item_key, ItemStatus.RUNNING.value,
+            ),
         )
+        if result.rowcount != 1:
+            raise ChildProtocolError("item.failed transition was not applied")
 
     def _project_artifact_created(self, payload: dict) -> None:
         item_key = payload.get("item_key")

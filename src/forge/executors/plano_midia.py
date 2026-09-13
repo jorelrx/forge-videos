@@ -134,6 +134,7 @@ class MediaPlanExecutor(StageImplementation):
         self.lm_manager = lm_manager
         self._plano: PlanoMidia | None = None
         self._work_item_plans: list[WorkItemPlan] = []
+        self._pre_gate: GateResult | None = None
 
     @property
     def work_item_plans(self) -> list[WorkItemPlan]:
@@ -204,6 +205,9 @@ class MediaPlanExecutor(StageImplementation):
     def execute(
         self, context: RunSnapshot, plan: StagePlan, emit: EventSink
     ) -> StageExecutionResult:
+        self._plano = None
+        self._work_item_plans = []
+        self._pre_gate = None
         model, broker = self._runtime()
         roteiro = self._load_roteiro(context)
         try:
@@ -231,8 +235,17 @@ class MediaPlanExecutor(StageImplementation):
                 ),
             )
 
-        gravar_plano(context.run_dir, plano, forcar=True)
         self._plano = plano
+        candidate_gate = self.validate(
+            context,
+            plan,
+            StageExecutionResult(current_items=0, total_items=1),
+        )
+        self._pre_gate = candidate_gate
+        if not candidate_gate.approved:
+            return StageExecutionResult(current_items=0, total_items=1)
+
+        gravar_plano(context.run_dir, plano, forcar=True)
         self._work_item_plans = _plan_work_items(plano)
         for item in self._work_item_plans:
             emit(
@@ -275,6 +288,8 @@ class MediaPlanExecutor(StageImplementation):
                     GateFinding(code=result.failure.code, message=result.failure.message)
                 ],
             )
+        if self._pre_gate is not None:
+            return self._pre_gate
         plano = self._plano
         if plano is None:
             return GateResult(

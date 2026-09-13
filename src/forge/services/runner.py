@@ -51,6 +51,10 @@ def executar(
     elif work_items is not None:
         operational_items = list(work_items)
     if operational_items is not None:
+        if projector is None:
+            raise ValueError(
+                "projector is required when executing operational WorkItem rows"
+            )
         manifesto = Manifesto.from_work_items(operational_items)
         if artifacts is not None:
             manifesto.merge_outputs(artifacts)

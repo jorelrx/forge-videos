@@ -2,13 +2,61 @@ import json
 from unittest import mock
 
 from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+from forge.domain.operacao import ItemStatus, WorkItem
 from forge.services.manifesto import (
+    Manifesto,
     caminho,
     carregar,
     criar_ou_carregar,
     gravar,
     pendentes,
 )
+
+
+def _db_item(item_key: str, status: ItemStatus) -> WorkItem:
+    return WorkItem(
+        id=f"db-{item_key}", stage_run_id="stage-1", item_key=item_key,
+        status=status, input={"texto": f"texto {item_key}"}, input_hash="a" * 64,
+        attempts=2, duration_ms=1200 if status is ItemStatus.SUCCEEDED else None,
+        failure_code="item_failed" if status is ItemStatus.FAILED else None,
+        failure_message="falha" if status is ItemStatus.FAILED else None,
+    )
+
+
+def test_manifest_is_rebuilt_from_database_items_not_used_as_authority():
+    items = [_db_item("b001", ItemStatus.SUCCEEDED), _db_item("i001", ItemStatus.PENDING)]
+
+    manifest = Manifesto.from_work_items(items)
+
+    assert [(item.id, item.estado) for item in manifest.itens] == [
+        ("b001", "ok"), ("i001", "pendente")
+    ]
+
+
+def test_criar_ou_carregar_uses_database_items_when_supplied(tmp_path):
+    stale = Manifesto(itens=[{"id": "b001", "tipo": "audio", "estado": "ok"}])
+    gravar(tmp_path, stale)
+
+    current = [_db_item("b001", ItemStatus.PENDING)]
+    rebuilt = criar_ou_carregar(tmp_path, _plano(), work_items=current)
+
+    assert rebuilt.itens[0].estado == "pendente"
+
+
+def test_manifest_merges_artifact_output_without_changing_database_status():
+    manifest = Manifesto.from_work_items([_db_item("b001", ItemStatus.SUCCEEDED)])
+
+    merged = manifest.merge_outputs([
+        {
+            "work_item_id": "db-b001",
+            "relative_path": "video/audio/b001.wav",
+            "metadata": {"duration_ms": 930},
+        }
+    ])
+
+    assert merged.itens[0].estado == "ok"
+    assert merged.itens[0].saida == "video/audio/b001.wav"
+    assert merged.itens[0].duracao_ms == 930
 
 
 def _plano():

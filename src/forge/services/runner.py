@@ -9,12 +9,13 @@ fazer com a falha é quem lê o manifesto depois.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 # Import de tipo, não de implementação: o runner continua recebendo o broker
 # por injeção e nunca constrói um.
 from forge.gpu.broker import GPUOcupada, LiberacaoFalhou
 from forge.infrastructure.logging import get_logger
+from forge.domain.operacao import WorkItem
 from forge.services.manifesto import Item, Manifesto, gravar, pendentes
 
 logger = get_logger(__name__)
@@ -32,12 +33,25 @@ RECURSO_DE: dict[str, str] = {"audio": "tts", "imagem": "imagem"}
 
 def executar(
     run_dir: Path,
-    manifesto: Manifesto,
+    manifesto: Manifesto | Iterable[WorkItem],
     executores: dict[str, Executor],
     broker,
     *,
     so: str | None = None,
+    work_items: Iterable[WorkItem] | None = None,
+    artifacts: Iterable[object] | None = None,
 ) -> Manifesto:
+    # A JSON snapshot is a display projection, never the resume authority. The
+    # worker may pass the pending rows selected from SQLite; rebuild the mirror
+    # before consuming them and merge only output metadata.
+    if work_items is None and not isinstance(manifesto, Manifesto):
+        work_items = list(manifesto)
+        manifesto = Manifesto.from_work_items(work_items)
+    if work_items is not None:
+        manifesto = Manifesto.from_work_items(work_items)
+        if artifacts is not None:
+            manifesto.merge_outputs(artifacts)
+        gravar(run_dir, manifesto)
     # Um valor de `so` fora de ORDEM não bate com nenhum tipo do loop, então o
     # loop inteiro faria `continue` em silêncio: nenhum pendentes(), nenhum log,
     # broker nunca aberto, manifesto devolvido intacto — indistinguível de um

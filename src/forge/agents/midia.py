@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage
 from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, BlocoNarracao, PlanoMidia
 from forge.domain.models import Roteiro
 from forge.infrastructure.logging import get_logger
+from forge.llms.model import invoke_structured
 from forge.narracao.fatiar import (
     PALAVRAS_POR_SEGUNDO,
     extrair_rubrica,
@@ -58,7 +59,13 @@ class CoberturaInsuficiente(RuntimeError):
 FRACAO_NARRAVEL_MINIMA = 0.6
 
 
-def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> PlanoMidia:
+def planejar_midia(
+    model,
+    roteiro: Roteiro,
+    *,
+    alvo_segundos: int = 15,
+    run_dir: Path | None = None,
+) -> PlanoMidia:
     # O alvo do operador está em segundos; o fatiador só entende palavras. Sem
     # esta conversão `fatiar` ficava no default de 35 palavras qualquer que
     # fosse `alvo_segundos`, e o knob só era coerente por coincidência no
@@ -97,7 +104,8 @@ def planejar_midia(model, roteiro: Roteiro, *, alvo_segundos: int = 15) -> Plano
     beats: list[Beat] = []
     for nome, rubrica, da_secao in fatiado:
         propostos = propor_beats(
-            model, nome, rubrica, da_secao, alvo_segundos=alvo_segundos
+            model, nome, rubrica, da_secao, alvo_segundos=alvo_segundos,
+            run_dir=run_dir,
         )
         for p in propostos:
             beats.append(
@@ -230,6 +238,7 @@ def propor_beats(
     blocos: list[BlocoNarracao],
     *,
     alvo_segundos: int,
+    run_dir: Path | None = None,
 ) -> list[BeatProposto]:
     """Os beats que o modelo propõe para uma seção, filtrados — sem id.
 
@@ -251,8 +260,13 @@ def propor_beats(
         quantidade=quantidade,
         alvo_segundos=alvo_segundos,
     )
-    proposta = model.with_structured_output(BeatsDaSecao).invoke(
-        [HumanMessage(content=prompt)]
+    proposta = invoke_structured(
+        model,
+        BeatsDaSecao,
+        [HumanMessage(content=prompt)],
+        run_dir=run_dir,
+        etapa="midia",
+        subfase="beats_structured",
     )
 
     validos = {b.id for b in blocos}

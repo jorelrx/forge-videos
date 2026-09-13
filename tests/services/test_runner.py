@@ -3,9 +3,48 @@ from contextlib import contextmanager
 import pytest
 
 from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
+from forge.domain.operacao import ItemStatus, WorkItem
 from forge.gpu.broker import GPUOcupada, LiberacaoFalhou
 from forge.services.manifesto import carregar, criar_ou_carregar, pendentes
 from forge.services.runner import executar
+
+
+def test_runner_projects_current_sqlite_items_over_stale_manifest(tmp_path):
+    from forge.services.manifesto import Manifesto
+
+    items = [
+        WorkItem(
+            id="db-b001", stage_run_id="stage-1", item_key="b001",
+            status=ItemStatus.SUCCEEDED, input={"texto": "Primeira."},
+            input_hash="a" * 64, attempts=1,
+        ),
+        WorkItem(
+            id="db-i001", stage_run_id="stage-1", item_key="i001",
+            status=ItemStatus.PENDING, input={"prompt": "uma ampulheta"},
+            input_hash="b" * 64,
+        ),
+    ]
+    stale = Manifesto(itens=[])
+
+    result = executar(
+        tmp_path, stale, {"imagem": _ok}, BrokerFalso(), work_items=items
+    )
+
+    assert [(item.id, item.estado) for item in result.itens] == [("b001", "ok"), ("i001", "ok")]
+
+
+def test_runner_accepts_sqlite_items_as_resume_source(tmp_path):
+    items = [
+        WorkItem(
+            id="db-i001", stage_run_id="stage-1", item_key="i001",
+            status=ItemStatus.PENDING, input={"prompt": "uma ampulheta"},
+            input_hash="b" * 64,
+        )
+    ]
+
+    result = executar(tmp_path, items, {"imagem": _ok}, BrokerFalso())
+
+    assert result.itens[0].estado == "ok"
 
 
 class BrokerFalso:

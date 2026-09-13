@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from forge.domain.operacao import StageName
 from forge.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -89,6 +90,18 @@ class Settings(BaseSettings):
     tts_batch_timeout: float = Field(default=3600, gt=0)
     tts_sample_rate: int = Field(default=24000, gt=0)
     comfy_url: str = "http://127.0.0.1:8188"
+    # Preset de imagem: Cosmos Interior
+    image_width: int = 1024
+    image_height: int = 576
+    image_steps: int = 14
+    image_cfg: float = 3.2
+    image_seed: int = 42
+    image_library_dir: Path = Path("library/images")
+    image_timeout: float = 1800.0
+    comfy_dir: Path = Path("data/comfy")
+    comfy_python: Path | None = None
+    comfy_output_dir: Path = Path("data/comfy/output")
+    lora_dir: Path = Path("library/loras")
     # VRAM que precisa estar livre para o ComfyUI aceitar a próxima geração.
     # 6 GB numa placa de 8 GB: o SDXL não entra abaixo disso.
     comfy_vram_livre_min: int = 6_000_000_000
@@ -158,6 +171,19 @@ class Settings(BaseSettings):
                 f"Defina FORGE_API_KEY ou FORGE_{self.provider.upper().replace('-', '_')}_API_KEY."
             )
         return chave
+
+    def stage_timeout(self, stage: "StageName") -> float:
+        timeouts = {
+            "preparacao": 120,
+            "pesquisa": 600,
+            "roteiro": 1800,
+            "plano_midia": 600,
+            "audio": 3600,
+            "imagens": 3600,
+            "montagem": 1800,
+            "validacao": 120,
+        }
+        return timeouts.get(stage.value, 300)  # type: ignore[return-value]
 
     def secret_values(self) -> list[str]:
         """Return configured credential values for event/error redaction."""

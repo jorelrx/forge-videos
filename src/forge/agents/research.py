@@ -25,7 +25,7 @@ from forge.skills.loader import load_skills
 logger = get_logger(__name__)
 
 SKILLS = ["fact_check"]
-LE = ["tema", "pedido", "research_notes"]
+LE = ["tema", "pedido", "research_notes", "research_passages", "run_dir"]
 
 MAX_QUERIES = 5
 
@@ -125,7 +125,8 @@ def pesquisar(
     julgou = False
     if passagens and settings is not None and settings.juiz_relevancia:
         passagens = _julgar_e_registrar(
-            model, tema, passagens, por_query, settings, queries=queries, pedido=pedido
+            model, tema, passagens, por_query, settings, queries=queries, pedido=pedido,
+            run_dir=run_dir,
         )
         julgou = True
         if progresso:
@@ -179,7 +180,8 @@ def pesquisar(
 
 
 def _julgar_e_registrar(
-    model, tema, passagens, por_query, settings, *, queries=None, pedido=None
+    model, tema, passagens, por_query, settings, *, queries=None, pedido=None,
+    run_dir=None,
 ):
     """Filtra pelo juiz e devolve ao acervo as queries que não renderam nada.
 
@@ -208,7 +210,7 @@ def _julgar_e_registrar(
 
     try:
         aprovadas, motivo_juiz = julgar_relevancia(
-            model, tema, passagens, queries=queries, pedido=pedido
+            model, tema, passagens, queries=queries, pedido=pedido, run_dir=run_dir
         )
     except Exception as e:
         # Timeout de 10 min, `400 Model unloaded by user` (que o cliente OpenAI
@@ -383,6 +385,7 @@ def julgar_relevancia(
     *,
     queries: list[str] | None = None,
     pedido: str | None = None,
+    run_dir=None,
 ) -> tuple[list[Passagem], str]:
     prompt = load_prompt("juiz").format(
         tema=tema,
@@ -390,7 +393,10 @@ def julgar_relevancia(
         pedido=_fmt_pedido_juiz(pedido),
         passagens=_fmt_passagens_curtas(passagens),
     )
-    veredicto = invoke_structured(model, VeredictoRelevancia, [HumanMessage(content=prompt)])
+    veredicto = invoke_structured(
+        model, VeredictoRelevancia, [HumanMessage(content=prompt)],
+        run_dir=run_dir, etapa="research", subfase="juiz_relevancia_structured",
+    )
     # Índice fora da faixa é erro de modelo, não motivo para estourar: descarta.
     validos = sorted({i for i in veredicto.relevantes if 0 <= i < len(passagens)})
     aprovadas = [passagens[i] for i in validos]

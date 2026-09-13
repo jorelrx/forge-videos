@@ -1,5 +1,5 @@
 from forge.domain.models import Roteiro, Secao
-from forge.services.qualidade_roteiro import conferir_roteiro
+from forge.services.qualidade_roteiro import conferir_roteiro, conferir_secao
 
 
 def test_named_section_count_is_a_deterministic_gate():
@@ -26,3 +26,19 @@ def test_citation_anchor_accepts_author_or_title():
     }
     report = conferir_roteiro(payload)
     assert "sem_citacao" not in report.codes
+
+
+def test_espelho_requires_question_as_final_sentence():
+    report = conferir_secao(
+        "Espelho",
+        {
+            "nome": "Espelho",
+            "conteudo": (
+                "Ada Lovelace devolve a decisão para sua rotina e pede um gesto concreto. "
+                "Qual escolha está escondida? A resposta começa no próximo passo."
+            ),
+        },
+        [{"title": "Notas", "authors": ["Ada Lovelace"]}],
+    )
+    assert not report.approved
+    assert "espelho_sem_pergunta" in report.codes

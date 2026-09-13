@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
+from forge.domain.models import Plano
 from forge.infrastructure.config import Settings
-from forge.llms.model import build_chat_model
+from forge.llms.model import build_chat_model, extract_thinking, invoke_structured
 
 
 def test_builds_chat_model():
@@ -42,3 +45,26 @@ def test_modelo_local_recebe_prazo():
 
     assert model.request_timeout == 30.0
     assert model.max_retries == 1
+
+
+def test_reasoning_content_survives_string_content_in_additional_kwargs(tmp_path):
+    raw = SimpleNamespace(
+        content="resposta visível",
+        additional_kwargs={"reasoning_content": "raciocínio separado"},
+        response_metadata={"finish_reason": "stop"},
+    )
+    assert extract_thinking(raw) == "raciocínio separado"
+
+    class Structured:
+        def invoke(self, messages):
+            return {"parsed": Plano(tese="T", esboco="E"), "raw": raw, "parsing_error": None}
+
+    class Model:
+        def with_structured_output(self, schema, include_raw=True):
+            return Structured()
+
+    invoke_structured(
+        Model(), Plano, ["mensagem"], run_dir=tmp_path, etapa="plan", subfase="structured"
+    )
+    lines = (tmp_path / "progresso.jsonl").read_text(encoding="utf-8").splitlines()
+    assert '"thinking": "raciocínio separado"' in lines[-1]

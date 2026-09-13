@@ -11,6 +11,7 @@ from forge.agents import research as research_stage
 from forge.agents import review as review_stage
 from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
+from forge.agents.research import PassageEvidence
 from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
 
@@ -81,23 +82,43 @@ def build_graph(model, settings, inicio: str = "tema"):
         pedido = state.get("pedido")
         run_dir = state.get("run_dir")
         logger.debug("Starting research phase", tema=state["tema"], reentrada=bool(pedido))
-        brief, fontes, raw = research_stage.pesquisar(
+        bundle = research_stage.pesquisar(
             model, state["tema"], acervo, pedido, top=settings.acervo_top, settings=settings,
             run_dir=run_dir,
         )
+        brief, fontes, raw = bundle
         anterior = state.get("research_notes", "")
         combinado = f"{anterior}\n\n## Verificação dirigida\n\n{brief}".strip() if anterior else brief
+        anteriores = list(state.get("research_passages", []))
+        por_caminho = {
+            evidencia.path: evidencia
+            for evidencia in anteriores
+            if getattr(evidencia, "path", None)
+        }
+        for evidencia in bundle.passages:
+            por_caminho[evidencia.path] = evidencia
+        combinadas = list(por_caminho.values())
+        # Evidence without canonical path is retained too; it cannot anchor a
+        # citation, but dropping it would make the typed research artifact lie
+        # about what the acervo returned.
+        combinadas.extend(
+            evidencia for evidencia in [*anteriores, *bundle.passages]
+            if not getattr(evidencia, "path", None)
+        )
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))
         return {
             "research_notes": combinado,
             "fontes": fontes,
+            "research_passages": combinadas,
             "pedido": None,
             "_raw": raw,
         }
 
     def node_plan(state):
         logger.debug("Starting planning phase")
-        tese, esboco = plan_stage.planejar(model, state["tema"], state["research_notes"])
+        tese, esboco = plan_stage.planejar(
+            model, state["tema"], state["research_notes"], run_dir=state.get("run_dir")
+        )
         result = {"tese": tese, "esboco": esboco}
         logger.info("Planning completed", tese=tese[:100] + "..." if len(tese) > 100 else tese)
         return result
@@ -114,6 +135,7 @@ def build_graph(model, settings, inicio: str = "tema"):
             state["research_notes"],
             state["fontes"],
             notas,
+            run_dir=state.get("run_dir"),
         )
         if falta:
             logger.info("Handoff to research from write", motivo=falta[:120])
@@ -123,7 +145,9 @@ def build_graph(model, settings, inicio: str = "tema"):
 
     def node_review(state):
         logger.debug("Starting review phase")
-        result = review_stage.revisar(model, state["roteiro"])
+        result = review_stage.revisar(
+            model, state["roteiro"], run_dir=state.get("run_dir")
+        )
         rounds = state.get("rounds", 0) + 1
         pedido = "\n".join(result.verificar) if result.verificar else None
         logger.info("Review completed", aprovado=result.aprovado, round=rounds)

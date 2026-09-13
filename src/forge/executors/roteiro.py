@@ -8,7 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from forge.agents.research import ResearchBundle
+from forge.agents.research import PassageEvidence, ResearchBundle
 from forge.domain.execucao import (
     ArtifactOutput, GateFinding, GateResult, RunSnapshot, StageExecutionResult,
     StagePlan,
@@ -137,6 +137,7 @@ class ScriptExecutor(StageImplementation):
                 "tese": context.tese or "",
                 "research_notes": bundle.brief,
                 "fontes": bundle.fontes,
+                "research_passages": bundle.passages,
                 "run_dir": context.run_dir,
                 "rounds": 0,
                 "passos": 0,
@@ -147,8 +148,29 @@ class ScriptExecutor(StageImplementation):
         if roteiro is None:
             raise RuntimeError("graph did not produce roteiro")
         self._roteiro = roteiro
+        evidencias = list(state.get("research_passages", bundle.passages) or [])
+        # A graph implementation from before the typed evidence field may only
+        # expose refreshed ``fontes`` after a directed research loop.  Retain
+        # those anchors as a compatibility bridge while the canonical path
+        # evidence remains the preferred input.
+        por_caminho = {
+            getattr(item, "path", None): item for item in evidencias
+            if getattr(item, "path", None)
+        }
+        for fonte in state.get("fontes", []) or []:
+            caminho = getattr(fonte, "path", None)
+            if caminho and caminho not in por_caminho:
+                evidencias.append(fonte)
+                por_caminho[caminho] = fonte
+        evidencias = [
+            item if isinstance(item, PassageEvidence) else (
+                PassageEvidence.model_validate(item)
+                if isinstance(item, dict) else item
+            )
+            for item in evidencias
+        ]
         self._passages_by_section = {
-            section.nome: list(bundle.passages) for section in roteiro.secoes
+            section.nome: list(evidencias) for section in roteiro.secoes
         }
         outputs = self._write_artifacts(context.run_dir, roteiro, self.settings, emit)
         return StageExecutionResult(

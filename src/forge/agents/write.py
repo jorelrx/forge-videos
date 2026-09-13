@@ -9,7 +9,7 @@ from forge.skills.loader import load_skills
 logger = get_logger(__name__)
 
 SKILLS = ["writing", "story", "retention", "fact_check"]
-LE = ["tema", "tese", "esboco", "research_notes", "fontes", "review"]
+LE = ["tema", "tese", "esboco", "research_notes", "fontes", "review", "run_dir"]
 
 
 def escrever(
@@ -20,6 +20,8 @@ def escrever(
     research: str,
     fontes: list[Fonte],
     notas: list[Nota] | None = None,
+    *,
+    run_dir=None,
 ) -> tuple[Roteiro, str | None]:
     logger.debug("Starting write phase", tema=tema[:50] + "..." if len(tema) > 50 else tema)
     prompt = load_prompt("write").format(
@@ -29,7 +31,10 @@ def escrever(
         notas=_fmt_notas(notas),
         skills=load_skills(SKILLS, "write"),
     )
-    draft = invoke_structured(model, RoteiroDraft, [HumanMessage(content=prompt)])
+    draft = invoke_structured(
+        model, RoteiroDraft, [HumanMessage(content=prompt)],
+        run_dir=run_dir, etapa="write", subfase="structured",
+    )
     roteiro_resultado = Roteiro(tema=tema, tese=tese, secoes=draft.secoes, fontes=fontes)
     logger.info(
         "Write phase completed",

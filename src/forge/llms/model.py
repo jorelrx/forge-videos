@@ -32,6 +32,9 @@ def invoke_structured(
     *,
     initial_max_tokens: int = 4000,
     ceiling_max_tokens: int = 16000,
+    run_dir=None,
+    etapa: str = "llm",
+    subfase: str = "structured",
 ):
     """Invoke structured output, retrying only a truncated empty parse.
 
@@ -62,6 +65,12 @@ def invoke_structured(
         # run log without ever mixing it into the parsed content.
         if thinking:
             logger.debug("Structured model reasoning captured", chars=len(thinking))
+            if run_dir is not None:
+                from forge.services.progresso import ProgressoLogger
+
+                ProgressoLogger(run_dir).log(
+                    etapa, subfase + "_thinking", thinking=thinking,
+                )
         if parsed is not None:
             return parsed
         if _finish_reason(raw) == "length" and budget < ceiling_max_tokens:
@@ -82,19 +91,18 @@ def extract_thinking(resp) -> str:
         content = resp.get("content")
     else:
         content = getattr(resp, "content", None)
-    if isinstance(content, str):
-        return ""
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict):
                 rc = block.get("reasoning_content")
                 if rc and isinstance(rc, str) and rc.strip():
                     return rc
-    meta = resp.get("response_metadata") if isinstance(resp, dict) else getattr(resp, "response_metadata", None)
-    if meta and isinstance(meta, dict):
-        rc = meta.get("reasoning_content")
-        if rc and isinstance(rc, str) and rc.strip():
-            return rc
+    additional = resp.get("additional_kwargs") if isinstance(resp, dict) else getattr(resp, "additional_kwargs", None)
+    for metadata in (additional, resp.get("response_metadata") if isinstance(resp, dict) else getattr(resp, "response_metadata", None)):
+        if isinstance(metadata, dict):
+            rc = metadata.get("reasoning_content")
+            if rc and isinstance(rc, str) and rc.strip():
+                return rc
     return ""
 
 

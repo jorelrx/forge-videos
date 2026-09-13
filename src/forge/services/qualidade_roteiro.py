@@ -54,6 +54,15 @@ _ROBOT_LABEL = re.compile(
 _SENTENCE = re.compile(r"[^.!?]+[.!?]?(?=\s|$)", re.UNICODE)
 
 
+def _termina_com_pergunta(texto: str) -> bool:
+    """Return true only when the final sentence itself is a question."""
+    final = texto.strip()
+    # Markdown/typographic closing punctuation is decoration, not prose after
+    # the question.  A declarative sentence following ``?`` remains invalid.
+    final = re.sub(r"[\s\"'“”‘’«»)\]}]+$", "", final)
+    return final.endswith("?")
+
+
 def _coerce_roteiro(value: Roteiro | Mapping[str, Any]) -> tuple[Roteiro, Mapping[str, Any]]:
     if isinstance(value, Roteiro):
         return value, {}
@@ -170,10 +179,10 @@ def conferir_secao(
                 findings.append(_finding(
                     "sem_citacao", "Seção factual sem âncora de autor ou título", section=nome,
                 ))
-        if nome == "Espelho" and "?" not in texto:
+        if nome == "Espelho" and not _termina_com_pergunta(texto):
             findings.append(_finding(
                 "espelho_sem_pergunta", "Espelho precisa terminar abrindo uma pergunta ao público",
-                section=nome, severity="aviso",
+                section=nome,
             ))
         if nome == "Fecho" and not any(token in texto.casefold() for token in ("pergunta", "escolh", "retorn", "volte", "agora")):
             findings.append(_finding(

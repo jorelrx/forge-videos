@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from forge.domain.models import Fonte, ReviewResult, Roteiro
+from forge.agents.research import PassageEvidence
 
 
 class RoteiroState(TypedDict, total=False):
@@ -9,6 +10,7 @@ class RoteiroState(TypedDict, total=False):
     tema: str | None
     research_notes: str
     fontes: list[Fonte]
+    research_passages: list[PassageEvidence]
     tese: str
     esboco: str
     roteiro: Roteiro | None

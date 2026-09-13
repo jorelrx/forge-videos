@@ -9,14 +9,17 @@ from forge.skills.loader import load_skills
 logger = get_logger(__name__)
 
 SKILLS = ["story"]
-LE = ["tema", "research_notes"]
+LE = ["tema", "research_notes", "run_dir"]
 
-def planejar(model, tema: str, research: str) -> tuple[str, str]:
+def planejar(model, tema: str, research: str, *, run_dir=None) -> tuple[str, str]:
     logger.debug("Starting planning phase", tema=tema[:50] + "..." if len(tema) > 50 else tema)
     prompt = load_prompt("plan").format(
         tema=tema, research=research, skills=load_skills(SKILLS, "plan")
     )
-    plano = invoke_structured(model, Plano, [HumanMessage(content=prompt)])
+    plano = invoke_structured(
+        model, Plano, [HumanMessage(content=prompt)],
+        run_dir=run_dir, etapa="plan", subfase="structured",
+    )
     tese_resultado = plano.tese
     esboco_resultado = plano.esboco
     logger.info("Planning completed", tese=tese_resultado[:100] + "..." if len(tese_resultado) > 100 else tese_resultado)

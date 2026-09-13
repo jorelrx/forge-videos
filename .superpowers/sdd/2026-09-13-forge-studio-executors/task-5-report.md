@@ -41,3 +41,34 @@ de aceitar o roteiro.
 - Avisos permanecem em `findings`, mas `approved` depende somente de graves.
 - Mudanças de expectativa em `tests/agents/test_models.py` e `tests/test_config.py`
   acompanham a migração dos nomes/modelo do contrato.
+
+## Round 1/5 — correções de revisão
+
+### RED/GREEN
+
+- RED focado: `uv run --no-cache pytest tests/services/test_qualidade_roteiro.py::test_espelho_requires_question_as_final_sentence tests/executors/test_roteiro.py::test_execute_passes_reentered_research_evidence_to_gate tests/test_llm_model.py::test_reasoning_content_survives_string_content_in_additional_kwargs -q` → **3 failed**, cada falha reproduzindo um finding.
+- GREEN focado: `uv run --no-cache pytest tests/services/test_qualidade_roteiro.py tests/executors/test_roteiro.py tests/test_llm_model.py -q` → **12 passed**.
+- Integração: `uv run --no-cache pytest tests/services/test_qualidade_roteiro.py tests/executors/test_roteiro.py tests/test_llm_model.py tests/agents tests/orchestration -q` → **99 passed**.
+
+### Alterações
+
+- `qualidade_roteiro.py`: Espelho agora exige que a última frase termine em
+  pergunta; caso contrário é defeito grave. Fixture aprovada corrigida.
+- `orchestration/state.py`, `orchestration/graph.py`, `agents/research.py` e
+  `executors/roteiro.py`: `research_passages` tipado é inicializado do bundle,
+  mesclado por caminho canônico nas reentradas e usado pelo gate final.
+- `llms/model.py` e agentes estruturados: reasoning é extraído também de
+  `additional_kwargs`/`response_metadata` mesmo com `content` string e salvo
+  em `progresso.jsonl` via `run_dir`; plumbing de etapa/subfase incluído.
+- Testes: `tests/services/test_qualidade_roteiro.py`,
+  `tests/executors/test_roteiro.py`, `tests/test_llm_model.py`.
+
+### Autorrevisão Round 1
+
+- Evidência dirigida sem caminho canônico continua preservada, sem substituir
+  evidência anterior; deduplicação ocorre somente quando há `path`.
+- Gate não aceita Espelho com pergunta intermediária seguida de declaração.
+- Reasoning continua fora do conteúdo parseado e recebe log separado; sem
+  `run_dir`, mantém apenas o comportamento de retorno estruturado anterior.
+- Round 1 adicional: o executor também aceita `fontes` renovadas como ponte
+  para estados de grafo legados que ainda não carreguem `research_passages`.

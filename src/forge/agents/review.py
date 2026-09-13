@@ -10,7 +10,7 @@ from forge.skills.loader import load_skills
 logger = get_logger(__name__)
 
 SKILLS = ["story", "retention", "fact_check"]
-LE = ["roteiro", "rounds"]
+LE = ["roteiro", "rounds", "run_dir"]
 
 # Palavras que o modelo emite como resposta de checklist. Um item que é só isso
 # nunca foi uma alegação.
@@ -97,12 +97,15 @@ def alegacoes_reais(itens: list[str]) -> list[str]:
     return mantidas
 
 
-def revisar(model, roteiro: Roteiro) -> ReviewResult:
+def revisar(model, roteiro: Roteiro, *, run_dir=None) -> ReviewResult:
     logger.debug("Starting review phase", tema=roteiro.tema[:50] + "..." if len(roteiro.tema) > 50 else roteiro.tema)
     prompt = load_prompt("review").format(
         roteiro=_render(roteiro), skills=load_skills(SKILLS, "review")
     )
-    result = invoke_structured(model, ReviewResult, [HumanMessage(content=prompt)])
+    result = invoke_structured(
+        model, ReviewResult, [HumanMessage(content=prompt)],
+        run_dir=run_dir, etapa="review", subfase="structured",
+    )
     filtradas = alegacoes_reais(result.verificar)
     if len(filtradas) != len(result.verificar):
         logger.info(

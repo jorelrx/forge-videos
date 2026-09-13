@@ -5,8 +5,10 @@ import pytest
 from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
 from forge.domain.operacao import ItemStatus, WorkItem
 from forge.gpu.broker import GPUOcupada, LiberacaoFalhou
+from forge.repositories.eventos import EventosRepository
 from forge.services.manifesto import carregar, criar_ou_carregar, pendentes
 from forge.services.runner import executar
+from forge.services.worker import StageContext, StudioWorker
 
 
 def test_runner_projects_current_sqlite_items_over_stale_manifest(tmp_path):
@@ -28,7 +30,7 @@ def test_runner_projects_current_sqlite_items_over_stale_manifest(tmp_path):
 
     result = executar(
         tmp_path, stale, {"imagem": _ok}, BrokerFalso(),
-        work_items=items, projector=ProjectorFalso(),
+        work_items=items, emit=emit_falso,
     )
 
     assert [(item.id, item.estado) for item in result.itens] == [("b001", "ok"), ("i001", "ok")]
@@ -44,20 +46,13 @@ def test_runner_accepts_sqlite_items_as_resume_source(tmp_path):
     ]
 
     result = executar(
-        tmp_path, items, {"imagem": _ok}, BrokerFalso(), projector=ProjectorFalso()
+        tmp_path, items, {"imagem": _ok}, BrokerFalso(), emit=emit_falso
     )
 
     assert result.itens[0].estado == "ok"
 
 
 def test_runner_projects_item_events_and_checkpoints_manifest(tmp_path):
-    class Projector:
-        def __init__(self):
-            self.events = []
-
-        def project(self, kind, payload):
-            self.events.append((kind, payload))
-
     items = [
         WorkItem(
             id="db-i001", stage_run_id="stage-1", item_key="i001",
@@ -65,13 +60,16 @@ def test_runner_projects_item_events_and_checkpoints_manifest(tmp_path):
             input_hash="b" * 64,
         )
     ]
-    projector = Projector()
+    events = []
+
+    def emit(**event):
+        events.append(event)
 
     result = executar(
-        tmp_path, items, {"imagem": _ok}, BrokerFalso(), projector=projector
+        tmp_path, items, {"imagem": _ok}, BrokerFalso(), emit=emit
     )
 
-    assert [kind for kind, _ in projector.events] == [
+    assert [event["kind"] for event in events] == [
         "item.started", "item.succeeded"
     ]
     assert result.itens[0].estado == "ok"
@@ -99,7 +97,7 @@ def test_runner_resume_does_not_execute_succeeded_sqlite_item(tmp_path):
 
     result = executar(
         tmp_path, items, {"imagem": imagem}, BrokerFalso(),
-        projector=ProjectorFalso(),
+        emit=emit_falso,
     )
 
     assert seen == ["i001"]
@@ -108,7 +106,7 @@ def test_runner_resume_does_not_execute_succeeded_sqlite_item(tmp_path):
     }
 
 
-def test_runner_rejects_operational_items_without_projector(tmp_path):
+def test_runner_rejects_operational_items_without_event_frontier(tmp_path):
     items = [
         WorkItem(
             id="db-i001", stage_run_id="stage-1", item_key="i001",
@@ -117,13 +115,42 @@ def test_runner_rejects_operational_items_without_projector(tmp_path):
         )
     ]
 
-    with pytest.raises(ValueError, match="projector"):
+    with pytest.raises(ValueError, match="emit"):
         executar(tmp_path, items, {"imagem": _ok}, BrokerFalso())
 
 
-class ProjectorFalso:
-    def project(self, kind, payload):
-        pass
+def test_runner_uses_worker_event_frontier_once(tmp_path, db):
+    from services.conftest import item_plan, prepared_run
+    from forge.repositories.operacao import OperacaoRepository
+
+    connection_manager = db.connection()
+    conn = connection_manager.__enter__()
+    run_dir, run, stage = prepared_run(tmp_path, db, conn=conn)
+    repo = OperacaoRepository(conn)
+    repo.upsert_work_items(stage.id, [item_plan("b001", "a" * 64)])
+    item = repo.list_work_items(stage.id)[0]
+
+    worker = StudioWorker(
+        db, worker_id="runner-test", lease_seconds=60, executors={}
+    )
+    emit = worker._event_sink(
+        StageContext(run=run, stage_run=stage, run_dir=run_dir, work_items=[item])
+    )
+
+    executar(run_dir, [item], {"audio": _ok}, BrokerFalso(), emit=emit)
+
+    audit = EventosRepository(conn).after(0, run_id=run.id)
+    persisted = repo.list_work_items(stage.id)[0]
+    assert [event.kind for event in audit] == [
+        "item.started", "item.succeeded"
+    ]
+    assert len(audit) == 2
+    assert persisted.status is ItemStatus.SUCCEEDED
+    assert persisted.attempts == 1
+
+
+def emit_falso(**event):
+    pass
 
 
 class BrokerFalso:

@@ -40,7 +40,7 @@ def executar(
     so: str | None = None,
     work_items: Iterable[WorkItem] | None = None,
     artifacts: Iterable[object] | None = None,
-    projector=None,
+    emit=None,
 ) -> Manifesto:
     # A JSON snapshot is a display projection, never the resume authority. The
     # worker may pass the pending rows selected from SQLite; rebuild the mirror
@@ -51,9 +51,9 @@ def executar(
     elif work_items is not None:
         operational_items = list(work_items)
     if operational_items is not None:
-        if projector is None:
+        if emit is None:
             raise ValueError(
-                "projector is required when executing operational WorkItem rows"
+                "emit is required when executing operational WorkItem rows"
             )
         manifesto = Manifesto.from_work_items(operational_items)
         if artifacts is not None:
@@ -113,8 +113,14 @@ def executar(
             }
         else:
             raise ValueError(f"evento de item desconhecido: {kind}")
-        if projector is not None:
-            projector.project(kind, payload)
+        if emit is not None:
+            level = "error" if kind == "item.failed" else "info"
+            message = {
+                "item.started": "Item iniciado",
+                "item.succeeded": "Item concluído",
+                "item.failed": "Item falhou",
+            }[kind]
+            emit(kind=kind, level=level, message=message, payload=payload)
         checkpoint()
     # Um valor de `so` fora de ORDEM não bate com nenhum tipo do loop, então o
     # loop inteiro faria `continue` em silêncio: nenhum pendentes(), nenhum log,

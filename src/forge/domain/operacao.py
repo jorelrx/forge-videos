@@ -147,6 +147,7 @@ class StageResult(BaseModel):
     total_items: int = Field(default=0, ge=0)
     failure_code: str | None = None
     failure_message: str | None = None
+    outputs: JSON_OBJECT = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def is_consistent(self) -> Self:

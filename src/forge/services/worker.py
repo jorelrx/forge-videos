@@ -4,11 +4,15 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, Thread
 from typing import Protocol
 
+from pydantic import Field
+
 from forge.domain.operacao import (
     JSON_OBJECT,
+    Artifact,
     Command,
     CommandStatus,
     CommandType,
@@ -18,6 +22,8 @@ from forge.domain.operacao import (
     StageResult,
     StageRun,
     StageStatus,
+    Video,
+    WorkItem,
 )
 from forge.repositories.comandos import ComandosRepository
 from forge.repositories.connection import Database
@@ -32,6 +38,10 @@ class StageContext:
     run: Run
     stage_run: StageRun
     cancel_event: Event | None = None
+    video: Video | None = None
+    run_dir: Path | None = None
+    artifacts: list[Artifact] = Field(default_factory=list)
+    work_items: list[WorkItem] = Field(default_factory=list)
 
 
 class EventSink(Protocol):

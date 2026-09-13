@@ -141,6 +141,26 @@ class StageRun(BaseModel):
         return self
 
 
+class StageResult(BaseModel):
+    gate_status: str | None = None
+    current_items: int = Field(default=0, ge=0)
+    total_items: int = Field(default=0, ge=0)
+    failure_code: str | None = None
+    failure_message: str | None = None
+
+    @model_validator(mode="after")
+    def is_consistent(self) -> Self:
+        if self.current_items > self.total_items:
+            raise ValueError("current_items cannot exceed total_items")
+        if (self.failure_code is None) != (self.failure_message is None):
+            raise ValueError("failure_code and failure_message must be set together")
+        return self
+
+    @property
+    def failed(self) -> bool:
+        return self.failure_code is not None
+
+
 class WorkItem(BaseModel):
     id: str
     stage_run_id: str

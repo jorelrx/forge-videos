@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier, Event
+from threading import Barrier
 
 import pytest
 
@@ -149,45 +149,23 @@ def test_claim_next_autocommit_nao_reivindica_duas_runs_apos_guardas_concorrente
         _, first = create_run(repo, tema="Primeira")
         _, second = create_run(repo, tema="Segunda")
 
-    guards_completed = Barrier(2)
-    first_claim_completed = Event()
+    claims_ready = Barrier(2)
 
-    class ConnectionAfterActiveGuard:
-        def __init__(
-            self,
-            conn: sqlite3.Connection,
-            *,
-            wait_for_first_claim: bool = False,
-            signal_first_claim: bool = False,
-        ) -> None:
+    class ConnectionBeforeAtomicClaim:
+        def __init__(self, conn: sqlite3.Connection) -> None:
             self._conn = conn
-            self._wait_for_first_claim = wait_for_first_claim
-            self._signal_first_claim = signal_first_claim
 
         def execute(self, sql: str, parameters=()):
             normalized_sql = " ".join(sql.split())
-            if (
-                self._wait_for_first_claim
-                and normalized_sql.startswith("SELECT id FROM runs WHERE status")
+            if normalized_sql.startswith("UPDATE runs SET status") and normalized_sql.endswith(
+                "RETURNING *"
             ):
-                assert first_claim_completed.wait(timeout=2)
-            result = self._conn.execute(sql, parameters)
-            if normalized_sql.startswith("SELECT 1 FROM runs WHERE status IN"):
-                guards_completed.wait(timeout=2)
-            if (
-                self._signal_first_claim
-                and normalized_sql.startswith("UPDATE runs SET status")
-            ):
-                first_claim_completed.set()
-            return result
+                claims_ready.wait(timeout=2)
+            return self._conn.execute(sql, parameters)
 
     def claim(worker_id: str):
         with db.connection() as conn:
-            wrapped_conn = ConnectionAfterActiveGuard(
-                conn,
-                wait_for_first_claim=worker_id == "worker-a",
-                signal_first_claim=worker_id == "worker-b",
-            )
+            wrapped_conn = ConnectionBeforeAtomicClaim(conn)
             return OperacaoRepository(wrapped_conn).claim_next(
                 worker_id, lease_seconds=60
             )
@@ -220,7 +198,17 @@ def test_renew_lease_requires_the_active_owner(db):
     assert renewed.lease_expires_at > original_expiry
 
 
-def test_interrupt_expired_marks_run_and_active_stage_interrupted(db):
+@pytest.mark.parametrize(
+    ("run_status", "stage_status"),
+    [
+        (RunStatus.PREPARING, StageStatus.PENDING),
+        (RunStatus.RUNNING, StageStatus.RUNNING),
+        (RunStatus.PAUSING, StageStatus.PAUSING),
+    ],
+)
+def test_interrupt_expired_marks_current_active_stage_interrupted(
+    db, run_status, stage_status
+):
     expired_at = datetime(2026, 9, 12, 15, 30, tzinfo=UTC)
     with db.transaction(immediate=True) as conn:
         repo = OperacaoRepository(conn)
@@ -231,14 +219,14 @@ def test_interrupt_expired_marks_run_and_active_stage_interrupted(db):
         conn.execute(
             "UPDATE runs SET status = ?, lease_expires_at = ? WHERE id = ?",
             (
-                RunStatus.RUNNING.value,
+                run_status.value,
                 (expired_at - timedelta(seconds=1)).isoformat(),
                 run.id,
             ),
         )
         conn.execute(
             "UPDATE stage_runs SET status = ? WHERE id = ?",
-            (StageStatus.RUNNING.value, current_stage.id),
+            (stage_status.value, current_stage.id),
         )
 
         interrupted = repo.interrupt_expired(expired_at)

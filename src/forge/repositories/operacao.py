@@ -23,7 +23,11 @@ _ACTIVE_RUN_STATUSES = (
     RunStatus.PAUSING,
     RunStatus.VALIDATING,
 )
-_ACTIVE_STAGE_STATUSES = (StageStatus.RUNNING, StageStatus.PAUSING)
+_INTERRUPTIBLE_STAGE_STATUSES = (
+    StageStatus.PENDING,
+    StageStatus.RUNNING,
+    StageStatus.PAUSING,
+)
 
 
 class OperacaoRepository:
@@ -237,7 +241,7 @@ class OperacaoRepository:
             """,
             (RunStatus.INTERRUPTED.value, *run_ids),
         )
-        stage_placeholders = ", ".join("?" for _ in _ACTIVE_STAGE_STATUSES)
+        stage_placeholders = ", ".join("?" for _ in _INTERRUPTIBLE_STAGE_STATUSES)
         self.conn.execute(
             f"""
             UPDATE stage_runs
@@ -260,7 +264,7 @@ class OperacaoRepository:
             (
                 StageStatus.INTERRUPTED.value,
                 *run_ids,
-                *(status.value for status in _ACTIVE_STAGE_STATUSES),
+                *(status.value for status in _INTERRUPTIBLE_STAGE_STATUSES),
                 *run_ids,
             ),
         )

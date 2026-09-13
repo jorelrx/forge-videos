@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Event, Thread
 from typing import Protocol
 
 from forge.domain.operacao import (
+    Command,
+    CommandStatus,
+    CommandType,
     JSON_OBJECT,
     Run,
     RunStatus,
@@ -15,6 +20,7 @@ from forge.domain.operacao import (
     StageStatus,
 )
 from forge.repositories.connection import Database
+from forge.repositories.comandos import ComandosRepository
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
 from forge.services.control_plane import ControlPlaneService
@@ -42,6 +48,65 @@ class StageExecutor(Protocol):
     def execute(self, context: StageContext, emit: EventSink) -> StageResult: ...
 
 
+class LeaseHeartbeat:
+    def __init__(
+        self,
+        db: Database,
+        *,
+        run_id: str,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> None:
+        self.db = db
+        self.run_id = run_id
+        self.worker_id = worker_id
+        self.lease_seconds = lease_seconds
+        self.ownership_lost = Event()
+
+    def tick(self) -> bool:
+        with self.db.transaction(immediate=True) as conn:
+            renewed = OperacaoRepository(conn).renew_lease(
+                self.run_id,
+                self.worker_id,
+                lease_seconds=self.lease_seconds,
+            )
+        if renewed is None:
+            self.ownership_lost.set()
+            return False
+        return True
+
+    @contextmanager
+    def daemon(self, *, interval_seconds: float) -> Iterator["LeaseHeartbeat"]:
+        daemon = LeaseHeartbeatDaemon(self, interval_seconds=interval_seconds)
+        daemon.start()
+        try:
+            yield self
+        finally:
+            daemon.stop()
+
+
+class LeaseHeartbeatDaemon:
+    def __init__(self, heartbeat: LeaseHeartbeat, *, interval_seconds: float) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("interval_seconds must be positive")
+        self.heartbeat = heartbeat
+        self.interval_seconds = interval_seconds
+        self._stopped = Event()
+        self._thread = Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._thread.join()
+
+    def _run(self) -> None:
+        while not self._stopped.wait(self.interval_seconds):
+            if not self.heartbeat.tick():
+                return
+
+
 class StudioWorker:
     def __init__(
         self,
@@ -51,12 +116,14 @@ class StudioWorker:
         lease_seconds: int,
         executors: Mapping[StageName, StageExecutor],
         now: Callable[[], datetime] | None = None,
+        heartbeat_seconds: float = 5,
     ) -> None:
         self.db = db
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.executors = executors
         self.now = now or (lambda: datetime.now(UTC))
+        self.heartbeat_seconds = heartbeat_seconds
         self.control_plane = ControlPlaneService(db, now=self.now)
 
     def run_once(self) -> Run | None:
@@ -85,13 +152,24 @@ class StudioWorker:
             return run
 
         context = self._start_stage(run, stage)
+        heartbeat = LeaseHeartbeat(
+            self.db,
+            run_id=context.run.id,
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+        )
+        if not heartbeat.tick():
+            return self._run_after_ownership_loss(context.run.id)
         try:
-            result = executor.execute(context, self._event_sink(context))
+            with heartbeat.daemon(interval_seconds=self.heartbeat_seconds):
+                result = executor.execute(context, self._event_sink(context))
         except Exception as error:  # noqa: BLE001 - executor boundary persists failures
             result = StageResult(
                 failure_code="executor_error",
                 failure_message=str(error) or type(error).__name__,
             )
+        if heartbeat.ownership_lost.is_set() or not heartbeat.tick():
+            return self._run_after_ownership_loss(context.run.id)
         return self._finish_stage(context, result)
 
     def _active_run_owned_by_worker(self) -> Run | None:
@@ -155,6 +233,45 @@ class StudioWorker:
                 for item in operacao.current_stages(context.run.id)
                 if item.id == context.stage_run.id
             )
+            if run.lease_owner != self.worker_id:
+                return run
+            pause_command = self._accepted_pause(ComandosRepository(conn), run.id)
+            if pause_command is not None:
+                paused_run = operacao.save_run(
+                    run.model_copy(
+                        update={
+                            "status": mudar_run(run.status, RunStatus.PAUSED),
+                            "lease_owner": None,
+                            "lease_expires_at": None,
+                        }
+                    )
+                )
+                operacao.save_stage(
+                    stage.model_copy(
+                        update={
+                            "status": mudar_etapa(
+                                mudar_etapa(stage.status, StageStatus.PAUSING),
+                                StageStatus.PAUSED,
+                            ),
+                            "current_items": result.current_items,
+                            "total_items": result.total_items,
+                            "progress": progress,
+                            "gate_status": result.gate_status,
+                        }
+                    )
+                )
+                ComandosRepository(conn).set_status(
+                    pause_command.id, CommandStatus.APPLIED, result=pause_command.result
+                )
+                EventosRepository(conn).append(
+                    kind="run.paused",
+                    level="info",
+                    message="Run pausada no limite seguro da etapa",
+                    payload={"stage": stage.stage.value},
+                    run_id=context.run.id,
+                    stage_run_id=context.stage_run.id,
+                )
+                return paused_run
             if result.failed:
                 assert result.failure_code is not None
                 assert result.failure_message is not None
@@ -213,6 +330,26 @@ class StudioWorker:
             )
             return finished_run
 
+    def _run_after_ownership_loss(self, run_id: str) -> Run | None:
+        self.control_plane.interrupt_expired()
+        with self.db.connection() as conn:
+            return OperacaoRepository(conn).get_run(run_id)
+
+    @staticmethod
+    def _accepted_pause(
+        comandos: ComandosRepository, run_id: str
+    ) -> Command | None:
+        row = comandos.conn.execute(
+            """
+            SELECT id FROM commands
+            WHERE run_id = ? AND type = ? AND status = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            (run_id, CommandType.PAUSE.value, CommandStatus.ACCEPTED.value),
+        ).fetchone()
+        return comandos.get(row["id"]) if row is not None else None
+
     def _event_sink(self, context: StageContext) -> EventSink:
         def emit(
             *, kind: str, level: str, message: str, payload: JSON_OBJECT
@@ -251,6 +388,8 @@ class StudioWorker:
 
 __all__ = [
     "EventSink",
+    "LeaseHeartbeat",
+    "LeaseHeartbeatDaemon",
     "StageContext",
     "StageExecutor",
     "StageResult",

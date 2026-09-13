@@ -4,11 +4,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from forge.domain.operacao import RunStatus, StageName, StageStatus
+from forge.domain.operacao import CommandStatus, RunStatus, StageName, StageStatus
+from forge.repositories.comandos import ComandosRepository
 from forge.repositories.connection import Database
 from forge.repositories.schema import init_db
 from forge.services.control_plane import ControlPlaneService
-from forge.services.worker import StageResult, StudioWorker
+from forge.services.worker import LeaseHeartbeat, StageResult, StudioWorker
 
 FIXED_NOW = datetime(2026, 9, 12, 15, 30, tzinfo=UTC)
 
@@ -207,3 +208,154 @@ def test_run_once_interrupts_expired_runs_before_claiming_the_next_queued_run(
     assert control_plane.get_run(expired.id).run.status is RunStatus.INTERRUPTED
     assert processed is not None
     assert processed.id == queued.id
+
+
+def test_lease_heartbeat_tick_renews_an_owned_active_lease(db, control_plane):
+    run = enqueue(control_plane)
+    claimed = control_plane.claim_next("worker-a", lease_seconds=45)
+    assert claimed is not None
+
+    heartbeat = LeaseHeartbeat(
+        db,
+        run_id=run.id,
+        worker_id="worker-a",
+        lease_seconds=45,
+    )
+
+    assert heartbeat.tick() is True
+    renewed = control_plane.get_run(run.id).run
+    assert renewed.lease_owner == "worker-a"
+    assert renewed.lease_expires_at is not None
+    assert claimed.lease_expires_at is not None
+    assert renewed.lease_expires_at > claimed.lease_expires_at
+
+
+class OwnershipLosingExecutor:
+    def __init__(self, db) -> None:
+        self.db = db
+
+    def execute(self, context, emit):
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE runs SET lease_owner = ? WHERE id = ?",
+                ("worker-b", context.run.id),
+            )
+        return StageResult(current_items=1, total_items=1)
+
+
+def test_run_once_does_not_finish_a_stage_after_losing_lease_ownership(
+    db, control_plane
+):
+    run = enqueue(control_plane)
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: OwnershipLosingExecutor(db)},
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    detail = control_plane.get_run(run.id)
+    assert detail.run.lease_owner == "worker-b"
+    assert detail.run.status is RunStatus.RUNNING
+    assert stage_for(control_plane, run.id, StageName.PREPARACAO).status is StageStatus.RUNNING
+    assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == [
+        "run.queued",
+        "run.claimed",
+        "stage.started",
+    ]
+
+
+class LeaseExpiringExecutor:
+    def __init__(self, db) -> None:
+        self.db = db
+        self.completed = False
+
+    def execute(self, context, emit):
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE runs SET lease_expires_at = ? WHERE id = ?",
+                ((FIXED_NOW - timedelta(seconds=1)).isoformat(), context.run.id),
+            )
+        self.completed = True
+        return StageResult(current_items=1, total_items=1)
+
+
+def test_run_once_interrupts_an_expired_lease_only_after_executor_returns(
+    db, control_plane
+):
+    run = enqueue(control_plane)
+    executor = LeaseExpiringExecutor(db)
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: executor},
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    assert executor.completed is True
+    assert control_plane.get_run(run.id).run.status is RunStatus.INTERRUPTED
+    assert stage_for(control_plane, run.id, StageName.PREPARACAO).status is StageStatus.INTERRUPTED
+    assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == [
+        "run.queued",
+        "run.claimed",
+        "stage.started",
+        "run.interrupted",
+    ]
+
+
+class PauseDuringExecutionExecutor:
+    def __init__(self, control_plane: ControlPlaneService) -> None:
+        self.control_plane = control_plane
+        self.stage_status_after_pause = None
+        self.command_id = None
+
+    def execute(self, context, emit):
+        self.command_id = self.control_plane.request_pause(
+            context.run.id, idempotency_key="pause-at-boundary"
+        ).id
+        self.stage_status_after_pause = stage_for(
+            self.control_plane, context.run.id, context.stage_run.stage
+        ).status
+        return StageResult(current_items=1, total_items=2)
+
+
+def test_run_once_applies_accepted_pause_only_after_executor_returns(db, control_plane):
+    run = enqueue(control_plane)
+    executor = PauseDuringExecutionExecutor(control_plane)
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: executor},
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    detail = control_plane.get_run(run.id)
+    stage = stage_for(control_plane, run.id, StageName.PREPARACAO)
+    with db.connection() as conn:
+        command = ComandosRepository(conn).get(executor.command_id)
+
+    assert executor.stage_status_after_pause is StageStatus.RUNNING
+    assert detail.run.status is RunStatus.PAUSED
+    assert detail.run.lease_owner is None
+    assert detail.run.lease_expires_at is None
+    assert stage.status is StageStatus.PAUSED
+    assert (stage.current_items, stage.total_items, stage.progress) == (1, 2, 0.5)
+    assert command is not None
+    assert command.status is CommandStatus.APPLIED
+    assert command.applied_at is not None
+    assert [event.kind for event in control_plane.events_after(0, run_id=run.id)] == [
+        "run.queued",
+        "run.claimed",
+        "stage.started",
+        "command.pause_requested",
+        "run.paused",
+    ]

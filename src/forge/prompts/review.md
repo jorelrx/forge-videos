@@ -1,5 +1,10 @@
 Revise este roteiro contra os critérios abaixo.
 
+As nove seções obrigatórias são Gancho, Estake, Tensao, Virada, Filosofo,
+Prova, Espelho, Aplicacao e Fecho, nesta ordem. Gancho não precisa de citação;
+as demais seções factuais precisam ancorar autor ou título na pesquisa. Espelho
+deve terminar com pergunta ao público e Fecho deve fechar o loop do Gancho.
+
 {skills}
 
 Aprove (aprovado=true) somente se o roteiro passa em todos. Caso contrário,

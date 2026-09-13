@@ -11,9 +11,77 @@ logger = get_logger(__name__)
 from forge.llms.parsing import _texto
 
 
+def _finish_reason(raw: object) -> str | None:
+    metadata = getattr(raw, "response_metadata", None)
+    if isinstance(metadata, dict) and metadata.get("finish_reason"):
+        return str(metadata["finish_reason"])
+    additional = getattr(raw, "additional_kwargs", None)
+    if isinstance(additional, dict) and additional.get("finish_reason"):
+        return str(additional["finish_reason"])
+    if isinstance(raw, dict):
+        for key in ("finish_reason", "finishReason"):
+            if raw.get(key):
+                return str(raw[key])
+    return None
+
+
+def invoke_structured(
+    model,
+    schema,
+    messages,
+    *,
+    initial_max_tokens: int = 4000,
+    ceiling_max_tokens: int = 16000,
+):
+    """Invoke structured output, retrying only a truncated empty parse.
+
+    A parser error with a normal stop is a model/schema defect and is raised
+    immediately.  Blind retries hide those defects and can multiply expensive
+    local inference calls.
+    """
+    budget = initial_max_tokens
+    while True:
+        bounded = model.bind(max_tokens=budget) if hasattr(model, "bind") else model
+        try:
+            structured = bounded.with_structured_output(schema, include_raw=True)
+        except TypeError:
+            # Compatibility with older LangChain adapters and the project's
+            # small scripted test model.  Real local models use include_raw.
+            structured = bounded.with_structured_output(schema)
+        response = structured.invoke(messages)
+        if isinstance(response, dict):
+            parsed = response.get("parsed")
+            raw = response.get("raw")
+            parse_error = response.get("parsing_error")
+        else:
+            parsed = response
+            raw = response
+            parse_error = None
+        thinking = extract_thinking(raw) if raw is not None else ""
+        # Preserve the reasoning channel for callers/adapters that expose a
+        # run log without ever mixing it into the parsed content.
+        if thinking:
+            logger.debug("Structured model reasoning captured", chars=len(thinking))
+        if parsed is not None:
+            return parsed
+        if _finish_reason(raw) == "length" and budget < ceiling_max_tokens:
+            budget = min(budget * 2, ceiling_max_tokens)
+            continue
+        if _finish_reason(raw) == "length":
+            raise RuntimeError("llm_output_truncated")
+        if parse_error is not None:
+            raise parse_error
+        raise RuntimeError("structured output ausente")
+
+
 def extract_thinking(resp) -> str:
     """Extrai reasoning_content da resposta do modelo (LM Studio / OpenAI)."""
-    content = resp.content
+    if resp is None:
+        return ""
+    if isinstance(resp, dict):
+        content = resp.get("content")
+    else:
+        content = getattr(resp, "content", None)
     if isinstance(content, str):
         return ""
     if isinstance(content, list):
@@ -22,7 +90,7 @@ def extract_thinking(resp) -> str:
                 rc = block.get("reasoning_content")
                 if rc and isinstance(rc, str) and rc.strip():
                     return rc
-    meta = getattr(resp, "response_metadata", None)
+    meta = resp.get("response_metadata") if isinstance(resp, dict) else getattr(resp, "response_metadata", None)
     if meta and isinstance(meta, dict):
         rc = meta.get("reasoning_content")
         if rc and isinstance(rc, str) and rc.strip():
@@ -63,6 +131,7 @@ def build_chat_model(settings: Settings) -> BaseChatModel:
             api_key=chave,
             timeout=settings.llm_timeout,
             max_retries=settings.llm_max_retries,
+            max_tokens=settings.llm_max_tokens,
         )
 
     if settings.provider == "openai":
@@ -71,6 +140,7 @@ def build_chat_model(settings: Settings) -> BaseChatModel:
             api_key=chave,
             timeout=settings.llm_timeout,
             max_retries=settings.llm_max_retries,
+            max_tokens=settings.llm_max_tokens,
         )
 
     return ChatAnthropic(

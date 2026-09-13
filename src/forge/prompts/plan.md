@@ -7,6 +7,5 @@ Notas de pesquisa:
 
 Produza:
 1. tese — a afirmação central do roteiro.
-2. esboco — como cada uma das nove partes (Hook, Problema, História,
-   Explicação, Filósofo, Psicologia, Aplicação, Resumo, Conclusão)
-   avança a tese.
+2. esboco — como cada uma das nove partes (Gancho, Estake, Tensao, Virada,
+   Filosofo, Prova, Espelho, Aplicacao, Fecho) avança a tese.

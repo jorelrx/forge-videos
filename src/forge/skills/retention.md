@@ -6,11 +6,12 @@ dominio: false
 
 ## Critérios
 Um problema principal por vídeo. Se há dois, o segundo vira outro vídeo.
-O Hook estabelece a tensão nos primeiros segundos, sem preâmbulo e sem
+O Gancho estabelece a tensão nos primeiros segundos, sem preâmbulo e sem
 apresentar o tema em terceira pessoa.
 Teoria e exemplo se alternam. Dois blocos abstratos seguidos são um defeito.
 Cada seção deixa uma pergunta aberta que a próxima responde.
-A Conclusão devolve o Hook transformado, não resumido.
+O Espelho termina com uma pergunta dirigida ao público. O Fecho devolve o
+Gancho transformado, não resumido, fechando o loop.
 
 ## Anti-padrões
 - Abrir com definição de dicionário ou com a história do conceito.

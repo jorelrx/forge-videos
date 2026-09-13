@@ -1,0 +1,25 @@
+{
+  "tema": "O peso de ser livre",
+  "tese": "A liberdade exige suportar a própria escolha.",
+  "secoes": [
+    {"nome": "Gancho", "conteudo": "Ninguém percebe o peso da liberdade até o instante em que ninguém pode escolher por você. O silêncio fica pesado quando cada passo depende de sua coragem."},
+    {"nome": "Estake", "conteudo": "A escolha se revela quando toda decisão devolve a responsabilidade para quem decidiu, sem uma desculpa confortável. Simone de Beauvoir ajuda a nomear essa aposta humana."},
+    {"nome": "Tensao", "conteudo": "Depois, a tensão cresce porque fugir da escolha também é escolher, mas a pessoa ainda tenta chamar isso de destino. Simone de Beauvoir torna a contradição visível."},
+    {"nome": "Virada", "conteudo": "A escolha se revela quando a ausência de garantias não elimina a possibilidade de agir com clareza. Simone de Beauvoir transforma limite em condição."},
+    {"nome": "Filosofo", "conteudo": "Segundo Simone de Beauvoir, a liberdade se constrói dentro de circunstâncias concretas e difíceis. A ética da ambiguidade dá nome ao conflito."},
+    {"nome": "Prova", "conteudo": "Uma experiência cotidiana mostra que decidir custa tempo, medo, atenção, diálogo, renúncia, tentativa, erro e responsabilidade, porque cada escolha reorganiza relações, exige paciência, expõe contradições, interrompe hábitos, pede conversa, cobra presença, modifica planos, desafia certezas, revela limites e devolve a consequência para quem age sem uma fonte que possa ser citada."},
+    {"nome": "Espelho", "conteudo": "Diante da escolha, o que exatamente está protegendo: sua paz, sua imagem, seu medo ou uma promessa antiga? Simone de Beauvoir devolve a pergunta para sua rotina."},
+    {"nome": "Aplicacao", "conteudo": "Amanhã, um pequeno compromisso diário transforma a ideia de liberdade em uma prática observável e possível. Simone de Beauvoir oferece uma régua para acompanhar esse gesto."},
+    {"nome": "Fecho", "conteudo": "Por fim, a pergunta retorna, agora transformada: se ninguém decide por você, que escolha merece ser assumida hoje? Simone de Beauvoir deixa a resposta em suas mãos."}
+  ],
+  "passages_by_section": {
+    "Estake": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Tensao": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Virada": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Filosofo": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Prova": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Espelho": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Aplicacao": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Fecho": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}]
+  }
+}

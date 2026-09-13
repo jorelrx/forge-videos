@@ -4,8 +4,8 @@ from forge.domain.models import (
 
 def test_secoes_nomes_ordem():
     assert SECOES_NOMES == [
-        "Hook", "Problema", "História", "Explicação", "Filósofo",
-        "Psicologia", "Aplicação", "Resumo", "Conclusão",
+        "Gancho", "Estake", "Tensao", "Virada", "Filosofo",
+        "Prova", "Espelho", "Aplicacao", "Fecho",
     ]
 
 def test_roteiro_defaults():

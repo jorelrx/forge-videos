@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage
 from forge.infrastructure.logging import get_logger
 from forge.prompts.loader import load_prompt
 from forge.domain.models import Plano
+from forge.llms.model import invoke_structured
 from forge.skills.loader import load_skills
 
 logger = get_logger(__name__)
@@ -15,7 +16,7 @@ def planejar(model, tema: str, research: str) -> tuple[str, str]:
     prompt = load_prompt("plan").format(
         tema=tema, research=research, skills=load_skills(SKILLS, "plan")
     )
-    plano = model.with_structured_output(Plano).invoke([HumanMessage(content=prompt)])
+    plano = invoke_structured(model, Plano, [HumanMessage(content=prompt)])
     tese_resultado = plano.tese
     esboco_resultado = plano.esboco
     logger.info("Planning completed", tese=tese_resultado[:100] + "..." if len(tese_resultado) > 100 else tese_resultado)

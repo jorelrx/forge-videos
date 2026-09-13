@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage
 from forge.infrastructure.logging import get_logger
 from forge.prompts.loader import load_prompt
 from forge.domain.models import Fonte, Nota, Roteiro, RoteiroDraft
+from forge.llms.model import invoke_structured
 from forge.skills.loader import load_skills
 
 logger = get_logger(__name__)
@@ -28,7 +29,7 @@ def escrever(
         notas=_fmt_notas(notas),
         skills=load_skills(SKILLS, "write"),
     )
-    draft = model.with_structured_output(RoteiroDraft).invoke([HumanMessage(content=prompt)])
+    draft = invoke_structured(model, RoteiroDraft, [HumanMessage(content=prompt)])
     roteiro_resultado = Roteiro(tema=tema, tese=tese, secoes=draft.secoes, fontes=fontes)
     logger.info(
         "Write phase completed",

@@ -4,6 +4,7 @@ from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import MARCADOR_LISTA
 from forge.prompts.loader import load_prompt
 from forge.domain.models import ReviewResult, Roteiro
+from forge.llms.model import invoke_structured
 from forge.skills.loader import load_skills
 
 logger = get_logger(__name__)
@@ -101,7 +102,7 @@ def revisar(model, roteiro: Roteiro) -> ReviewResult:
     prompt = load_prompt("review").format(
         roteiro=_render(roteiro), skills=load_skills(SKILLS, "review")
     )
-    result = model.with_structured_output(ReviewResult).invoke([HumanMessage(content=prompt)])
+    result = invoke_structured(model, ReviewResult, [HumanMessage(content=prompt)])
     filtradas = alegacoes_reais(result.verificar)
     if len(filtradas) != len(result.verificar):
         logger.info(

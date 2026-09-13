@@ -1,0 +1,25 @@
+{
+  "tema": "O peso de ser livre",
+  "tese": "A liberdade cresce quando assumimos pequenas decisões.",
+  "secoes": [
+    {"nome": "Gancho", "conteudo": "Você chama de destino aquilo que ainda não teve coragem de escolher? Esta pergunta não espera uma definição, só um instante honesto diante do medo."},
+    {"nome": "Estake", "conteudo": "Simone de Beauvoir mostra que a responsabilidade começa quando percebemos as escolhas escondidas nas desculpas. A ética da ambiguidade coloca algo real em jogo."},
+    {"nome": "Tensao", "conteudo": "Em A ética da ambiguidade, Simone de Beauvoir descreve como a liberdade convive com limites concretos. O conflito não some quando entendemos sua origem."},
+    {"nome": "Virada", "conteudo": "De repente, Simone de Beauvoir revela que circunstâncias difíceis não escolhem nosso sentido. A virada desloca a pergunta para aquilo que fazemos agora."},
+    {"nome": "Filosofo", "conteudo": "A ética da ambiguidade oferece uma lente para enxergar liberdade como relação, não como isolamento. Simone de Beauvoir transforma uma abstração em responsabilidade compartilhada."},
+    {"nome": "Prova", "conteudo": "Uma decisão pequena, como recusar um hábito, torna visível o argumento de Simone de Beauvoir na rotina. O teste cabe numa manhã comum sem depender de heroísmo."},
+    {"nome": "Espelho", "conteudo": "Se Simone de Beauvoir estiver certa, qual escolha você está entregando ao acaso para não assumir? A pergunta toca exatamente o gesto que costuma passar despercebido."},
+    {"nome": "Aplicacao", "conteudo": "Escolha uma ação limitada hoje e registre o que mudou; Simone de Beauvoir ajuda a medir o compromisso. Um gesto pequeno cria uma evidência própria."},
+    {"nome": "Fecho", "conteudo": "Volte à pergunta inicial: não é destino quando a próxima escolha ainda está em suas mãos. Simone de Beauvoir deixa o próximo passo aberto para você."}
+  ],
+  "passages_by_section": {
+    "Estake": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Tensao": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Virada": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Filosofo": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Prova": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Espelho": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Aplicacao": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}],
+    "Fecho": [{"title": "A ética da ambiguidade", "authors": ["Simone de Beauvoir"]}]
+  }
+}

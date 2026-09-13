@@ -14,7 +14,7 @@ Provider = Literal["anthropic", "lm-studio", "openai"]
 MODELO_PADRAO: dict[str, str] = {
     "anthropic": "claude-opus-4-8",
     "openai": "gpt-5-nano",
-    "lm-studio": "qwen/qwen3.5-9b",
+    "lm-studio": "google/gemma-4-e4b",
 }
 
 # LM Studio ignora o valor, mas o cliente OpenAI exige algo não-vazio.
@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # LM Studio ficou 12 min sem responder e sem erro.
     llm_timeout: float = 600.0
     llm_max_retries: int = 1
+    llm_context_length: int = Field(default=16384, gt=0)
+    llm_max_tokens: int = Field(default=4000, gt=0)
+    llm_max_tokens_ceiling: int = Field(default=16000, gt=0)
+    lm_studio_ttl_seconds: int = Field(default=3600, gt=0)
 
     @model_validator(mode="after")
     def heartbeat_must_precede_lease(self) -> "Settings":

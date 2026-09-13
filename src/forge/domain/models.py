@@ -1,9 +1,7 @@
 from pydantic import BaseModel, Field
 
-SECOES_NOMES: list[str] = [
-    "Hook", "Problema", "História", "Explicação", "Filósofo",
-    "Psicologia", "Aplicação", "Resumo", "Conclusão",
-]
+from forge.domain.roteiro import SECOES_NOMES
+
 
 
 class Fonte(BaseModel):

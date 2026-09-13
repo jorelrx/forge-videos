@@ -10,6 +10,9 @@ Tese não é paráfrase do tema.
 Cada uma das nove partes empurra a tese adiante.
 Nada apenas reformula o movimento anterior.
 
+A ordem fechada é Gancho, Estake, Tensao, Virada, Filosofo, Prova, Espelho,
+Aplicacao, Fecho.
+
 ## Anti-padrões
 - Tese que ninguém contestaria ("o autoconhecimento é importante").
 - Tese que é o tema com outras palavras.

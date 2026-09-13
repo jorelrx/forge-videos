@@ -53,7 +53,7 @@ def test_get_settings_cached():
 def test_resolved_model_por_provider():
     """Sem override, cada provider usa o próprio default."""
     assert Settings(_env_file=None, provider="openai").resolved_model == "gpt-5-nano"
-    assert Settings(_env_file=None, provider="lm-studio").resolved_model == "qwen/qwen3.5-9b"
+    assert Settings(_env_file=None, provider="lm-studio").resolved_model == "google/gemma-4-e4b"
 
 
 def test_model_override_vence_em_qualquer_provider(monkeypatch):

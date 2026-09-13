@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from forge.domain.models import Fonte, VeredictoRelevancia
 from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import MARCADOR_LISTA, _texto
+from forge.llms.model import invoke_structured
 from forge.prompts.loader import load_prompt
 from forge.services.acervo import Acervo, Candidato, Passagem
 from forge.services.lacunas import registrar_lacuna
@@ -389,9 +390,7 @@ def julgar_relevancia(
         pedido=_fmt_pedido_juiz(pedido),
         passagens=_fmt_passagens_curtas(passagens),
     )
-    veredicto = model.with_structured_output(VeredictoRelevancia).invoke(
-        [HumanMessage(content=prompt)]
-    )
+    veredicto = invoke_structured(model, VeredictoRelevancia, [HumanMessage(content=prompt)])
     # Índice fora da faixa é erro de modelo, não motivo para estourar: descarta.
     validos = sorted({i for i in veredicto.relevantes if 0 <= i < len(passagens)})
     aprovadas = [passagens[i] for i in validos]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from forge.domain.operacao import RunStatus
+from forge.domain.operacao import RunStatus, StageName, StageStatus, StageResult
 from forge.infrastructure.config import Settings
 from forge.services.studio import build_worker
 
@@ -16,6 +16,15 @@ def _enqueue(worker, *, tema: str):
         workflow_version=1,
         git_commit="test-git",
     )[1]
+
+
+class SuccessExecutor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, context, emit):
+        self.calls += 1
+        return StageResult(gate_status="approved", current_items=1, total_items=1)
 
 
 def test_worker_recovery_interrupts_expired_run_and_allows_only_one_followup_claim(
@@ -47,15 +56,40 @@ def test_worker_recovery_interrupts_expired_run_and_allows_only_one_followup_cla
     assert [run.id for run in interrupted] == [first.id]
     assert restarted.control_plane.get_run(first.id).run.status is RunStatus.INTERRUPTED
     assert restarted.control_plane.get_run(second.id).run.status is RunStatus.QUEUED
+    interrupted_stage = next(
+        stage
+        for stage in restarted.control_plane.get_run(first.id).stages
+        if stage.stage is StageName.PREPARACAO
+    )
+    assert interrupted_stage.status is StageStatus.INTERRUPTED
 
-    restarted.control_plane.request_resume(first.id, idempotency_key="resume-first")
-    claimed_after_resume = restarted.run_once()
+    executor = SuccessExecutor()
+    resumed = build_worker(
+        settings,
+        executors={StageName.PREPARACAO: executor},
+        worker_id="worker-restarted",
+    )
+    resumed.control_plane.request_resume(first.id, idempotency_key="resume-first")
+    claimed_after_resume = resumed.run_once()
     competing_claim = build_worker(
         settings, executors={}, worker_id="worker-competing"
     ).run_once()
 
     assert claimed_after_resume is not None
     assert claimed_after_resume.id == first.id
+    assert executor.calls == 1
+    resumed_stage = next(
+        stage
+        for stage in resumed.control_plane.get_run(first.id).stages
+        if stage.stage is StageName.PREPARACAO
+    )
+    assert resumed_stage.status is StageStatus.SUCCEEDED
+    future_stage = next(
+        stage
+        for stage in resumed.control_plane.get_run(first.id).stages
+        if stage.stage is StageName.PESQUISA
+    )
+    assert future_stage.status is StageStatus.PENDING
     assert competing_claim is None
     with restarted.db.connection() as conn:
         claimed_events = conn.execute(

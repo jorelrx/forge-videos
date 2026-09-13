@@ -15,6 +15,7 @@ from forge.domain.operacao import (
     RunStatus,
     StageName,
     StageRun,
+    StageStatus,
     Video,
     dependentes_de,
 )
@@ -22,7 +23,7 @@ from forge.repositories.comandos import ComandosRepository
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
-from forge.services.maquina_estados import TransicaoInvalida, mudar_run
+from forge.services.maquina_estados import TransicaoInvalida, mudar_etapa, mudar_run
 
 
 class RunDetail(BaseModel):
@@ -188,6 +189,14 @@ class ControlPlaneService:
 
             operacao = OperacaoRepository(conn)
             run = self._require_run(operacao, run_id)
+            interrupted_stage = next(
+                (
+                    stage
+                    for stage in operacao.current_stages(run_id)
+                    if stage.status is StageStatus.INTERRUPTED
+                ),
+                None,
+            )
             queued = run.model_copy(
                 update={
                     "status": mudar_run(run.status, RunStatus.QUEUED),
@@ -199,6 +208,16 @@ class ControlPlaneService:
                     "failure_message": None,
                 }
             )
+            if interrupted_stage is not None:
+                operacao.save_stage(
+                    interrupted_stage.model_copy(
+                        update={
+                            "status": mudar_etapa(
+                                interrupted_stage.status, StageStatus.PENDING
+                            )
+                        }
+                    )
+                )
             operacao.save_run(queued)
             EventosRepository(conn).append(
                 kind="run.queued",

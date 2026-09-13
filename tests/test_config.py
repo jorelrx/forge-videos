@@ -182,6 +182,16 @@ def test_worker_lease_e_heartbeat_tem_defaults_coerentes():
     assert settings.worker_heartbeat_seconds < settings.worker_lease_seconds
 
 
+def test_worker_lease_e_heartbeat_aceitam_override_por_ambiente(monkeypatch):
+    monkeypatch.setenv("FORGE_WORKER_LEASE_SECONDS", "30")
+    monkeypatch.setenv("FORGE_WORKER_HEARTBEAT_SECONDS", "7")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.worker_lease_seconds == 30
+    assert settings.worker_heartbeat_seconds == 7
+
+
 def test_worker_rejeita_heartbeat_maior_ou_igual_ao_lease():
     import pydantic
 

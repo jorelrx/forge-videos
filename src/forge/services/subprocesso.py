@@ -22,6 +22,118 @@ class EventSink(Protocol):
     def __call__(self, *, kind: str, level: str, message: str, payload: dict) -> None: ...
 
 
+class _WindowsJobObject:
+    """Best-effort Windows containment with kill-on-close semantics."""
+
+    _KILL_ON_JOB_CLOSE = 0x00002000
+    _EXTENDED_LIMIT_INFORMATION = 9
+
+    def __init__(self, kernel32: Any, handle: Any) -> None:
+        self._kernel32 = kernel32
+        self._handle = handle
+        self._closed = False
+
+    @classmethod
+    def try_create(cls, process: subprocess.Popen) -> _WindowsJobObject | None:
+        if os.name != "nt":
+            return None
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            return cls._create(process, ctypes, wintypes)
+        except Exception:  # noqa: BLE001 - unsupported job APIs use fallback
+            return None
+
+    @classmethod
+    def _create(
+        cls, process: subprocess.Popen, ctypes: Any, wintypes: Any
+    ) -> _WindowsJobObject | None:
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            return None
+        try:
+            limits = ExtendedLimitInformation()
+            limits.BasicLimitInformation.LimitFlags = cls._KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(
+                handle,
+                cls._EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(limits),
+                ctypes.sizeof(limits),
+            ):
+                kernel32.CloseHandle(handle)
+                return None
+            if not kernel32.AssignProcessToJobObject(
+                handle, wintypes.HANDLE(process._handle)
+            ):
+                kernel32.CloseHandle(handle)
+                return None
+            return cls(kernel32, handle)
+        except Exception:  # noqa: BLE001 - unsupported job APIs use fallback
+            kernel32.CloseHandle(handle)
+            return None
+
+    def terminate(self) -> None:
+        if not self._closed:
+            self._kernel32.TerminateJobObject(self._handle, 1)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._kernel32.CloseHandle(self._handle)
+            self._closed = True
+
+
 class _BoundedText:
     def __init__(self, limit: int) -> None:
         self.limit = limit
@@ -113,6 +225,8 @@ class SubprocessExecutor:
             errors="replace",
             **self._popen_kwargs(),
         )
+        process_group_id = self._capture_process_group(process)
+        windows_job = _WindowsJobObject.try_create(process)
         stderr = _BoundedText(self.stderr_limit)
         invalid = False
         reader_errors: list[Exception] = []
@@ -195,7 +309,11 @@ class SubprocessExecutor:
                 continue
 
         if timed_out or cancelled:
-            self._terminate(process)
+            self._terminate(
+                process,
+                process_group_id=process_group_id,
+                windows_job=windows_job,
+            )
             join_deadline = time.monotonic() + max(
                 1.0, self.terminate_grace_seconds
             )
@@ -214,6 +332,13 @@ class SubprocessExecutor:
                 )
         else:
             process.wait()
+            # Root exit does not imply descendant exit. Tear down the
+            # containment boundary before waiting for EOF on inherited pipes.
+            self._terminate(
+                process,
+                process_group_id=process_group_id,
+                windows_job=windows_job,
+            )
             # A normally exited process has closed both pipes. Waiting without
             # a timeout guarantees that every buffered event reaches ``emit``
             # before execute returns.
@@ -273,6 +398,17 @@ class SubprocessExecutor:
         return {"start_new_session": True}
 
     @staticmethod
+    def _capture_process_group(process: subprocess.Popen) -> int | None:
+        if os.name == "nt":
+            return None
+        # start_new_session makes the root PID the process-group ID. Keep that
+        # fallback when the root exits before getpgid can inspect it.
+        try:
+            return os.getpgid(process.pid)
+        except OSError:
+            return process.pid
+
+    @staticmethod
     def _close_pipes(process: subprocess.Popen) -> None:
         for stream in (process.stdout, process.stderr):
             if stream is None:
@@ -300,40 +436,86 @@ class SubprocessExecutor:
         return completed.returncode == 0
 
     @classmethod
-    def _signal_tree(cls, process: subprocess.Popen, *, force: bool) -> None:
+    def _signal_tree(
+        cls,
+        process: subprocess.Popen,
+        *,
+        process_group_id: int | None,
+        force: bool,
+    ) -> None:
         if os.name == "nt":
             if cls._taskkill(process, force=force):
                 return
-            (process.kill if force else process.terminate)()
+            if process.poll() is None:
+                (process.kill if force else process.terminate)()
             return
+        if process_group_id is not None:
+            try:
+                os.killpg(
+                    process_group_id,
+                    signal.SIGKILL if force else signal.SIGTERM,
+                )
+                return
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            (process.kill if force else process.terminate)()
+            if process.poll() is None:
+                (process.kill if force else process.terminate)()
+        except ProcessLookupError:
+            pass
 
-    def _terminate(self, process: subprocess.Popen) -> None:
-        if process.poll() is not None:
+    @classmethod
+    def _terminate_windows_tree(
+        cls,
+        process: subprocess.Popen,
+        windows_job: _WindowsJobObject | None,
+    ) -> None:
+        if windows_job is not None:
+            windows_job.terminate()
+            windows_job.close()
             return
+        # Explicit fallback for hosts where Job Objects cannot be assigned.
+        # It is reliable while the root is live; a dead root cannot be used by
+        # taskkill to discover descendants, so there is no silent claim here.
+        if cls._taskkill(process, force=True):
+            return
+        if process.poll() is None:
+            process.kill()
+
+    def _terminate(
+        self,
+        process: subprocess.Popen,
+        *,
+        process_group_id: int | None,
+        windows_job: _WindowsJobObject | None,
+    ) -> None:
         if os.name == "nt":
-            # Windows has no portable process-group signal equivalent. A
-            # forced taskkill with /T is the reliable tree teardown path.
-            self._signal_tree(process, force=True)
+            self._terminate_windows_tree(process, windows_job)
             try:
                 process.wait(timeout=self.terminate_grace_seconds)
             except subprocess.TimeoutExpired:
                 pass
             return
-        self._signal_tree(process, force=False)
+        self._signal_tree(
+            process, process_group_id=process_group_id, force=False
+        )
         try:
             process.wait(timeout=self.terminate_grace_seconds)
         except subprocess.TimeoutExpired:
-            self._signal_tree(process, force=True)
-            try:
-                process.wait(timeout=self.terminate_grace_seconds)
-            except subprocess.TimeoutExpired:
-                # The kill was issued; keep the stable timeout result even if
-                # the platform does not report the final return code promptly.
-                pass
+            pass
+        # Always issue the force signal after the grace period. Root may have
+        # exited while a descendant kept the process group and output pipe.
+        self._signal_tree(
+            process, process_group_id=process_group_id, force=True
+        )
+        try:
+            process.wait(timeout=self.terminate_grace_seconds)
+        except subprocess.TimeoutExpired:
+            # The kill was issued; keep the stable timeout result even if the
+            # platform does not report the final return code promptly.
+            pass
 
     @staticmethod
     def _parse_event(line: str) -> dict[str, Any] | None:

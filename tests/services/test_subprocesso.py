@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import os
 import signal
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,7 @@ from forge.domain.operacao import RunStatus, StageName, StageStatus
 from forge.repositories.connection import Database
 from forge.repositories.schema import init_db
 from forge.services.control_plane import ControlPlaneService
+import forge.services.subprocesso as subprocesso
 from forge.services.subprocesso import SubprocessExecutor
 from forge.services.worker import StudioWorker
 
@@ -62,6 +65,23 @@ def descendant_child(pid_path: str) -> list[str]:
     return [sys.executable, "-c", script]
 
 
+def root_exits_descendant_child(
+    info_path: str, release_path: str, exited_path: str
+) -> list[str]:
+    script = (
+        "import json, os, pathlib, subprocess, sys, time\n"
+        "descendant = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)'])\n"
+        f"pathlib.Path({info_path!r}).write_text(json.dumps({{'root': os.getpid(), 'descendant': descendant.pid}}))\n"
+        "print('ready', flush=True)\n"
+        f"release = pathlib.Path({release_path!r})\n"
+        "while not release.exists():\n"
+        "    time.sleep(0.001)\n"
+        f"pathlib.Path({exited_path!r}).write_text('1')\n"
+    )
+    return [sys.executable, "-c", script]
+
+
 def wait_for_pid(path, timeout: float = 3.0) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -71,21 +91,38 @@ def wait_for_pid(path, timeout: float = 3.0) -> int:
     raise AssertionError("child did not publish descendant pid")
 
 
+def wait_for_path(path: Path, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"path was not published: {path}")
+
+
 def process_exists(pid: int) -> bool:
     if os.name == "nt":
         result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}"],
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
             check=False,
         )
-        return str(pid) in result.stdout
+        return any(
+            len(row) > 1 and row[1].strip() == str(pid)
+            for row in csv.reader(result.stdout.splitlines())
+        )
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        fields_after_comm = proc_stat.read_text().rsplit(")", 1)[-1].split()
+        if fields_after_comm and fields_after_comm[0] == "Z":
+            return False
     return True
 
 
@@ -270,7 +307,7 @@ def test_cancellation_event_terminates_child_after_lease_loss():
         )
         finished.set()
 
-    thread = threading.Thread(target=run)
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
     time.sleep(0.1)
     cancelled.set()
@@ -280,6 +317,29 @@ def test_cancellation_event_terminates_child_after_lease_loss():
 
 
 def test_timeout_terminates_descendant_process(tmp_path):
+    pid_path = tmp_path / "descendant.pid"
+    descendant_pid = None
+    try:
+        result = SubprocessExecutor(
+            descendant_child(str(pid_path)), timeout_seconds=0.1
+        ).execute(None, lambda **event: None)
+        descendant_pid = wait_for_pid(pid_path)
+
+        assert result.failure_code == "subprocess_timeout"
+        assert wait_for_process_exit(descendant_pid)
+    finally:
+        if descendant_pid is not None:
+            terminate_process_tree(descendant_pid)
+
+
+def test_windows_taskkill_fallback_terminates_live_tree(monkeypatch, tmp_path):
+    if os.name != "nt":
+        pytest.skip("Windows fallback")
+    monkeypatch.setattr(
+        subprocesso._WindowsJobObject,
+        "try_create",
+        classmethod(lambda cls, process: None),
+    )
     pid_path = tmp_path / "descendant.pid"
     descendant_pid = None
     try:
@@ -310,16 +370,63 @@ def test_cancellation_terminates_descendant_process(tmp_path):
             )
         )
 
-    thread = threading.Thread(target=run)
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
     try:
         descendant_pid = wait_for_pid(pid_path)
         cancelled.set()
         thread.join(timeout=3)
 
+        assert wait_for_process_exit(descendant_pid)
         assert not thread.is_alive()
         assert result[0].failure_code == "subprocess_cancelled"
+    finally:
+        if descendant_pid is not None:
+            terminate_process_tree(descendant_pid)
+
+
+def test_cancellation_kills_descendant_after_root_exits_before_teardown(tmp_path):
+    info_path = tmp_path / "processes.json"
+    release_path = tmp_path / "release"
+    exited_path = tmp_path / "root-exited"
+    result: list = []
+    descendant_pid = None
+
+    class CancelAfterRootExit:
+        triggered = False
+
+        def is_set(self) -> bool:
+            if not self.triggered:
+                wait_for_path(info_path)
+                release_path.write_text("1")
+                wait_for_path(exited_path)
+                self.triggered = True
+            return True
+
+    def run():
+        result.append(
+            SubprocessExecutor(
+                root_exits_descendant_child(
+                    str(info_path), str(release_path), str(exited_path)
+                ),
+                timeout_seconds=10,
+            ).execute(
+                SimpleNamespace(cancel_event=CancelAfterRootExit()),
+                lambda **event: None,
+            )
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        wait_for_path(info_path)
+        info = json.loads(info_path.read_text())
+        descendant_pid = int(info["descendant"])
+        thread.join(timeout=3)
+
         assert wait_for_process_exit(descendant_pid)
+        assert not thread.is_alive()
+        assert result[0].failure_code == "subprocess_cancelled"
     finally:
         if descendant_pid is not None:
             terminate_process_tree(descendant_pid)

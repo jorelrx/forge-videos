@@ -66,4 +66,8 @@
 
 ## Handoff
 
-Marco 2 termina no worker genérico testado. Não iniciar executores reais, API/dashboard ou launcher sem nova spec/plano aprovado.
+Marco 2 termina no worker genérico testado. A reconciliação de artefatos (hash,
+arquivos ausentes e órfãos) fica explicitamente adiada para o marco dos
+executores, que terá validadores de artefato; este marco genérico não possui
+esses validadores. Não iniciar reconciliação ampla de mídia, executores reais,
+API/dashboard ou launcher sem nova spec/plano aprovado.

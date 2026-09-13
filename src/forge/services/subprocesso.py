@@ -1,6 +1,6 @@
 """Executor adapter for trusted JSONL subprocesses.
 
-The child process communicates structured progress on stdout.  stderr is
+The child process communicates structured progress on stdout. stderr is
 diagnostic only and is never parsed as an event.
 """
 
@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
 from threading import Thread
 from typing import Any, Protocol
 
@@ -36,21 +37,70 @@ class _BoundedText:
         return "".join(self._chunks)
 
 
-class SubprocessExecutor:
-    """Run an argv without a shell and translate its JSONL output to events."""
+def _bounded_lines(
+    stream, limit: int
+) -> Iterator[tuple[str, bool]]:
+    """Yield lines while retaining at most ``limit`` characters per line."""
 
-    def __init__(self, argv: Sequence[str], *, stderr_limit: int = 4096) -> None:
+    while True:
+        parts: list[str] = []
+        size = 0
+        truncated = False
+        while True:
+            # A bounded readline returns as soon as a child flushes a short
+            # line, while still preventing an unterminated line from growing
+            # our retained buffer without limit.
+            chunk = stream.readline(limit + 1)
+            if chunk == "":
+                if parts or truncated:
+                    yield "".join(parts), truncated
+                return
+            has_newline = chunk.endswith("\n")
+            body = chunk[:-1] if has_newline else chunk
+            if has_newline and body.endswith("\r"):
+                body = body[:-1]
+            remaining = limit - size
+            if remaining > 0:
+                parts.append(body[:remaining])
+                size += min(len(body), remaining)
+            if len(body) > max(remaining, 0):
+                truncated = True
+            if has_newline:
+                yield "".join(parts), truncated
+                break
+
+
+class SubprocessExecutor:
+    """Run an argv without a shell and translate its bounded JSONL output."""
+
+    def __init__(
+        self,
+        argv: Sequence[str],
+        *,
+        stderr_limit: int = 4096,
+        timeout_seconds: float = 300.0,
+        stdout_line_limit: int = 64 * 1024,
+        terminate_grace_seconds: float = 0.5,
+    ) -> None:
         if isinstance(argv, (str, bytes)) or not argv:
             raise ValueError("argv must not be empty")
         if any(not isinstance(part, str) or not part for part in argv):
             raise ValueError("argv entries must be non-empty strings")
         if stderr_limit < 0:
             raise ValueError("stderr_limit must be non-negative")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if stdout_line_limit <= 0:
+            raise ValueError("stdout_line_limit must be positive")
+        if terminate_grace_seconds <= 0:
+            raise ValueError("terminate_grace_seconds must be positive")
         self.argv = tuple(argv)
         self.stderr_limit = stderr_limit
+        self.timeout_seconds = timeout_seconds
+        self.stdout_line_limit = stdout_line_limit
+        self.terminate_grace_seconds = terminate_grace_seconds
 
     def execute(self, context: Any, emit: EventSink) -> StageResult:
-        del context
         process = subprocess.Popen(
             self.argv,
             shell=False,
@@ -63,31 +113,40 @@ class SubprocessExecutor:
         stderr = _BoundedText(self.stderr_limit)
         invalid = False
         reader_errors: list[Exception] = []
+        cancel_event = getattr(context, "cancel_event", None)
 
         def remember_error(error: Exception) -> None:
             if not reader_errors:
                 reader_errors.append(error)
 
+        def invalid_event(line: str, truncated: bool) -> None:
+            payload: dict[str, object] = {"line": line}
+            if truncated:
+                payload["truncated"] = True
+            emit(
+                kind="worker.invalid_event",
+                level="error",
+                message="Evento JSONL inválido",
+                payload=payload,
+            )
+
         def read_stdout() -> None:
             nonlocal invalid
             assert process.stdout is not None
             try:
-                for raw_line in process.stdout:
-                    try:
-                        line = raw_line.rstrip("\r\n")
-                        event = self._parse_event(line)
-                        if event is None:
-                            invalid = True
-                            emit(
-                                kind="worker.invalid_event",
-                                level="error",
-                                message="Evento JSONL inválido",
-                                payload={"line": line},
-                            )
-                        else:
-                            emit(**event)
-                    except Exception as error:  # noqa: BLE001 - keep draining stdout
-                        remember_error(error)
+                for line, truncated in _bounded_lines(
+                    process.stdout, self.stdout_line_limit
+                ):
+                    if truncated:
+                        invalid = True
+                        invalid_event(line, True)
+                        continue
+                    event = self._parse_event(line)
+                    if event is None:
+                        invalid = True
+                        invalid_event(line, False)
+                    else:
+                        emit(**event)
             except Exception as error:  # noqa: BLE001 - propagate after draining pipes
                 remember_error(error)
             finally:
@@ -99,7 +158,7 @@ class SubprocessExecutor:
                 for chunk in iter(lambda: process.stderr.read(8192), ""):
                     stderr.append(chunk)
             except Exception as error:  # noqa: BLE001 - propagate after draining pipes
-                reader_errors.append(error)
+                remember_error(error)
             finally:
                 process.stderr.close()
 
@@ -107,12 +166,54 @@ class SubprocessExecutor:
         stderr_thread = Thread(target=read_stderr, daemon=True)
         stdout_thread.start()
         stderr_thread.start()
-        process.wait()
-        stdout_thread.join()
-        stderr_thread.join()
+
+        timed_out = False
+        cancelled = False
+        deadline = time.monotonic() + self.timeout_seconds
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                process.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+
+        if timed_out or cancelled:
+            self._terminate(process)
+        else:
+            process.wait()
+        stdout_thread.join(timeout=max(1.0, self.terminate_grace_seconds))
+        stderr_thread.join(timeout=max(1.0, self.terminate_grace_seconds))
         if reader_errors:
             raise reader_errors[0]
 
+        if timed_out:
+            emit(
+                kind="subprocess_timeout",
+                level="error",
+                message="Subprocesso excedeu o prazo",
+                payload={"timeout_seconds": self.timeout_seconds},
+            )
+            return StageResult(
+                failure_code="subprocess_timeout",
+                failure_message="Subprocesso excedeu o prazo",
+            )
+        if cancelled:
+            emit(
+                kind="subprocess_cancelled",
+                level="warning",
+                message="Subprocesso cancelado após perda de lease",
+                payload={},
+            )
+            return StageResult(
+                failure_code="subprocess_cancelled",
+                failure_message="Subprocesso cancelado",
+            )
         if process.returncode != 0:
             emit(
                 kind="subprocess_failed",
@@ -133,6 +234,21 @@ class SubprocessExecutor:
                 failure_message="Subprocesso emitiu evento JSONL inválido",
             )
         return StageResult(gate_status="approved")
+
+    def _terminate(self, process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=self.terminate_grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=self.terminate_grace_seconds)
+            except subprocess.TimeoutExpired:
+                # The kill was issued; keep the stable timeout result even if
+                # the platform does not report the final return code promptly.
+                pass
 
     @staticmethod
     def _parse_event(line: str) -> dict[str, Any] | None:

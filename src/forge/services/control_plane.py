@@ -189,11 +189,16 @@ class ControlPlaneService:
 
             operacao = OperacaoRepository(conn)
             run = self._require_run(operacao, run_id)
-            interrupted_stage = next(
+            resumable_stage = next(
                 (
                     stage
                     for stage in operacao.current_stages(run_id)
-                    if stage.status is StageStatus.INTERRUPTED
+                    if stage.status
+                    in {
+                        StageStatus.PAUSED,
+                        StageStatus.FAILED,
+                        StageStatus.INTERRUPTED,
+                    }
                 ),
                 None,
             )
@@ -208,13 +213,21 @@ class ControlPlaneService:
                     "failure_message": None,
                 }
             )
-            if interrupted_stage is not None:
+            if resumable_stage is not None:
                 operacao.save_stage(
-                    interrupted_stage.model_copy(
+                    resumable_stage.model_copy(
                         update={
                             "status": mudar_etapa(
-                                interrupted_stage.status, StageStatus.PENDING
-                            )
+                                resumable_stage.status, StageStatus.PENDING
+                            ),
+                            "current_items": 0,
+                            "total_items": 0,
+                            "progress": 0,
+                            "gate_status": None,
+                            "started_at": None,
+                            "finished_at": None,
+                            "failure_code": None,
+                            "failure_message": None,
                         }
                     )
                 )

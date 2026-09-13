@@ -23,11 +23,13 @@ _ACTIVE_RUN_STATUSES = (
     RunStatus.PAUSING,
     RunStatus.VALIDATING,
 )
-_CURRENT_STAGE_STATUS = {
-    RunStatus.PREPARING: StageStatus.PENDING,
-    RunStatus.RUNNING: StageStatus.RUNNING,
-    RunStatus.PAUSING: StageStatus.PAUSING,
-    RunStatus.VALIDATING: StageStatus.RUNNING,
+_CURRENT_STAGE_STATUSES = {
+    RunStatus.PREPARING: frozenset({StageStatus.PENDING}),
+    RunStatus.RUNNING: frozenset({StageStatus.RUNNING, StageStatus.PAUSING}),
+    RunStatus.PAUSING: frozenset(
+        {StageStatus.PENDING, StageStatus.RUNNING, StageStatus.PAUSING}
+    ),
+    RunStatus.VALIDATING: frozenset({StageStatus.RUNNING, StageStatus.PAUSING}),
 }
 
 
@@ -248,12 +250,12 @@ class OperacaoRepository:
 
         stage_ids = []
         for row in rows:
-            expected_status = _CURRENT_STAGE_STATUS[RunStatus(row["status"])]
+            expected_statuses = _CURRENT_STAGE_STATUSES[RunStatus(row["status"])]
             current_stage = next(
                 (
                     stage
                     for stage in self.current_stages(row["id"])
-                    if stage.status is expected_status
+                    if stage.status in expected_statuses
                 ),
                 None,
             )

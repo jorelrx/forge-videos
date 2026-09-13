@@ -7,6 +7,7 @@ import pytest
 from forge.domain.operacao import CommandStatus, RunStatus, StageName, StageStatus
 from forge.repositories.comandos import ComandosRepository
 from forge.repositories.connection import Database
+from forge.repositories.operacao import OperacaoRepository
 from forge.repositories.schema import init_db
 from forge.services.control_plane import ControlPlaneService
 from forge.services.worker import LeaseHeartbeat, StageResult, StudioWorker
@@ -436,4 +437,71 @@ def test_run_once_applies_accepted_pause_only_after_executor_returns(db, control
         "stage.started",
         "command.pause_requested",
         "run.paused",
+    ]
+
+
+class LeaseLossWaitingExecutor:
+    def __init__(self, db) -> None:
+        self.db = db
+        self.cancel_seen = False
+
+    def execute(self, context, emit):
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE runs SET lease_owner = ? WHERE id = ?",
+                ("worker-b", context.run.id),
+            )
+        self.cancel_seen = context.cancel_event.wait(timeout=1)
+        return StageResult(current_items=1, total_items=1)
+
+
+def test_worker_fences_executor_when_lease_ownership_is_lost(db, control_plane):
+    run = enqueue(control_plane)
+    executor = LeaseLossWaitingExecutor(db)
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        heartbeat_seconds=0.01,
+        executors={StageName.PREPARACAO: executor},
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    assert executor.cancel_seen is True
+    assert control_plane.get_run(run.id).run.status is RunStatus.RUNNING
+    assert stage_for(control_plane, run.id, StageName.PREPARACAO).status is StageStatus.RUNNING
+
+
+def test_successful_final_validation_completes_run_and_emits_terminal_events(db, control_plane):
+    run = enqueue(control_plane)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        for stage in repo.current_stages(run.id):
+            if stage.stage is not StageName.VALIDACAO:
+                repo.save_stage(stage.model_copy(update={"status": StageStatus.SUCCEEDED}))
+
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.VALIDACAO: FakeExecutor(StageResult(gate_status="approved"))},
+        now=lambda: FIXED_NOW,
+    )
+
+    processed = worker.run_once()
+
+    assert processed is not None
+    assert processed.status is RunStatus.COMPLETED
+    detail = control_plane.get_run(run.id)
+    assert detail.run.status is RunStatus.COMPLETED
+    assert detail.run.finished_at == FIXED_NOW
+    assert detail.run.lease_owner is None
+    assert detail.run.lease_expires_at is None
+    assert stage_for(control_plane, run.id, StageName.VALIDACAO).status is StageStatus.SUCCEEDED
+    assert [event.kind for event in control_plane.events_after(0, run_id=run.id)][-3:] == [
+        "stage.succeeded",
+        "run.validating",
+        "run.completed",
     ]

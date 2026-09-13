@@ -332,6 +332,77 @@ def test_resume_requeues_clears_fields_and_duplicate_wins(control_plane, db, sta
     ]
 
 
+@pytest.mark.parametrize("status", [RunStatus.PAUSED, RunStatus.FAILED])
+def test_resume_requeues_current_paused_or_failed_stage_without_touching_future_or_history(
+    control_plane, db, status
+):
+    _, run = enqueue(control_plane)
+    current = stage_for(db, run.id, StageName.PREPARACAO)
+    future = stage_for(db, run.id, StageName.PESQUISA)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        repo.save_run(repo.get_run(run.id).model_copy(update={"status": status}))
+        repo.save_stage(
+            current.model_copy(
+                update={
+                    "status": StageStatus.PAUSED if status is RunStatus.PAUSED else StageStatus.FAILED,
+                    "current_items": 2,
+                    "total_items": 4,
+                    "progress": 0.5,
+                    "started_at": FIXED_NOW,
+                    "finished_at": FIXED_NOW,
+                    "failure_code": "boom" if status is RunStatus.FAILED else None,
+                    "failure_message": "falhou" if status is RunStatus.FAILED else None,
+                }
+            )
+        )
+
+    control_plane.request_resume(run.id, idempotency_key=f"resume-current-{status.value}")
+
+    resumed_current = stage_for(db, run.id, StageName.PREPARACAO)
+    resumed_future = stage_for(db, run.id, StageName.PESQUISA)
+    with db.connection() as conn:
+        history_count = conn.execute(
+            "SELECT COUNT(*) FROM stage_runs WHERE run_id = ? AND stage = ?",
+            (run.id, StageName.PREPARACAO.value),
+        ).fetchone()[0]
+    assert resumed_current.status is StageStatus.PENDING
+    assert resumed_current.current_items == 0
+    assert resumed_current.total_items == 0
+    assert resumed_current.progress == 0
+    assert resumed_current.started_at is None
+    assert resumed_current.finished_at is None
+    assert resumed_current.failure_code is None
+    assert resumed_current.failure_message is None
+    assert resumed_future == future
+    assert history_count == 1
+
+
+def test_interrupting_expired_pausing_run_interrupts_its_running_stage_and_resume_requeues_it(
+    control_plane, db
+):
+    _, run = enqueue(control_plane)
+    claimed = control_plane.claim_next("worker-a", lease_seconds=45)
+    assert claimed is not None
+    control_plane.request_pause(run.id, idempotency_key="pause-in-flight")
+    current = stage_for(db, run.id, StageName.PREPARACAO)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        repo.save_stage(current.model_copy(update={"status": StageStatus.RUNNING}))
+        conn.execute(
+            "UPDATE runs SET lease_expires_at = ? WHERE id = ?",
+            ((FIXED_NOW - timedelta(seconds=1)).isoformat(), run.id),
+        )
+
+    control_plane.interrupt_expired()
+
+    interrupted = control_plane.get_run(run.id)
+    assert interrupted.run.status is RunStatus.INTERRUPTED
+    assert stage_for(db, run.id, StageName.PREPARACAO).status is StageStatus.INTERRUPTED
+    control_plane.request_resume(run.id, idempotency_key="resume-in-flight")
+    assert stage_for(db, run.id, StageName.PREPARACAO).status is StageStatus.PENDING
+
+
 def test_resume_invalid_transition_rolls_back_command_and_side_effects(control_plane, db):
     _, run = enqueue(control_plane)
     save_run_status(db, run.id, RunStatus.RUNNING, lease_owner="worker-a")

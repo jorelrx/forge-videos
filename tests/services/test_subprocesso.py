@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,6 +124,51 @@ def test_nonzero_exit_emits_bounded_stderr_and_fails():
     assert events[0]["kind"] == "subprocess_failed"
     assert events[0]["payload"] == {"exit_code": 3, "stderr": "x" * 16}
     assert result.failure_code == "subprocess_failed"
+
+
+def test_timeout_terminates_child_and_returns_stable_failure():
+    started = time.monotonic()
+    events: list[dict] = []
+    result = SubprocessExecutor(
+        slow_child("ready", delay_seconds=5), timeout_seconds=0.1
+    ).execute(None, lambda **event: events.append(event))
+
+    assert time.monotonic() - started < 2
+    assert result.failure_code == "subprocess_timeout"
+    assert events[-1]["kind"] == "subprocess_timeout"
+
+
+def test_cancellation_event_terminates_child_after_lease_loss():
+    cancelled = threading.Event()
+    finished = threading.Event()
+    result: list = []
+
+    def run():
+        result.append(
+            SubprocessExecutor(slow_child("ready", delay_seconds=5), timeout_seconds=10).execute(
+                SimpleNamespace(cancel_event=cancelled), lambda **event: None
+            )
+        )
+        finished.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    time.sleep(0.1)
+    cancelled.set()
+    assert finished.wait(timeout=2)
+    thread.join(timeout=1)
+    assert result[0].failure_code == "subprocess_cancelled"
+
+
+def test_oversized_invalid_stdout_line_is_bounded_in_event_payload():
+    events: list[dict] = []
+    result = SubprocessExecutor(
+        child("x" * 100), stdout_line_limit=16
+    ).execute(None, lambda **event: events.append(event))
+
+    assert result.failure_code == "invalid_event"
+    assert len(events[0]["payload"]["line"]) <= 16
+    assert events[0]["payload"]["truncated"] is True
 
 
 def test_empty_argv_is_rejected():

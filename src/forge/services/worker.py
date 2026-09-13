@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from threading import Event, Thread
 from typing import Protocol
 
 from forge.domain.operacao import (
+    JSON_OBJECT,
     Command,
     CommandStatus,
     CommandType,
-    JSON_OBJECT,
     Run,
     RunStatus,
     StageName,
@@ -19,8 +19,8 @@ from forge.domain.operacao import (
     StageRun,
     StageStatus,
 )
-from forge.repositories.connection import Database
 from forge.repositories.comandos import ComandosRepository
+from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
 from forge.services.control_plane import ControlPlaneService
@@ -31,6 +31,7 @@ from forge.services.maquina_estados import mudar_etapa, mudar_run
 class StageContext:
     run: Run
     stage_run: StageRun
+    cancel_event: Event | None = None
 
 
 class EventSink(Protocol):
@@ -76,7 +77,7 @@ class LeaseHeartbeat:
         return True
 
     @contextmanager
-    def daemon(self, *, interval_seconds: float) -> Iterator["LeaseHeartbeat"]:
+    def daemon(self, *, interval_seconds: float) -> Iterator[LeaseHeartbeat]:
         daemon = LeaseHeartbeatDaemon(self, interval_seconds=interval_seconds)
         daemon.start()
         try:
@@ -164,6 +165,7 @@ class StudioWorker:
             worker_id=self.worker_id,
             lease_seconds=self.lease_seconds,
         )
+        context = replace(context, cancel_event=heartbeat.ownership_lost)
         if not heartbeat.tick():
             return self._run_after_ownership_loss(context.run.id)
         try:
@@ -397,6 +399,42 @@ class StudioWorker:
                 run_id=context.run.id,
                 stage_run_id=context.stage_run.id,
             )
+            if not result.failed and stage.stage is StageName.VALIDACAO:
+                validating_run = operacao.save_run(
+                    run.model_copy(
+                        update={
+                            "status": mudar_run(run.status, RunStatus.VALIDATING),
+                        }
+                    )
+                )
+                EventosRepository(conn).append(
+                    kind="run.validating",
+                    level="info",
+                    message="Run em validação final",
+                    payload={},
+                    run_id=context.run.id,
+                    stage_run_id=context.stage_run.id,
+                )
+                finished_run = operacao.save_run(
+                    validating_run.model_copy(
+                        update={
+                            "status": mudar_run(
+                                validating_run.status, RunStatus.COMPLETED
+                            ),
+                            "finished_at": now,
+                            "lease_owner": None,
+                            "lease_expires_at": None,
+                        }
+                    )
+                )
+                EventosRepository(conn).append(
+                    kind="run.completed",
+                    level="info",
+                    message="Run concluída",
+                    payload={},
+                    run_id=context.run.id,
+                    stage_run_id=context.stage_run.id,
+                )
             return finished_run
 
     def _run_after_ownership_loss(self, run_id: str) -> Run | None:

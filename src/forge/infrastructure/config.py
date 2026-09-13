@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     model: str | None = None
     effort: str = "high"
     output_dir: Path = Path("output/roteiros")
+    studio_runs_dir: Path = Path("output/runs")
     studio_db_path: Path = Path("data/forge.db")
     worker_lease_seconds: int = Field(default=15, gt=0)
     worker_heartbeat_seconds: int = Field(default=5, gt=0)
@@ -61,6 +62,7 @@ class Settings(BaseSettings):
     acervo_url: str = "http://127.0.0.1:8000"
     acervo_top: int = 8
     acervo_timeout: float = 30.0
+    research_min_sources: int = Field(default=3, gt=0)
     # O juiz custa uma chamada de LLM por passagem de pesquisa (~3 min nesta
     # máquina). Desligar troca a detecção de lacuna por velocidade.
     juiz_relevancia: bool = True

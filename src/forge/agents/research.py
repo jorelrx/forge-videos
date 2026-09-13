@@ -10,6 +10,7 @@ referências de memória.
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from forge.domain.models import Fonte, VeredictoRelevancia
 from forge.infrastructure.logging import get_logger
@@ -49,6 +50,38 @@ _MOTIVO_BUSCA_VAZIA = "a busca não retornou nenhuma passagem para esta query"
 POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ = 12
 
 
+class PassageEvidence(BaseModel):
+    """Evidence returned by the acervo, kept separate from model prose."""
+
+    path: str
+    book_id: int | None = None
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    text: str
+
+
+class ResearchBundle(BaseModel):
+    """Typed research result with the raw passages used by the stage gate.
+
+    ``pesquisar`` historically returned ``(brief, fontes, raw_markdown)``.
+    Iteration preserves that small public contract for the graph and older
+    callers while exposing the evidence needed by Studio executors.
+    """
+
+    brief: str
+    fontes: list[Fonte]
+    raw_markdown: str
+    passages: list[PassageEvidence]
+    passage_count: int
+    canonical_paths: list[str]
+    unanswered_queries: list[str] = Field(default_factory=list)
+
+    def __iter__(self):
+        yield self.brief
+        yield self.fontes
+        yield self.raw_markdown
+
+
 def pesquisar(
     model,
     tema: str,
@@ -58,7 +91,7 @@ def pesquisar(
     top: int | None = None,
     settings=None,
     run_dir=None,
-) -> tuple[str, list[Fonte], str]:
+) -> ResearchBundle:
     progresso = ProgressoLogger(run_dir) if run_dir else None
 
     queries = formular_queries(model, tema, pedido)
@@ -115,7 +148,10 @@ def pesquisar(
         if progresso:
             progresso.log("research", "lacuna_detectada",
                           metadados={"candidatos": len(candidatos)})
-        return _brief_lacuna(tema, candidatos), [], bruto
+        return _bundle(
+            _brief_lacuna(tema, candidatos), [], bruto, passagens,
+            unanswered_queries=list(por_query),
+        )
 
     brief = _sintetizar(model, tema, pedido, passagens)
     if progresso:
@@ -123,7 +159,13 @@ def pesquisar(
                       resultado=brief,
                       metadados={"passagens_usadas": len(passagens)})
     logger.info("Research completed", queries=len(queries), passagens=len(passagens))
-    return brief, _fontes(passagens), bruto
+    return _bundle(
+        brief,
+        _fontes(passagens),
+        bruto,
+        passagens,
+        unanswered_queries=_unanswered_queries(por_query, passagens),
+    )
 
 
 def _julgar_e_registrar(
@@ -382,6 +424,52 @@ def _fontes(passagens: list[Passagem]) -> list[Fonte]:
         )
         for p in passagens
     ]
+
+
+def _unanswered_queries(
+    por_query: dict[str, list[Passagem]], passagens: list[Passagem]
+) -> list[str]:
+    """Return queries with no accepted canonical evidence.
+
+    Query attribution is intentionally approximate: a fused passage can answer
+    more than one query. A missing path never counts as accepted evidence.
+    """
+    accepted = {p.path for p in passagens if p.path}
+    return [
+        query
+        for query, candidates in por_query.items()
+        if not candidates or not any(p.path in accepted for p in candidates)
+    ]
+
+
+def _bundle(
+    brief: str,
+    fontes: list[Fonte],
+    raw_markdown: str,
+    passagens: list[Passagem],
+    *,
+    unanswered_queries: list[str],
+) -> ResearchBundle:
+    evidence = [
+        PassageEvidence(
+            path=p.path or "",
+            book_id=p.book_id,
+            title=p.book_title,
+            authors=list(p.authors),
+            text=p.text,
+        )
+        for p in passagens
+    ]
+    canonical_paths = list(dict.fromkeys(item.path for item in evidence if item.path))
+    return ResearchBundle(
+        brief=brief,
+        fontes=fontes,
+        raw_markdown=raw_markdown,
+        passages=evidence,
+        passage_count=len(evidence),
+        canonical_paths=canonical_paths,
+        unanswered_queries=list(dict.fromkeys(unanswered_queries)),
+    )
 
 
 def _brief_lacuna(tema: str, candidatos: list[Candidato]) -> str:

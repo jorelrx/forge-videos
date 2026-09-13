@@ -63,6 +63,22 @@ def test_pesquisar_devolve_brief_e_fontes_estruturadas(scripted, acervo_fake):
     assert "4363/ch2/p7" in bruto
 
 
+def test_pesquisar_expoe_bundle_de_evidencias_sem_quebrar_unpack(scripted, acervo_fake):
+    from forge.agents.research import ResearchBundle
+
+    acervo = acervo_fake(por_query={"vontade": [_passagem("p1", 0.81)]})
+    model = scripted(invoke_texts=["vontade", "notas densas"])
+
+    bundle = pesquisar(model, "vontade de potência", acervo)
+    brief, fontes, bruto = bundle
+
+    assert isinstance(bundle, ResearchBundle)
+    assert bundle.passages[0].path == "p1"
+    assert bundle.canonical_paths == ["p1"]
+    assert bundle.passage_count == 1
+    assert (brief, fontes, bruto) == (bundle.brief, bundle.fontes, bundle.raw_markdown)
+
+
 def test_pesquisar_sem_passagens_relata_lacuna_e_nao_chama_o_modelo(scripted, acervo_fake):
     from forge.services.acervo import Candidato
 

@@ -13,6 +13,13 @@ def test_defaults():
     assert s.output_dir == Path("output/roteiros")
 
 
+def test_studio_executor_defaults_are_canonical():
+    s = Settings(_env_file=None)
+
+    assert s.studio_runs_dir == Path("output/runs")
+    assert s.research_min_sources == 3
+
+
 def test_env_prefix(monkeypatch):
     monkeypatch.setenv("FORGE_MODEL", "claude-sonnet-5")
     monkeypatch.setenv("FORGE_MAX_REVIEW_ROUNDS", "3")

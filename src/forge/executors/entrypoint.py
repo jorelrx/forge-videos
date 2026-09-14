@@ -76,6 +76,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # O log vai para stderr: o stdout DESTE processo é o canal do protocolo
+    # JSONL lido pelo pai, e qualquer linha não-JSON ali derruba a etapa.
+    # A configuração vive no guard de módulo, e não em `main()`, porque os
+    # testes chamam `main()` no próprio processo do pytest — reconfigurar o
+    # structlog global ali vazaria para o resto da sessão.
+    from forge.infrastructure.logging import setup_child_logging
+
+    setup_child_logging()
     raise SystemExit(main())
 
 

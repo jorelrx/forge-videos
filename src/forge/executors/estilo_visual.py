@@ -11,6 +11,10 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from forge.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
+
 # Sufixo aplicado a TODA imagem. Não há "starfield" aqui de propósito: com o
 # campo estelar no style token, ele vazava para cenas internas — pontos brancos
 # sobre paredes sólidas. O cosmos entra pela CENA; o estilo carrega luz, paleta
@@ -123,10 +127,13 @@ def loras_disponiveis(lora_dir: Path) -> list[dict]:
         if inspecao.compatible_sdxl:
             compativeis.append(lora)
         else:
-            logger_msg = inspecao.error or (
-                f"chaves={inspecao.keys}, maior_dim={inspecao.max_dim}"
+            # Logger, não print: stdout do executor carrega o protocolo JSONL.
+            logger.warning(
+                "LoRA ignorada",
+                lora=lora["nome"],
+                motivo=inspecao.error
+                or f"chaves={inspecao.keys}, maior_dim={inspecao.max_dim}",
             )
-            print(f"  [estilo] LoRA ignorada: {lora['nome']} ({logger_msg})")
     return compativeis
 
 

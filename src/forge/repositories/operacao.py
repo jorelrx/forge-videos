@@ -125,10 +125,12 @@ class OperacaoRepository:
         tese: str | None,
         config_snapshot: dict,
         git_commit: str,
+        run_id: str | None = None,
+        video_id: str | None = None,
     ) -> tuple[Video, Run]:
         now = _now()
         video = Video(
-            id=str(uuid.uuid4()),
+            id=video_id or str(uuid.uuid4()),
             tema=tema,
             tese=tese,
             created_at=now,
@@ -138,7 +140,7 @@ class OperacaoRepository:
             "SELECT COALESCE(MAX(queue_position), 0) + 1 FROM runs"
         ).fetchone()[0]
         run = Run(
-            id=str(uuid.uuid4()),
+            id=run_id or str(uuid.uuid4()),
             video_id=video.id,
             status=RunStatus.COMPLETED,
             priority=0,

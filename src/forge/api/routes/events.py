@@ -1,19 +1,118 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
 
-from forge.api.sse import iter_sse_events, ServerSentEvent
+from fastapi import APIRouter, HTTPException, Request, Header
+from fastapi.responses import StreamingResponse
+
 from forge.api.contracts import EventPage
+from forge.api.errors import not_found
+from forge.api.sse import ServerSentEvent
+from forge.services.studio_query import StudioQueryService
 
 events_router = APIRouter()
 
 
+def _queries(request: Request) -> StudioQueryService:
+    return request.app.state.services.queries
+
+
+# ---------------------------------------------------------------------------
+# GET /api/runs/{run_id}/events
+# ---------------------------------------------------------------------------
+
+
 @events_router.get("/runs/{run_id}/events")
-async def event_history(run_id: str, limit: int = 100, before_id: int | None = None) -> EventPage:
-    return EventPage(items=[], next_before_id=None)
+async def event_history(
+    run_id: str,
+    request: Request,
+    limit: int = 100,
+    before_id: int | None = None,
+) -> EventPage:
+    try:
+        page = _queries(request).list_events(run_id, before_id=before_id, limit=limit)
+    except KeyError:
+        not_found("run", run_id)
+    return EventPage(items=page.items, next_before_id=page.next_before_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/events/stream  (SSE)
+# ---------------------------------------------------------------------------
+
+
+_ENCODE = "utf-8"
+
+
+def _encode_event(event: ServerSentEvent) -> bytes:
+    parts: list[str] = []
+    if event.id is not None:
+        parts.append(f"id: {event.id}")
+    if event.retry is not None:
+        parts.append(f"retry: {event.retry}")
+    if event.data is not None:
+        parts.append(f"data: {event.data}")
+    if event.comment is not None:
+        parts.append(f": {event.comment}")
+    body = "\n".join(parts) + "\n\n"
+    return body.encode(_ENCODE)
+
+
+async def _sse_body(request: Request, last_event_id: int, run_id: str | None):
+    services = request.app.state.services
+    cursor = last_event_id
+    idle_for = 0.0
+    poll_seconds = services.settings.studio_sse_poll_seconds
+    keepalive_seconds = services.settings.studio_sse_keepalive_seconds
+
+    while True:
+        events = await asyncio.to_thread(
+            services.queries.events_after,
+            cursor,
+            run_id=run_id,
+            limit=200,
+        )
+        if events:
+            for event in events:
+                if event.id <= cursor:
+                    continue
+                cursor = event.id
+                yield _encode_event(
+                    ServerSentEvent(
+                        id=str(event.id),
+                        retry=1500,
+                        data={"kind": event.kind, "message": event.message},
+                    )
+                )
+            idle_for = 0.0
+            continue
+
+        await asyncio.sleep(poll_seconds)
+        idle_for += poll_seconds
+        if idle_for >= keepalive_seconds:
+            idle_for = 0.0
+            yield _encode_event(ServerSentEvent(comment="keep-alive"))
 
 
 @events_router.get("/events/stream")
-async def events_stream(last_event_id: int = 0, run_id: str | None = None):
-    # SSE stream stub — real stream uses iter_sse_events with EventSourceResponse
-    return {"cursor": last_event_id}
+async def events_stream(
+    request: Request,
+    last_event_id: int = 0,
+    run_id: str | None = None,
+    last_event_id_header: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    cursor = last_event_id
+    if last_event_id_header is not None:
+        try:
+            cursor = int(last_event_id_header)
+        except ValueError:
+            cursor = 0
+    return StreamingResponse(
+        _sse_body(request, cursor, run_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

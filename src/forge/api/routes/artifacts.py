@@ -5,7 +5,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
+from forge.api.contracts import ArtifactListItem
+from forge.api.errors import not_found
 from forge.api.ranges import parse_range, RangeNotSatisfiable, iter_file_range
+from forge.services.studio_query import StudioQueryService
 
 artifacts_router = APIRouter()
 
@@ -20,6 +23,10 @@ PREVIEW_MIME = frozenset({
 })
 
 
+def _queries(request: Request) -> StudioQueryService:
+    return request.app.state.services.queries
+
+
 def _resolve_artifact_path(settings, artifact) -> Path:
     from forge.infrastructure.config import get_settings
     s = settings if settings is not None else get_settings()
@@ -32,8 +39,12 @@ def _resolve_artifact_path(settings, artifact) -> Path:
 
 
 @artifacts_router.get("/runs/{run_id}/artifacts")
-async def list_artifacts(run_id: str) -> list:
-    return []
+async def list_artifacts(run_id: str, request: Request) -> list[ArtifactListItem]:
+    try:
+        items = _queries(request).list_artifacts(run_id, current_only=True)
+    except KeyError:
+        not_found("run", run_id)
+    return [ArtifactListItem(**item.model_dump()) for item in items]
 
 
 @artifacts_router.get("/artifacts/{artifact_id}/content")
@@ -46,21 +57,16 @@ async def artifact_content(artifact_id: str, request: Request):
     ):
         raise HTTPException(status_code=400, detail="invalid artifact id")
 
-    from forge.infrastructure.config import get_settings
-    settings = get_settings()
     try:
-        from forge.services.studio_query import StudioQueryService
-        from forge.repositories.connection import Database
-        db = Database(str(settings.studio_db_path))
-        queries = StudioQueryService(db)
-        artifact = queries.get_artifact(artifact_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        artifact = _queries(request).get_artifact(artifact_id)
+    except KeyError:
+        not_found("artifact", artifact_id)
 
     mime = artifact.mime_type
     if mime not in PREVIEW_MIME:
         raise HTTPException(status_code=415, detail="unsupported mime type")
 
+    settings = request.app.state.services.settings
     path = _resolve_artifact_path(settings, artifact)
     size = path.stat().st_size
 

@@ -274,3 +274,32 @@ def test_studio_worker_poll_seconds_deve_ser_positivo() -> None:
 
     with pytest.raises(pydantic.ValidationError):
         Settings(_env_file=None, studio_worker_poll_seconds=0)
+
+
+def test_prazo_das_etapas_com_llm_cobre_inferencia_local():
+    """Medido: a pesquisa passou de 10 min com o gemma-4-e4b. Um teto de 600 s
+    matava a etapa antes de ela terminar (subprocess_timeout num run real)."""
+    s = Settings(_env_file=None)
+    from forge.domain.operacao import StageName
+
+    assert s.stage_timeout(StageName.PESQUISA) >= 1800
+    assert s.stage_timeout(StageName.ROTEIRO) >= 3600
+    assert s.stage_timeout(StageName.PLANO_MIDIA) >= 1800
+    assert s.stage_timeout(StageName.PREPARACAO) == 120
+
+
+def test_multiplicador_de_prazo_escala_todas_as_etapas():
+    base = Settings(_env_file=None)
+    lento = Settings(_env_file=None, local_stage_timeout_multiplier=2.5)
+    from forge.domain.operacao import ETAPAS
+
+    for etapa in ETAPAS:
+        assert lento.stage_timeout(etapa) == base.stage_timeout(etapa) * 2.5
+
+
+def test_multiplicador_de_prazo_recusa_valor_nao_positivo():
+    import pydantic
+    import pytest
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, local_stage_timeout_multiplier=0)

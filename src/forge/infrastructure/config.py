@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_review_rounds: int = 8
     max_passos: int = 20
+    # Multiplicador do prazo por etapa. Existe para modelo local mais lento que
+    # o gemma-4-e4b, sem precisar editar a tabela em `stage_timeout`.
+    local_stage_timeout_multiplier: float = Field(default=1.0, gt=0)
     # gt=0: propor_beats divide por este valor para estimar quantas imagens
     # uma seção comporta. Um 0 configurado chegaria como ZeroDivisionError lá
     # dentro; melhor a validação recusar o valor aqui, na borda da config.
@@ -193,17 +196,27 @@ class Settings(BaseSettings):
         return chave
 
     def stage_timeout(self, stage: "StageName") -> float:
+        """Prazo do subprocesso de cada etapa, com o piso do modelo local.
+
+        Os valores-base assumem inferência local (é o provider padrão do
+        projeto nesta máquina). Medido: o `gemma-4-e4b` gasta ~700 tokens de
+        raciocínio por seção antes da primeira palavra, e a pesquisa sozinha
+        passou de 10 min num run real — um teto de 600 s matava a etapa antes
+        de ela terminar. `local_stage_timeout_multiplier` cobre modelo mais
+        lento sem editar código.
+        """
         timeouts = {
             "preparacao": 120,
-            "pesquisa": 600,
-            "roteiro": 1800,
-            "plano_midia": 600,
+            "pesquisa": 1800,
+            "roteiro": 3600,
+            "plano_midia": 1800,
             "audio": 3600,
             "imagens": 3600,
             "montagem": 1800,
             "validacao": 120,
         }
-        return timeouts.get(stage.value, 300)  # type: ignore[return-value]
+        base = timeouts.get(stage.value, 300)
+        return base * self.local_stage_timeout_multiplier  # type: ignore[return-value]
 
     def secret_values(self) -> list[str]:
         """Return configured credential values for event/error redaction."""

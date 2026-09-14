@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Dashboard, DashboardView } from "./dashboard";
 import type { DashboardState } from "../hooks/use-dashboard";
 import type { StudioEvent, RunStatus, StageName } from "../lib/contracts";
@@ -149,7 +150,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
       services: {
         transcricao: { name: "transcricao", state: "healthy", message: "Operacional", latency_ms: 240 },
         modelagem: { name: "modelagem", state: "degraded", message: "Latência alta", latency_ms: 1800 },
-        "lm-studio": { name: "lm-studio", state: "degraded", message: "ocupado", latency_ms: 900 },
+        lm_studio: { name: "lm_studio", state: "degraded", message: "ocupado", latency_ms: 900 },
       } as any,
     });
     render(<DashboardView state={state} />);
@@ -160,6 +161,55 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(screen.getByText("modelagem")).not.toBeNull();
     expect(screen.getByText(/Latência alta/)).not.toBeNull();
     expect(screen.getByText("1800ms")).not.toBeNull();
+  });
+
+  it("marca GPU pelos nomes reais do backend (underscore)", () => {
+    const state = fullState({
+      services: {
+        lm_studio: { name: "lm_studio", state: "degraded", message: "ocupado", latency_ms: 900 },
+        comfyui: { name: "comfyui", state: "healthy", message: "", latency_ms: 20 },
+        tts: { name: "tts", state: "healthy", message: "", latency_ms: 30 },
+      } as any,
+    });
+    render(<DashboardView state={state} />);
+
+    const lmChip = screen.getByText("lm_studio").closest(".service-chip");
+    const comfyChip = screen.getByText("comfyui").closest(".service-chip");
+    const ttsChip = screen.getByText("tts").closest(".service-chip");
+    expect(lmChip?.classList.contains("gpu")).toBe(true);
+    expect(comfyChip?.classList.contains("gpu")).toBe(true);
+    expect(ttsChip?.classList.contains("gpu")).toBe(true);
+    expect(screen.getByText(/GPU · LLM · ocupado/)).not.toBeNull();
+  });
+
+  it("header 'Novo vídeo' foca o formulário e não cria vídeo vazio", async () => {
+    const createVideo = vi.fn().mockResolvedValue(undefined);
+    const state = fullState({
+      focusRun: null,
+      createVideo: createVideo as any,
+    });
+    const user = userEvent.setup();
+    render(<DashboardView state={state} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo vídeo" }));
+
+    expect(createVideo).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByLabelText("Tema"));
+  });
+
+  it("mostra a etapa real do pipeline (sem '—' fixo)", () => {
+    const state = fullState({
+      focusRun: makeRun("running", 0.42, "roteiro" as StageName),
+    });
+    render(<DashboardView state={state} />);
+
+    const pipeline = screen.getByLabelText("Pipeline de etapas");
+    const stages = Array.from(pipeline.querySelectorAll(".stage small"));
+    expect(stages.length).toBeGreaterThanOrEqual(6);
+    for (const el of stages) {
+      expect(el.textContent).not.toContain("—");
+    }
+    expect(pipeline.textContent).toContain("fonte citável");
   });
 
   it("renderiza histórico com runs e progresso", () => {

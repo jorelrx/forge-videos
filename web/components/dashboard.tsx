@@ -46,11 +46,10 @@ interface PipelineStageProps {
   status: "ok" | "live" | "wait" | "fail";
   sub: string;
   num: number;
-  detail?: string;
   items?: string;
 }
 
-function PipelineStage({ stage, status, sub, num, detail, items }: PipelineStageProps) {
+function PipelineStage({ stage, status, sub, num, items }: PipelineStageProps) {
   return (
     <div className={`stage ${status}`}>
       <div className="stage-topline">
@@ -61,7 +60,6 @@ function PipelineStage({ stage, status, sub, num, detail, items }: PipelineStage
       <small>
         {sub}
         {items ? ` · ${items}` : ""}
-        {detail && !items ? ` · ${detail}` : ""}
       </small>
     </div>
   );
@@ -81,7 +79,11 @@ function ServiceStripItem({
   isGpu?: boolean;
 }) {
   const ledState =
-    state === "healthy" ? "led" : state === "degraded" ? "led busy" : "led off";
+    state === "available" || state === "healthy"
+      ? "led"
+      : state === "degraded"
+        ? "led busy"
+        : "led off";
   return (
     <div className={`service-chip ${isGpu ? "gpu" : ""}`}>
       <span className={ledState} aria-hidden="true" />
@@ -208,6 +210,7 @@ function Dock({ events, artifact, error }: {
 
 export function DashboardView({ state }: DashboardViewProps) {
   const focusRun = state.focusRun;
+  const formRef = React.useRef<HTMLFormElement>(null);
   const services = state.services ?? {};
   const events = state.events ?? [];
   const queue = state.queue ?? [];
@@ -223,7 +226,7 @@ export function DashboardView({ state }: DashboardViewProps) {
   const activePipeline: {
     stage: StageName;
     status: "ok" | "live" | "wait" | "fail";
-    detail?: string;
+    sub: string;
     items?: string;
   }[] = [];
   if (focusRun) {
@@ -248,25 +251,37 @@ export function DashboardView({ state }: DashboardViewProps) {
         }
       }
 
-      activePipeline.push({ stage: s.key, status, detail: s.sub, items });
+      activePipeline.push({ stage: s.key, status, sub: s.sub, items });
     }
   }
 
-  const gpuConsumer = services["lm-studio"] || services["comfy"] || services["tts"];
-  const gpuLabel = gpuConsumer?.message ?? "GPU livre";
-  const gpuActive = gpuConsumer && gpuConsumer.state === "degraded";
+  const gpuSvc = services["gpu"];
+  const gpuConsumer = services["lm_studio"] || services["comfyui"] || services["tts"];
+  const gpuResident = gpuSvc?.message?.startsWith("Residente") ?? false;
+  const gpuLabel = gpuResident ? gpuSvc!.message : gpuConsumer?.message ?? "GPU livre";
+  const gpuActive = gpuConsumer?.state === "degraded" || gpuResident;
 
   const serviceList = Object.entries(services).map(([name, svc]) => ({
     name,
     state: svc.state ?? "unknown",
     message: svc.message,
     latencyMs: svc.latency_ms ?? null,
-    isGpu: ["lm-studio", "comfyui", "tts"].includes(name),
+    isGpu: ["lm_studio", "comfyui", "tts"].includes(name),
   }));
 
   const sidebar = (
     <Sidebar queueCount={queueItemCount} />
   );
+
+  function focusNewVideoForm() {
+    const form = formRef.current;
+    const field =
+      form?.querySelector<HTMLInputElement>("#tema") ??
+      document.getElementById("tema");
+    if (!field) return;
+    field.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    field.focus();
+  }
 
   const mainContent = (
     <main className="main">
@@ -283,7 +298,7 @@ export function DashboardView({ state }: DashboardViewProps) {
             className="btn btn-primary"
             data-choice="new-run-top"
             type="button"
-            onClick={() => state.createVideo?.({ tema: "", tese: null, priority: 50, preset: "local-recomendado-v1" })}
+            onClick={focusNewVideoForm}
           >
             Novo vídeo
           </button>
@@ -303,6 +318,7 @@ export function DashboardView({ state }: DashboardViewProps) {
       </div>
 
       <NewVideoForm
+        ref={formRef}
         onSubmit={(input) => state.createVideo?.(input)}
         disabled={loading}
       />
@@ -332,9 +348,8 @@ export function DashboardView({ state }: DashboardViewProps) {
                 key={p.stage}
                 stage={p.stage}
                 status={p.status}
-                sub="—"
+                sub={p.sub}
                 num={PIPELINE_STAGES.findIndex((s) => s.key === p.stage) + 1}
-                detail={p.detail}
                 items={p.items}
               />
             ))}

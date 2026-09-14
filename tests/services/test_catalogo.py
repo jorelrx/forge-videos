@@ -1,3 +1,5 @@
+import pytest
+
 @pytest.mark.parametrize("mime", [
     "text/markdown", "application/json", "image/png", "image/jpeg",
     "image/webp", "audio/wav", "video/mp4",

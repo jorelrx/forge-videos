@@ -14,6 +14,9 @@ Esboço: {esboco}
 
 Material de pesquisa: {research}
 
+Fontes citáveis (ancore cada seção factual em autor ou título desta lista):
+{fontes}
+
 {skills}
 
 Notas de revisão a corrigir nesta versão (se houver):

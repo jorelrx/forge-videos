@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -76,4 +78,26 @@ ARQUITETURA: tuple[NarrativeSection, ...] = (
 SECOES_NOMES: list[str] = [section.nome for section in ARQUITETURA]
 
 
-__all__ = ["ARQUITETURA", "SECOES_NOMES", "NarrativeSection"]
+def _chave_de_nome(nome: str) -> str:
+    """Chave de comparação: sem acento, sem caixa, sem espaço nas pontas."""
+    decomposto = unicodedata.normalize("NFKD", nome.strip().casefold())
+    return "".join(caractere for caractere in decomposto if not unicodedata.combining(caractere))
+
+
+_POR_CHAVE: dict[str, str] = {_chave_de_nome(nome): nome for nome in SECOES_NOMES}
+
+
+def canonizar_nome(nome: str) -> str:
+    """Nome canônico da seção, tolerando acento e caixa que o modelo escreve.
+
+    O contrato é um conjunto fechado sem acento (`Tensao`, `Filosofo`,
+    `Aplicacao`), mas o modelo escreve o português correto — `Tensão`. Sem esta
+    canonização na fronteira, o gate lia "seção ausente nas nove", pulava a
+    checagem de todas as outras e a run morria em `script_gate_failed` por causa
+    de um acento. Nome fora do contrato volta como veio: descartar ou inventar
+    esconderia o desvio.
+    """
+    return _POR_CHAVE.get(_chave_de_nome(nome), nome.strip())
+
+
+__all__ = ["ARQUITETURA", "SECOES_NOMES", "NarrativeSection", "canonizar_nome"]

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     gpu_lock_timeout: float = 900.0
     # `cpu` faz a narração não disputar o slot, liberando-a para rodar
     # concorrente com a fase de imagem.
+    studio_api_port: int = Field(default=8765, ge=1, le=65535)
+    studio_sse_poll_seconds: float = Field(default=0.25, gt=0)
+    studio_sse_keepalive_seconds: float = Field(default=15.0, gt=0)
     tts_backend: Literal["vulkan", "cpu"] = "vulkan"
     audio_generate_dir: Path = Path(r"C:\dev\audio-generate")
     tts_binary: Path | None = None

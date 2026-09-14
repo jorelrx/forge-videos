@@ -122,7 +122,58 @@ def test_run_once_resumes_its_owned_run_for_the_next_pending_stage(
     ]
 
 
-def test_run_once_applies_pause_between_stages_before_starting_pending_executor(
+def test_run_once_nao_pula_etapa_orfa_em_execucao(db, control_plane):
+    """Etapa RUNNING órfã barra o avanço: a seguinte rodaria sem insumo.
+
+    Reproduz o caso real: o dono morreu no meio de `pesquisa` e um worker novo
+    (mesmo id) adotou a run antes do lease expirar. `_current_pending_stage`
+    escolhia a primeira PENDING — `roteiro` — e a executava sem o artefato da
+    etapa anterior, falhando a run e apontando a etapa errada no painel.
+    """
+    run = enqueue(control_plane)
+    preparacao = FakeExecutor(StageResult(current_items=1, total_items=1))
+    pesquisa = FakeExecutor(StageResult(current_items=1, total_items=1))
+    roteiro = FakeExecutor(StageResult(current_items=1, total_items=1))
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={
+            StageName.PREPARACAO: preparacao,
+            StageName.PESQUISA: pesquisa,
+            StageName.ROTEIRO: roteiro,
+        },
+        now=lambda: FIXED_NOW,
+    )
+
+    worker.run_once()
+
+    # O dono vivo no papel (lease válido) morre no meio da etapa seguinte.
+    with db.transaction(immediate=True) as conn:
+        operacao = OperacaoRepository(conn)
+        orfa = next(
+            item
+            for item in operacao.current_stages(run.id)
+            if item.stage is StageName.PESQUISA
+        )
+        operacao.save_stage(
+            orfa.model_copy(update={"status": StageStatus.RUNNING, "started_at": FIXED_NOW})
+        )
+
+    processada = worker.run_once()
+
+    assert pesquisa.contexts == [], "etapa órfã foi reexecutada sem decisão"
+    assert roteiro.contexts == [], "worker pulou para a etapa seguinte"
+    assert (
+        stage_for(control_plane, run.id, StageName.PESQUISA).status
+        is StageStatus.INTERRUPTED
+    )
+    detalhe = control_plane.get_run(run.id)
+    assert detalhe.run.status is RunStatus.INTERRUPTED
+    assert processada is not None and processada.status is RunStatus.INTERRUPTED
+
+
+def test_run_once_aplica_pause_between_stages_before_starting_pending_executor(
     db, control_plane
 ):
     run = enqueue(control_plane)

@@ -147,6 +147,52 @@ class ControlPlaneService:
                 )
             return runs
 
+    def interrupt_orphan_stage(self, run_id: str, stage_id: str) -> Run | None:
+        """Interrompe a run cuja etapa corrente ficou RUNNING sem dono.
+
+        O lease ainda é válido (o dono morreu com ele, ou outro processo assumiu
+        a run), então `interrupt_expired` não vê nada. Sem esta transição a
+        etapa ficaria RUNNING para sempre e o `resume` do painel não a
+        resetaria — `request_resume` só reinicia PAUSED/FAILED/INTERRUPTED —, o
+        que deixava a run travada.
+        """
+        with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            run = operacao.get_run(run_id)
+            if run is None:
+                return None
+            stage = next(
+                (item for item in operacao.current_stages(run_id) if item.id == stage_id),
+                None,
+            )
+            if stage is None or stage.status is not StageStatus.RUNNING:
+                return None
+            now = self.now()
+            operacao.save_stage(
+                stage.model_copy(
+                    update={"status": mudar_etapa(stage.status, StageStatus.INTERRUPTED),
+                            "finished_at": now}
+                )
+            )
+            interrupted = operacao.save_run(
+                run.model_copy(
+                    update={
+                        "status": mudar_run(run.status, RunStatus.INTERRUPTED),
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                    }
+                )
+            )
+            EventosRepository(conn).append(
+                kind="run.interrupted",
+                level="warning",
+                message="Etapa corrente sem dono; run interrompida",
+                payload={"reason": "owner_lost", "stage": stage.stage.value},
+                run_id=run_id,
+                stage_run_id=stage.id,
+            )
+            return interrupted
+
     def request_pause(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)

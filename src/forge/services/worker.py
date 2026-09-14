@@ -27,9 +27,12 @@ from forge.repositories.comandos import ComandosRepository
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
+from forge.infrastructure.logging import get_logger
 from forge.services.control_plane import ControlPlaneService
 from forge.services.maquina_estados import mudar_etapa, mudar_run
 from forge.services.redacao import Redactor
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +152,19 @@ class StudioWorker:
     def run_once(self) -> Run | None:
         self.control_plane.interrupt_expired()
         run = self._active_run_owned_by_worker()
+        if run is not None:
+            orfa = self._orphan_running_stage(run.id)
+            if orfa is not None:
+                # `run_once` é síncrono: nenhuma etapa DESTE worker pode estar
+                # em execução no começo de uma iteração. Uma etapa RUNNING aqui
+                # é órfã de um dono que morreu com o lease ainda válido.
+                logger.warning(
+                    "Etapa órfã em execução; interrompendo a run",
+                    run_id=run.id,
+                    stage=orfa.stage.value,
+                    stage_run_id=orfa.id,
+                )
+                return self.control_plane.interrupt_orphan_stage(run.id, orfa.id)
         if run is None:
             run = self.control_plane.claim_next(
                 self.worker_id, lease_seconds=self.lease_seconds
@@ -204,15 +220,41 @@ class StudioWorker:
             return OperacaoRepository(conn).active_owned_by(self.worker_id)
 
     def _current_pending_stage(self, run_id: str) -> StageRun | None:
+        """Primeira etapa ainda não concluída, na ORDEM canônica do domínio.
+
+        Não pode ser "a primeira PENDING": com uma etapa RUNNING órfã à frente,
+        a primeira PENDING é a SEGUINTE — que rodava sem o insumo da anterior e
+        falhava a run apontando a etapa errada no painel.
+        """
         with self.db.connection() as conn:
-            return next(
-                (
-                    stage
-                    for stage in OperacaoRepository(conn).current_stages(run_id)
-                    if stage.status is StageStatus.PENDING
-                ),
-                None,
+            return self._primeira_nao_concluida(
+                OperacaoRepository(conn).current_stages(run_id)
             )
+
+    @staticmethod
+    def _primeira_nao_concluida(stages: list[StageRun]) -> StageRun | None:
+        """Etapa executável: a primeira que não terminou, ou `None`.
+
+        Só PENDING é executável. Qualquer outro estado não concluído
+        (PAUSING/PAUSED/INTERRUPTED/FAILED/INVALIDATED) significa que a run
+        inteira não deveria estar nesta situação — devolver `None` deixa o
+        estado visível em vez de iniciar uma etapa por engano.
+        """
+        for stage in stages:
+            if stage.status is StageStatus.SUCCEEDED:
+                continue
+            return stage if stage.status is StageStatus.PENDING else None
+        return None
+
+    def _orphan_running_stage(self, run_id: str) -> StageRun | None:
+        """Etapa RUNNING registrada quando este worker assume a run."""
+        with self.db.connection() as conn:
+            stages = OperacaoRepository(conn).current_stages(run_id)
+        for stage in stages:
+            if stage.status is StageStatus.SUCCEEDED:
+                continue
+            return stage if stage.status is StageStatus.RUNNING else None
+        return None
 
     def _start_stage(self, run: Run, stage: StageRun) -> StageContext | Run:
         now = self.now()

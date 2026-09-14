@@ -18,6 +18,9 @@ MODELO_PADRAO: dict[str, str] = {
     "lm-studio": "google/gemma-4-e4b",
 }
 
+# Nome do GGUF que o audio-generate baixa em `runtime/models`.
+MODELO_TTS_PADRAO = "higgs-audio-v3-tts-4b-q8_0.gguf"
+
 # LM Studio ignora o valor, mas o cliente OpenAI exige algo não-vazio.
 CHAVE_LOCAL = "lm-studio"
 
@@ -91,6 +94,12 @@ class Settings(BaseSettings):
     # package-spec do modelo. Ver runtime/bin/model_specs no audio-generate.
     tts_family: str = "higgs_audio_tts"
     audio_generate_dir: Path = Path(r"C:\dev\audio-generate")
+    # O audio-generate distribui o runtime em subdiretórios (`runtime/bin`,
+    # `runtime/models`) e guarda a referência de voz na raiz do repo. Derivar
+    # `<dir>/audio-generate.exe` (a forma plana antiga) resolvia para paths que
+    # não existem: o doctor reprovava o TTS e a etapa de áudio não tinha como
+    # rodar. `tts_binary`, `tts_model` e `tts_voice_reference` continuam
+    # sobrepondo qualquer default.
     tts_binary: Path | None = None
     tts_model: Path | None = None
     tts_voice_reference: Path | None = None
@@ -146,15 +155,18 @@ class Settings(BaseSettings):
 
     @property
     def resolved_tts_binary(self) -> Path:
-        return self.tts_binary or self.audio_generate_dir / "audio-generate.exe"
+        return self.tts_binary or self.audio_generate_dir / "runtime" / "bin" / "audiocpp_cli.exe"
 
     @property
     def resolved_tts_model(self) -> Path:
-        return self.tts_model or self.audio_generate_dir / "model.gguf"
+        return (
+            self.tts_model
+            or self.audio_generate_dir / "runtime" / "models" / MODELO_TTS_PADRAO
+        )
 
     @property
     def resolved_tts_voice_reference(self) -> Path:
-        return self.tts_voice_reference or self.audio_generate_dir / "voice.wav"
+        return self.tts_voice_reference or self.audio_generate_dir / "ref.wav"
 
     @property
     def resolved_comfy_python(self) -> Path:

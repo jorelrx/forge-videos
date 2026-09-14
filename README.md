@@ -180,6 +180,22 @@ Parâmetros do launcher:
 
 **O doctor não inicia Docker.** Serviços externos indisponíveis aparecem como `warning` com a ação concreta; um pré-requisito de binário ou caminho ausente é `failed` e o launcher se recusa a subir meio Studio.
 
+### Triagem quando o painel mostra vermelho ou a fila não anda
+
+1. `uv run forge-studio-doctor` — o check reprovado diz qual path falta e onde configurar.
+2. `curl http://127.0.0.1:8765/api/services` — é exatamente o que a faixa de serviços do painel mostra.
+3. `uv run forge-worker --once` — prova se o worker reivindica e executa uma etapa. **Sem worker, a fila fica `queued` para sempre**: criar um vídeo no painel "não faz nada" sem erro visível.
+4. `POST /api/runs/{id}/resume` (com `Idempotency-Key`) — uma run cuja lease expirou vira `interrupted` e não volta sozinha; `claim_next` só reivindica `queued`.
+
+Armadilhas de configuração que já custaram uma run parada:
+
+- **paths no `.env` usam barras normais** (`C:/dev/...`): o parser do dotenv interpreta `\a`, `\b` e `\v` como escapes e corrompe o caminho em silêncio;
+- **os paths do TTS derivam do layout do `audio-generate`** (`runtime/bin/audiocpp_cli.exe`, `runtime/models/<gguf>`, `ref.wav`); apontar para a forma plana antiga resolve para arquivo inexistente e o TTS aparece indisponível;
+- **`FORGE_COMFY_DIR` precisa conter `main.py`** — sem ele `garantir_comfy` não sobe o ComfyUI e o slot de imagem encontra o servidor morto;
+- **prazo da etapa `roteiro`**: o laço de review do modelo local leva ~15 min por passada; `FORGE_LOCAL_STAGE_TIMEOUT_MULTIPLIER` e `FORGE_MAX_REVIEW_ROUNDS` são a calibração (sem ela a etapa morre em `subprocess_timeout`).
+
+O `forge-studio-doctor` é o primeiro comando de qualquer investigação; nenhum deles depende de ler o código.
+
 ### Testes de integração (opt-in)
 
 A suíte padrão (`uv run pytest`) mantém `-m not integration` e não toca rede nem GPU.
@@ -201,7 +217,7 @@ Um serviço fora do ar vira `SKIP` com o endpoint/caminho exato e a ação para 
 Nesta máquina (RX 580 8 GB) os consumidores não cabem juntos: **LLM → TTS → ComfyUI → ffmpeg**. O broker ([`gpu/broker.py`](src/forge/gpu/broker.py)) mantém um residente por vez e troca por fase. Duas consequências práticas:
 
 - o TTS exige o LLM descarregado — com o modelo carregado no LM Studio o `audiocpp_cli` falha com `ErrorOutOfDeviceMemory`;
-- o ComfyUI precisa ser **encerrado** (não apenas `/free`) antes do TTS, porque o processo segura o heap Vulkan. Por isso o slot de imagem o sobe de novo (`FORGE_COMFY_AUTO_START`, ligado por padrão).
+- antes do TTS o forge pede `/free {unload_models, free_memory}` ao ComfyUI e **confirma a VRAM livre** antes de sintetizar. Medido nesta máquina: com o SDXL residente, `/free` devolveu 8,59 GB e o TTS rodou. O encerramento do ComfyUI é o último recurso para o caso em que `/free` não basta — e `shutdown_comfy` só encerra a árvore lançada pelo próprio forge, nunca um processo alheio; por isso o slot de imagem o sobe de novo quando precisa (`FORGE_COMFY_AUTO_START`, ligado por padrão).
 
 ## Desenvolvimento
 

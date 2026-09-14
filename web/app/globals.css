@@ -1,7 +1,28 @@
-body {
-  font-family: system-ui, -apple-system, sans-serif;
-  margin: 0;
-  padding: 0;
-  background: #0a0a0a;
-  color: #eaeaea;
+:root {
+  --bg-deep: #0a0a0a;
+  --surface: #121212;
+  --surface-hover: #1a1a1a;
+  --text-main: #eaeaea;
+  --text-muted: #888888;
+  --accent: #00d4aa;
+  --accent-warn: #ffb84d;
+  --accent-error: #ff6b6b;
+  --border-subtle: #222222;
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --radius: 8px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
 }
+
+.service-strip .service-item.state-healthy { border-left-color: var(--accent); }
+.service-strip .service-item.state-degraded { border-left-color: var(--accent-warn); }
+.service-strip .service-item.state-unhealthy { border-left-color: var(--accent-error); }
+
+.live-log .log-level-error { color: var(--accent-error); }
+.live-log .log-level-warn { color: var(--accent-warn); }
+
+.artifact-preview { border: 1px solid var(--border-subtle); border-radius: var(--radius); padding: var(--spacing-md); }
+.failure-drawer { border-left: 4px solid var(--accent-error); background: var(--surface); padding: var(--spacing-md); }

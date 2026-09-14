@@ -169,6 +169,48 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
 
     assert 12 <= final["passos"] <= 13, f"orçamento furou: {final['passos']} passos"
 
+def test_orcamento_encerra_handoff_de_write(scripted, tmp_path, grafo_com_acervo):
+    """Modelo que só sabe pedir pesquisa não pode furar o teto de passos.
+
+    O caminho `write -> research` (`falta_pesquisa`) não passa por `rotear` —
+    que era o único lugar onde `max_passos` era conferido. Com o pedido sempre
+    presente, o grafo seguia rodando depois do orçamento estourado, até o prazo
+    do subprocesso da etapa.
+
+    Sequência exata com max_passos=6: tema(1) research(2) plan(3) write(4, pedido
+    aceito) research(5) plan(6) write(7, pedido ignorado -> review) review(8);
+    o roteador então encerra em 8 >= 6. As filas extras existem para o
+    comportamento antigo falhar alto (fila esgotada) em vez de passar.
+    """
+    n_ciclos = 2
+    estruturados = []
+    for _ in range(n_ciclos):
+        estruturados += [
+            Plano(tese="t", esboco="e"),
+            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação citada no texto."),
+        ]
+    estruturados += [ReviewResult(aprovado=False)]
+    for _ in range(5):  # o modelo patológico nunca pararia de pedir pesquisa
+        estruturados += [
+            Plano(tese="t", esboco="e"),
+            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação citada no texto."),
+        ]
+
+    model = scripted(
+        invoke_texts=["tema"] + ["busca", "notas"] * 12,
+        structured=estruturados,
+    )
+    settings = Settings(
+        _env_file=None, max_review_rounds=100, max_passos=6, juiz_relevancia=False
+    )
+    graph = build_graph(model, settings)
+
+    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+
+    assert final["passos"] >= 6, f"encerrou antes do orçamento: {final['passos']}"
+    assert final["passos"] <= 12, f"orçamento furou: {final['passos']} passos"
+
+
 def test_research_nao_chama_a_camada_de_conhecimento():
     """Retriever fica dormente até K5: nada no fluxo de roteiro pode tocá-lo."""
     import forge.orchestration.graph as modulo

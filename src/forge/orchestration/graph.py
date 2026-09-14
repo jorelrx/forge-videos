@@ -15,8 +15,14 @@ from forge.agents.research import PassageEvidence
 from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
 
-def com_wrapper(nome, fn, le):
-    """Estreita o state pelo LE do agente, grava o artefato, conta o passo."""
+def com_wrapper(nome, fn, le, *, max_passos: int | None = None):
+    """Estreita o state pelo LE do agente, grava o artefato, conta o passo.
+
+    O nó recebe só as chaves do `LE` — o contrato dos agentes. Quem decide o
+    orçamento é este wrapper, que enxerga o state inteiro: dentro do nó,
+    `passos` nem existe, e um handoff pedido por ele (`write -> research`)
+    seguiria para sempre sem passar por `rotear`.
+    """
     def wrapped(state):
         entrada = {k: state[k] for k in le if k in state}
         resultado = fn(entrada)
@@ -26,10 +32,28 @@ def com_wrapper(nome, fn, le):
             gravar_artefato(state["run_dir"], nome, atualizacao)
             if bruto is not None:
                 gravar_bruto(state["run_dir"], nome, bruto)
+            destino = resultado.goto
+            if (
+                max_passos is not None
+                and destino == "research"
+                and orcamento_estourado(state, max_passos)
+            ):
+                # O pedido é registrado no artefato e ignorado: reabrir a
+                # pesquisa com o orçamento estourado rodava até o prazo do
+                # subprocesso da etapa, muito além do teto.
+                logger.warning(
+                    "Handoff ignorado: orçamento estourado",
+                    de=nome,
+                    para=destino,
+                    passos=state.get("passos", 0),
+                    max=max_passos,
+                )
+                destino = "review"
+                atualizacao["pedido"] = None
             return Command(
                 graph=resultado.graph,
                 resume=resultado.resume,
-                goto=resultado.goto,
+                goto=destino,
                 update={**atualizacao, "passos": state.get("passos", 0) + 1},
             )
         bruto = resultado.pop("_raw", None)
@@ -39,10 +63,23 @@ def com_wrapper(nome, fn, le):
         return {**resultado, "passos": state.get("passos", 0) + 1}
     return wrapped
 
+def orcamento_estourado(state: dict, max_passos: int) -> bool:
+    """`max_passos` vale para QUALQUER nó, não só para o roteador.
+
+    O handoff `write -> research` (`falta_pesquisa`) não passa por `rotear`:
+    um modelo que sempre pede pesquisa seguia rodando já com o orçamento
+    estourado, até o prazo do subprocesso da etapa matar a run muito depois.
+    """
+    return state.get("passos", 0) >= max_passos
+
+
 def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
-    passos = state.get("passos", 0)
-    if passos >= max_passos:
-        logger.warning("Budget exhausted - stopping", passos=passos, max=max_passos)
+    if orcamento_estourado(state, max_passos):
+        logger.warning(
+            "Budget exhausted - stopping",
+            passos=state.get("passos", 0),
+            max=max_passos,
+        )
         return END
 
     review = state.get("review")
@@ -157,7 +194,8 @@ def build_graph(model, settings, inicio: str = "tema"):
     g.add_node("tema",     com_wrapper("tema",     node_tema,     tema_stage.LE))
     g.add_node("research", com_wrapper("research", node_research, research_stage.LE))
     g.add_node("plan",     com_wrapper("plan",     node_plan,     plan_stage.LE))
-    g.add_node("write",    com_wrapper("write",    node_write,    write_stage.LE),
+    g.add_node("write", com_wrapper("write", node_write, write_stage.LE,
+                                    max_passos=settings.max_passos),
                destinations=("research", "review"))
     g.add_node("review",   com_wrapper("review",   node_review,   review_stage.LE))
 

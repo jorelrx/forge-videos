@@ -53,6 +53,43 @@ class EventosRepository:
             created_at=created_at,
         )
 
+    def page(
+        self, run_id: str, *, before_id: int | None = None, limit: int = 100
+    ) -> list:
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        query = "SELECT * FROM events WHERE run_id = ?"
+        params: list = [run_id]
+        if before_id is not None:
+            query += " AND id < ?"
+            params.append(before_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return list(reversed([_event_from_row(row) for row in rows]))
+
+    def latest_stage_metrics(self, run_id: str) -> dict:
+        rows = self.conn.execute(
+            """
+            SELECT stage_runs.stage, events.payload_json
+            FROM events
+            JOIN stage_runs ON stage_runs.id = events.stage_run_id
+            JOIN (
+                SELECT stage, MAX(attempt) AS attempt
+                FROM stage_runs WHERE run_id = ? GROUP BY stage
+            ) current ON current.stage = stage_runs.stage
+                     AND current.attempt = stage_runs.attempt
+            WHERE events.run_id = ? AND events.kind = 'stage.result'
+            ORDER BY events.id ASC
+            """,
+            (run_id, run_id),
+        ).fetchall()
+        metrics: dict = {}
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            metrics[row["stage"]] = payload.get("gate", {}).get("metrics", {})
+        return metrics
+
     def after(
         self, cursor: int, *, limit: int = 200, run_id: str | None = None
     ) -> list[Event]:

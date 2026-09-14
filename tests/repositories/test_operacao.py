@@ -443,3 +443,14 @@ def test_artifact_fk_invalida_propaga_integrity_error(db):
 
         with pytest.raises(sqlite3.IntegrityError):
             repo.register_artifact(artifact_for(first.id, second_stage.id, artifact_id="bad-fk"))
+
+
+def test_count_run_get_artifact_and_current_items(db):
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        video, run = create_run(repo)
+        assert repo.count_runs() == 1
+        # get_artifact retorna None quando não existe
+        assert repo.get_artifact("missing-id") is None
+        # list_current_work_items retorna vazio para run sem work_items
+        assert repo.list_current_work_items(run.id) == []

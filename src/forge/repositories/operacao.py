@@ -483,6 +483,33 @@ class OperacaoRepository:
         return [_artifact_from_row(row) for row in rows]
 
 
+    def count_runs(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()
+        return int(row[0]) if row else 0
+
+    def get_artifact(self, artifact_id: str) -> Artifact | None:
+        row = self.conn.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+        return _artifact_from_row(row) if row is not None else None
+
+    def list_current_work_items(self, run_id: str) -> list[WorkItem]:
+        rows = self.conn.execute(
+            f"""
+            SELECT work_items.* FROM work_items
+            JOIN stage_runs ON stage_runs.id = work_items.stage_run_id
+            JOIN (
+                SELECT stage, MAX(attempt) AS attempt
+                FROM stage_runs WHERE run_id = ? GROUP BY stage
+            ) current ON current.stage = stage_runs.stage
+                     AND current.attempt = stage_runs.attempt
+            WHERE stage_runs.run_id = ?
+            ORDER BY {_stage_order_sql('stage_runs.stage')}, work_items.item_key
+            """,
+            (run_id, run_id),
+        ).fetchall()
+        return [_work_item_from_row(row) for row in rows]
+
     def get_video(self, video_id: str) -> Video | None:
         row = self.conn.execute(
             "SELECT * FROM videos WHERE id = ?", (video_id,)

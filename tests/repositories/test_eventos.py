@@ -125,3 +125,17 @@ def test_append_com_run_inexistente_propaga_integrity_error(db):
                 payload={},
                 run_id="missing-run",
             )
+
+
+def test_page_and_latest_stage_metrics(db):
+    with db.transaction(immediate=True) as conn:
+        operacao = OperacaoRepository(conn)
+        run = create_run(operacao, tema="Tema Metrica")
+        repo = EventosRepository(conn)
+        first = repo.append(kind="run.created", level="info", message="C", payload={}, run_id=run.id)
+        second = repo.append(kind="run.started", level="info", message="S", payload={}, run_id=run.id)
+        # page retorna em ordem cronológica descendente limitada
+        page = repo.page(run.id, before_id=None, limit=2)
+        assert [e.id for e in page] == [first.id, second.id]
+        older = repo.page(run.id, before_id=first.id, limit=2)
+        assert older == [second]

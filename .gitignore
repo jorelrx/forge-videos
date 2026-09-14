@@ -20,3 +20,9 @@ __pycache__/
 web/.next
 node_modules
 coverage
+
+# Studio local: PIDs, logs e banco são estado de máquina, não artefato
+data/studio/
+data/forge.db
+data/forge.db-shm
+data/forge.db-wal

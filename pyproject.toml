@@ -24,6 +24,9 @@ dependencies = [
 [project.scripts]
 forge = "forge.cli:main"
 forge-api = "forge.api.__main__:main"
+forge-worker = "forge.worker.__main__:main"
+forge-studio-doctor = "forge.studio.doctor:main"
+forge-import-runs = "forge.studio.import_runs:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]

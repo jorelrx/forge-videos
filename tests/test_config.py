@@ -254,7 +254,7 @@ def test_worker_lease_e_heartbeat_aceitam_override_por_ambiente(monkeypatch):
     assert settings.worker_heartbeat_seconds == 7
 
 
-def test_worker_rejeita_heartbeat_maior_ou_igual_ao_lease():
+def test_worker_rejeita_heartbeat_maior_ou_igual_ao_lease() -> None:
     import pydantic
 
     with pytest.raises(pydantic.ValidationError):
@@ -263,3 +263,14 @@ def test_worker_rejeita_heartbeat_maior_ou_igual_ao_lease():
             worker_lease_seconds=15,
             worker_heartbeat_seconds=15,
         )
+
+
+def test_studio_worker_poll_seconds_default() -> None:
+    assert Settings(_env_file=None).studio_worker_poll_seconds == 1.0
+
+
+def test_studio_worker_poll_seconds_deve_ser_positivo() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, studio_worker_poll_seconds=0)

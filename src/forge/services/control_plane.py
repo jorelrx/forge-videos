@@ -145,6 +145,8 @@ class ControlPlaneService:
 
     def request_pause(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -156,8 +158,7 @@ class ControlPlaneService:
             if not created:
                 return command
 
-            operacao = OperacaoRepository(conn)
-            run = self._require_run(operacao, run_id)
+            run = operacao.get_run(run_id)
             paused = run.model_copy(
                 update={
                     "status": mudar_run(run.status, RunStatus.PAUSING),
@@ -176,6 +177,8 @@ class ControlPlaneService:
 
     def request_resume(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -187,8 +190,7 @@ class ControlPlaneService:
             if not created:
                 return command
 
-            operacao = OperacaoRepository(conn)
-            run = self._require_run(operacao, run_id)
+            run = operacao.get_run(run_id)
             resumable_stage = next(
                 (
                     stage
@@ -245,6 +247,8 @@ class ControlPlaneService:
         self, run_id: str, stage: StageName, *, idempotency_key: str
     ) -> Command:
         with self.db.transaction(immediate=True) as conn:
+            operacao = OperacaoRepository(conn)
+            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -256,8 +260,7 @@ class ControlPlaneService:
             if not created:
                 return command
 
-            operacao = OperacaoRepository(conn)
-            run = self._require_run(operacao, run_id)
+            run = operacao.get_run(run_id)
             if run.status not in {
                 RunStatus.PAUSED,
                 RunStatus.FAILED,

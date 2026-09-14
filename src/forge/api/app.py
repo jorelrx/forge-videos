@@ -45,4 +45,6 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
     app.include_router(runs.runs_router, prefix="/api")
     from forge.api.routes import events
     app.include_router(events.events_router, prefix="/api")
+    from forge.api.routes import artifacts
+    app.include_router(artifacts.artifacts_router, prefix="/api")
     return app

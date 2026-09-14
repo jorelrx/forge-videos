@@ -17,7 +17,18 @@ ALLOWED_MIME = {
     "audio/wav", "audio/mpeg", "audio/ogg", "audio/flac",
     "video/mp4", "video/quicktime", "video/x-msvideo",
     "application/json", "text/markdown",
+    "image/png", "image/jpeg", "image/webp",
 }
+
+PREVIEW_MIME = frozenset({
+    "text/markdown",
+    "application/json",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "audio/wav",
+    "video/mp4",
+})
 
 
 def sha256_file(path: Path) -> str:

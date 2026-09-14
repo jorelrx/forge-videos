@@ -136,7 +136,9 @@ class ValidationExecutor(StageImplementation):
         ]
         image_artifacts = [
             a for a in artifacts
-            if getattr(a, "kind", "").startswith("image/")
+            # O produtor registra `image.png`; a barra era convenção do stub e
+            # nunca casava, o que reprovava todo vídeo por "imagem ausente".
+            if getattr(a, "kind", "").startswith("image")
         ]
         work_items = context.work_items if context.work_items else []
         succeeded_items = [w for w in work_items if getattr(w, "status", None) and w.status.value == "succeeded"]

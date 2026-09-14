@@ -30,15 +30,51 @@ def test_concat_list_escapes_single_quotes_without_shell(tmp_path):
     assert "image'\\''s clip.mp4" in text
 
 
-def test_run_ffmpeg_uses_argv_list_and_shell_false():
-    # We invoke with a very short synthetic command; the call uses argv list.
-    # Since shell=False is enforced by code, we verify by inspecting the source directly.
-    import inspect
-    src_path = inspect.getfile(lambda: None) or ""
-    # Direct file read is simpler.
-    source = open("C:/dev/forge-videos/src/forge/executors/ffmpeg.py").read()
-    assert "shell=False" in source
-    assert "subprocess.run(" in source
+def test_run_ffmpeg_uses_argv_list_without_a_shell(monkeypatch):
+    """Sem shell: um caminho com espaço não pode virar dois argumentos."""
+    captured: dict = {}
+
+    class Result:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return Result()
+
+    monkeypatch.setattr("forge.executors.ffmpeg.subprocess.run", fake_run)
+
+    code, stderr, _ = run_ffmpeg(["ffmpeg", "-i", "imagem com espaço.png", "out.mp4"])
+
+    assert code == 0
+    assert stderr == ""
+    assert captured["argv"] == ["ffmpeg", "-i", "imagem com espaço.png", "out.mp4"]
+    assert captured["shell"] is False
+    assert captured["capture_output"] is True
+
+
+def test_run_ffmpeg_bounds_and_decodes_stderr():
+    """stderr de ffmpeg é enorme e pode não ser UTF-8; o tail precisa vir inteiro."""
+    grande = ("x" * 5000).encode("utf-8") + b"\xff\xfe"
+
+    class Result:
+        returncode = 1
+        stdout = b""
+        stderr = grande
+
+    import forge.executors.ffmpeg as modulo
+
+    original = modulo.subprocess.run
+    modulo.subprocess.run = lambda argv, **kwargs: Result()
+    try:
+        code, stderr, _ = run_ffmpeg(["ffmpeg"], capture_stderr_limit=64)
+    finally:
+        modulo.subprocess.run = original
+
+    assert code == 1
+    assert len(stderr.encode("utf-8", errors="replace")) <= 70
 
 
 def test_probe_media_struct_exists():

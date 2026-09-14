@@ -129,6 +129,7 @@ class StudioWorker:
         now: Callable[[], datetime] | None = None,
         heartbeat_seconds: float = 5,
         redactor: Redactor | None = None,
+        runs_root: Path | None = None,
     ) -> None:
         self.db = db
         self.worker_id = worker_id
@@ -136,6 +137,10 @@ class StudioWorker:
         self.executors = executors
         self.now = now or (lambda: datetime.now(UTC))
         self.heartbeat_seconds = heartbeat_seconds
+        # Raiz dos artefatos: sem ela o projetor de eventos resolve caminhos
+        # relativos contra o CWD e recusa todo `artifact.created` como
+        # "path outside run_dir".
+        self.runs_root = Path(runs_root) if runs_root is not None else None
         # Production construction injects Settings.secret_values(). Direct
         # test/legacy callers remain compatible, with key-name masking only.
         self.redactor = redactor if redactor is not None else Redactor(secrets=[])
@@ -266,10 +271,15 @@ class StudioWorker:
             run=started_run,
             stage_run=started_stage,
             video=video,
+            run_dir=self._run_dir(started_run.id),
             artifacts=artifacts,
             work_items=work_items,
             db=self.db,
         )
+
+    def _run_dir(self, run_id: str) -> Path | None:
+        """Diretório canônico dos artefatos da run, quando a raiz é conhecida."""
+        return self.runs_root / run_id if self.runs_root is not None else None
 
     def _pause_before_stage(self, run: Run, stage: StageRun) -> Run | None:
         with self.db.transaction(immediate=True) as conn:

@@ -147,6 +147,62 @@ aprovado: True
 - The Paradox of Choice — Barry Schwartz
 ```
 
+## Forge Studio (operação local)
+
+O Studio é local e de usuário único: API em `127.0.0.1:8765`, web em `127.0.0.1:3100`. `data/forge.db` é a fonte de verdade operacional.
+
+```powershell
+# verifica a máquina e aplica a migração SQLite (não inicia nada)
+uv run forge-studio-doctor --migrate
+
+# inicia API, worker e web; abre o dashboard no navegador
+.\scripts\start-studio.ps1
+
+# encerra: pede pausa cooperativa antes de derrubar o que sobrou
+.\scripts\stop-studio.ps1 -GraceSeconds 30
+
+# importa apenas histórico; a origem é copiada, nunca movida nem apagada
+uv run forge-import-runs C:\caminho\output\runs --children
+```
+
+Parâmetros do launcher:
+
+| Parâmetro | Efeito |
+|---|---|
+| `-NoBrowser` | não abre o dashboard |
+| `-WebMode production` | usa `next start` em vez de `next dev` |
+| `-Force` | ignora um estado vivo e reinicia (a validação de linha de comando continua valendo) |
+| `-GraceSeconds <1..300>` | prazo da pausa cooperativa no stop |
+
+**Arquivos de estado.** PIDs, logs e banco ficam sob `data/studio/` — nunca em `output/runs/`. O stop só encerra árvores cujos PIDs e linhas de comando pertençam ao Studio; um PID reciclado por outro programa não é morto.
+
+**Runs importadas são somente-leitura.** Não entram na fila, não aceitam pause/resume/retry (a API responde 409) e não têm artefatos invalidados. A importação **não** atesta os gates de qualidade antigos: os arquivos entram com `gate_status=imported_unverified`.
+
+**O doctor não inicia Docker.** Serviços externos indisponíveis aparecem como `warning` com a ação concreta; um pré-requisito de binário ou caminho ausente é `failed` e o launcher se recusa a subir meio Studio.
+
+### Testes de integração (opt-in)
+
+A suíte padrão (`uv run pytest`) mantém `-m not integration` e não toca rede nem GPU.
+
+```powershell
+# provas reais contra research, LM Studio, TTS, ComfyUI, FFmpeg e broker
+$env:FORGE_RUN_INTEGRATION=1
+uv run pytest tests/integration -m integration -ra
+
+# run completa: produz e valida um vídeo de verdade (exige também a flag abaixo)
+$env:FORGE_RUN_STUDIO_E2E=1
+uv run pytest tests/integration/test_studio_e2e.py -m integration -ra
+```
+
+Um serviço fora do ar vira `SKIP` com o endpoint/caminho exato e a ação para corrigir — nunca `PASS` sem chamada. Use `$env:FORGE_KEEP_INTEGRATION_OUTPUT=1` para preservar o diretório temporário da run.
+
+### Ordem obrigatória na GPU
+
+Nesta máquina (RX 580 8 GB) os consumidores não cabem juntos: **LLM → TTS → ComfyUI → ffmpeg**. O broker ([`gpu/broker.py`](src/forge/gpu/broker.py)) mantém um residente por vez e troca por fase. Duas consequências práticas:
+
+- o TTS exige o LLM descarregado — com o modelo carregado no LM Studio o `audiocpp_cli` falha com `ErrorOutOfDeviceMemory`;
+- o ComfyUI precisa ser **encerrado** (não apenas `/free`) antes do TTS, porque o processo segura o heap Vulkan. Por isso o slot de imagem o sobe de novo (`FORGE_COMFY_AUTO_START`, ligado por padrão).
+
 ## Desenvolvimento
 
 ```bash

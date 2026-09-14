@@ -568,3 +568,53 @@ def test_successful_final_validation_completes_run_and_emits_terminal_events(db,
         "run.validating",
         "run.completed",
     ]
+
+
+def test_stage_context_carries_the_run_dir_so_artifacts_resolve_inside_it(
+    db, control_plane, tmp_path
+):
+    """Sem `runs_root`, o projetor de artefatos resolve contra o CWD e todo
+    `artifact.created` vira 'path outside run_dir' — a etapa falha inteira."""
+    run = enqueue(control_plane)
+    runs_root = tmp_path / "runs"
+    alvo = runs_root / run.id / "video" / "roteiro.json"
+    alvo.parent.mkdir(parents=True, exist_ok=True)
+    alvo.write_text("{}", encoding="utf-8")
+
+    class ArtifactExecutor:
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def execute(self, context, emit):
+            self.contexts.append(context)
+            emit(
+                kind="artifact.created",
+                level="info",
+                message="Roteiro criado",
+                payload={
+                    "item_key": "",
+                    "kind": "roteiro",
+                    "relative_path": "video/roteiro.json",
+                    "mime_type": "application/json",
+                    "metadata": {},
+                },
+            )
+            return StageResult(gate_status="approved", current_items=1, total_items=1)
+
+    executor = ArtifactExecutor()
+    worker = StudioWorker(
+        db,
+        worker_id="worker-a",
+        lease_seconds=45,
+        executors={StageName.PREPARACAO: executor},
+        now=lambda: FIXED_NOW,
+        runs_root=runs_root,
+    )
+
+    worker.run_once()
+
+    assert executor.contexts[0].run_dir == runs_root / run.id
+    assert stage_for(control_plane, run.id, StageName.PREPARACAO).status is StageStatus.SUCCEEDED
+    with db.connection() as conn:
+        artefatos = OperacaoRepository(conn).list_artifacts(run.id)
+    assert [a.relative_path for a in artefatos] == ["video/roteiro.json"]

@@ -45,4 +45,5 @@ def build_worker(
         heartbeat_seconds=settings.worker_heartbeat_seconds,
         executors=executors,
         redactor=Redactor(settings.secret_values()),
+        runs_root=settings.studio_runs_dir,
     )

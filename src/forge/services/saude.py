@@ -4,7 +4,6 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -130,23 +129,21 @@ def _default_probes() -> HealthProbes:
 
     def gpu_probe() -> str | None | object:
         try:
-            from forge.gpu.broker import Broker, ILEGIVEL
-            # Minimal broker just for residente check; no real claim needed.
-            # We read state file directly if it exists.
-            # For simplicity, try to construct with dummy paths and read resident.
-            # Actually use existing settings paths if available.
-            # We'll import Broker with minimal args.
-            import tempfile
-            lock_path = Path(tempfile.gettempdir()) / "forge_health.lock"
-            estado_path = Path(tempfile.gettempdir()) / "forge_health_state.json"
+            from forge.gpu.broker import Broker
+
+            # Precisa ser o MESMO estado que `montar_broker` grava: com um
+            # caminho temporário próprio o probe nunca via residente nenhum e o
+            # painel anunciava "Sem residente" com o LLM carregado na placa.
+            raiz = settings.output_dir.parent
             broker = Broker(
-                lock_path=lock_path,
-                estado_path=estado_path,
+                lock_path=raiz / ".gpu.lock",
+                estado_path=raiz / ".gpu-residente.json",
                 liberadores={},
-                timeout_lock=10.0,
+                timeout_lock=settings.gpu_lock_timeout,
             )
-            residente = broker.residente()
-            return residente  # str | None | _Ilegivel
+            # `residente_ativo` porque o estado sobrevive ao filho que o gravou:
+            # um PID morto não pode aparecer como modelo residente.
+            return broker.residente_ativo()
         except Exception:
             return None
 

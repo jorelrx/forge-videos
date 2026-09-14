@@ -155,6 +155,20 @@ class Broker:
             return estado.recurso
         return estado
 
+    def residente_ativo(self) -> str | None | _Ilegivel:
+        """Residente registrado cujo dono ainda está vivo.
+
+        O estado é gravado por quem reivindica o slot, e cada etapa roda num
+        processo filho próprio: o arquivo sobrevive ao dono. Para diagnóstico
+        (o painel), ler só o registro anunciaria um modelo residente que já
+        saiu com o processo — `residente()` continua sendo a leitura bruta
+        usada pela troca de slot.
+        """
+        estado = self._estado()
+        if isinstance(estado, GPUState):
+            return estado.recurso if self.inspector.is_alive(estado.pid) else None
+        return estado
+
     def _estado(self) -> GPUState | None | _Ilegivel:
         if not self.estado_path.exists():
             return None

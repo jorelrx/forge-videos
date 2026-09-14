@@ -193,6 +193,49 @@ def test_dono_morto_libera_todos_os_consumidores_antes_de_reivindicar(tmp_path):
     assert estado["claimed_at"].endswith("+00:00")
 
 
+def test_residente_ativo_ignora_dono_morto(tmp_path):
+    """O estado é gravado por um filho por etapa e sobrevive a ele.
+
+    `residente()` lê o registro bruto; se o painel usasse só isso, um PID já
+    morto apareceria como modelo residente na GPU para sempre.
+    """
+
+    class InspectorMorto:
+        def is_alive(self, pid: int) -> bool:
+            return False
+
+    (tmp_path / "residente.json").write_text(
+        json.dumps({
+            "recurso": "llm",
+            "pid": 4455,
+            "claimed_at": "2026-09-13T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    b = _broker(tmp_path, [], inspector=InspectorMorto())
+
+    assert b.residente() == "llm"
+    assert b.residente_ativo() is None
+
+
+def test_residente_ativo_confirma_o_dono_vivo(tmp_path):
+    """Com o dono vivo, o residente ativo é o próprio recurso registrado."""
+    b = _broker(tmp_path, [])
+
+    with b.exclusivo("tts"):
+        assert b.residente_ativo() == "tts"
+
+
+def test_residente_ativo_preserva_estado_ilegivel(tmp_path):
+    """Estado corrompido não pode virar placa livre: ILEGIVEL != None."""
+    from forge.gpu.broker import ILEGIVEL
+
+    (tmp_path / "residente.json").write_text("{truncad", encoding="utf-8")
+    b = _broker(tmp_path, [])
+
+    assert b.residente_ativo() is ILEGIVEL
+
+
 def test_comfy_manual_e_liberado_sem_residente_registrado(tmp_path):
     """Remover as probes externas deixaria um Comfy iniciado à mão na VRAM."""
     registro = []

@@ -91,6 +91,53 @@ def test_check_all_returns_six_services():
     assert set(result.keys()) == {"research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"}
 
 
+def test_default_probes_gpu_le_o_estado_real_do_broker(tmp_path, monkeypatch):
+    """O probe de GPU precisa ler o MESMO arquivo que o broker grava.
+
+    Com um caminho temporário próprio ele nunca enxerga o residente: o painel
+    anunciava "Sem residente" com o LLM carregado na placa.
+    """
+    import json
+    import os
+
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros")
+    (tmp_path / ".gpu-residente.json").write_text(
+        json.dumps({
+            "recurso": "llm",
+            "pid": os.getpid(),
+            "claimed_at": "2026-09-14T13:55:30+00:00",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(saude, "get_settings", lambda: settings)
+
+    assert saude._default_probes().gpu() == "llm"
+
+
+def test_default_probes_gpu_ignora_dono_morto(tmp_path, monkeypatch):
+    """Estado gravado por um filho que já saiu não é residente."""
+    import json
+
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros")
+    (tmp_path / ".gpu-residente.json").write_text(
+        json.dumps({
+            "recurso": "imagem",
+            "pid": 999999,
+            "claimed_at": "2026-09-14T13:55:30+00:00",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(saude, "get_settings", lambda: settings)
+
+    assert saude._default_probes().gpu() is None
+
+
 def test_default_probes_report_structured_health_when_services_are_offline():
     service = StudioHealthService()
     # Não falha imediatamente porque _default_probes captura exceções,

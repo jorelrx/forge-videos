@@ -51,3 +51,16 @@ def validation_error(detail: str) -> HTTPException:
             }
         },
     )
+
+
+def read_only_error(detail: str) -> HTTPException:
+    """Run somente-leitura -> 409."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": {
+                "code": "read_only",
+                "message": detail,
+            }
+        },
+    )

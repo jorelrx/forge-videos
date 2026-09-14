@@ -11,11 +11,11 @@ from forge.api.contracts import (
     RunView,
     CommandResponse,
 )
-from forge.api.errors import transition_error, not_found, validation_error
+from forge.api.errors import transition_error, not_found, validation_error, read_only_error
 from forge.api.sse import ServerSentEvent, iter_sse_events
 from forge.api.ranges import parse_range, RangeNotSatisfiable, iter_file_range
 from forge.domain.operacao import StageName
-from forge.services.control_plane import ControlPlaneService, TransicaoInvalida
+from forge.services.control_plane import ControlPlaneService, TransicaoInvalida, HistoricoSomenteLeitura
 from forge.services.studio_query import StudioQueryService
 from forge.repositories.connection import Database
 
@@ -128,6 +128,8 @@ async def pause_run(
         command = _control(request).request_pause(run_id, idempotency_key=idempotency_key)
     except KeyError:
         not_found("run", run_id)
+    except HistoricoSomenteLeitura as exc:
+        read_only_error(str(exc))
     except TransicaoInvalida as exc:
         transition_error(str(exc))
     return CommandResponse(**command.model_dump())
@@ -150,6 +152,8 @@ async def resume_run(
         command = _control(request).request_resume(run_id, idempotency_key=idempotency_key)
     except KeyError:
         not_found("run", run_id)
+    except HistoricoSomenteLeitura as exc:
+        read_only_error(str(exc))
     except TransicaoInvalida as exc:
         transition_error(str(exc))
     return CommandResponse(**command.model_dump())
@@ -179,6 +183,8 @@ async def retry_stage(
         )
     except KeyError:
         not_found("run", run_id)
+    except HistoricoSomenteLeitura as exc:
+        read_only_error(str(exc))
     except TransicaoInvalida as exc:
         transition_error(str(exc))
     return CommandResponse(**command.model_dump())

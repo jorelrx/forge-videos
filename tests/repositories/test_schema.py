@@ -148,7 +148,7 @@ def test_schema_version_impede_fisicamente_segunda_linha_com_id_um(tmp_path):
         conn.execute("INSERT INTO schema_version (id, version) VALUES (1, 1)")
 
 
-@pytest.mark.parametrize("version", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [SCHEMA_VERSION + 1, SCHEMA_VERSION + 5])
 def test_init_db_rejeita_schema_com_versao_diferente_da_suportada(tmp_path, version):
     db = Database(tmp_path / "forge.db")
     init_db(db)

@@ -115,6 +115,7 @@ class Run(BaseModel):
     finished_at: UtcDatetime | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+    is_read_only: bool = False
 
 
 class StageRun(BaseModel):

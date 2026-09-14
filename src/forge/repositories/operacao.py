@@ -83,8 +83,8 @@ class OperacaoRepository:
             """
             INSERT INTO runs (
                 id, video_id, status, priority, queue_position, config_snapshot_json,
-                workflow_version, git_commit, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                workflow_version, git_commit, created_at, is_read_only
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.id,
@@ -96,6 +96,86 @@ class OperacaoRepository:
                 run.workflow_version,
                 run.git_commit,
                 _iso(run.created_at),
+                int(run.is_read_only),
+            ),
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO stage_runs (id, run_id, stage, attempt, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    str(uuid.uuid4()),
+                    run.id,
+                    stage.value,
+                    1,
+                    StageStatus.PENDING.value,
+                    _iso(now),
+                )
+                for stage in ETAPAS
+            ],
+        )
+        return video, run
+
+    def create_imported_video_and_run(
+        self,
+        *,
+        tema: str,
+        tese: str | None,
+        config_snapshot: dict,
+        git_commit: str,
+    ) -> tuple[Video, Run]:
+        now = _now()
+        video = Video(
+            id=str(uuid.uuid4()),
+            tema=tema,
+            tese=tese,
+            created_at=now,
+            updated_at=now,
+        )
+        queue_position = self.conn.execute(
+            "SELECT COALESCE(MAX(queue_position), 0) + 1 FROM runs"
+        ).fetchone()[0]
+        run = Run(
+            id=str(uuid.uuid4()),
+            video_id=video.id,
+            status=RunStatus.COMPLETED,
+            priority=0,
+            queue_position=queue_position,
+            config_snapshot=config_snapshot,
+            workflow_version=1,
+            git_commit=git_commit,
+            is_read_only=True,
+            created_at=now,
+            finished_at=now,
+        )
+        self.conn.execute(
+            """
+            INSERT INTO videos (id, tema, tese, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (video.id, video.tema, video.tese, _iso(video.created_at), _iso(video.updated_at)),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO runs (
+                id, video_id, status, priority, queue_position, config_snapshot_json,
+                workflow_version, git_commit, created_at, finished_at, is_read_only
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.id,
+                run.video_id,
+                run.status.value,
+                run.priority,
+                run.queue_position,
+                _json(run.config_snapshot),
+                run.workflow_version,
+                run.git_commit,
+                _iso(run.created_at),
+                _iso(run.finished_at),
+                int(run.is_read_only),
             ),
         )
         self.conn.executemany(
@@ -294,7 +374,7 @@ class OperacaoRepository:
             SET status = ?, priority = ?, queue_position = ?, config_snapshot_json = ?,
                 workflow_version = ?, git_commit = ?, lease_owner = ?, lease_expires_at = ?,
                 pause_requested_at = ?, started_at = ?, finished_at = ?, failure_code = ?,
-                failure_message = ?
+                failure_message = ?, is_read_only = ?
             WHERE id = ?
             """,
             (
@@ -311,6 +391,7 @@ class OperacaoRepository:
                 _iso(run.finished_at),
                 run.failure_code,
                 run.failure_message,
+                int(run.is_read_only),
                 run.id,
             ),
         )
@@ -633,6 +714,7 @@ def _run_from_row(row: sqlite3.Row) -> Run:
         finished_at=_datetime(row["finished_at"]),
         failure_code=row["failure_code"],
         failure_message=row["failure_message"],
+        is_read_only=bool(row["is_read_only"]),
     )
 
 

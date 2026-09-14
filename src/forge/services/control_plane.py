@@ -26,6 +26,10 @@ from forge.repositories.operacao import OperacaoRepository
 from forge.services.maquina_estados import TransicaoInvalida, mudar_etapa, mudar_run
 
 
+class HistoricoSomenteLeitura(Exception):
+    pass
+
+
 class RunDetail(BaseModel):
     run: Run
     stages: list[StageRun]
@@ -146,7 +150,7 @@ class ControlPlaneService:
     def request_pause(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
-            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
+            self._require_mutable_run(operacao, run_id)
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -178,7 +182,7 @@ class ControlPlaneService:
     def request_resume(self, run_id: str, *, idempotency_key: str) -> Command:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
-            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
+            self._require_mutable_run(operacao, run_id)
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -248,7 +252,7 @@ class ControlPlaneService:
     ) -> Command:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
-            self._require_run(operacao, run_id)  # valida run existe antes de criar comando
+            self._require_mutable_run(operacao, run_id)
             comandos = ComandosRepository(conn)
             command, created = comandos.create_idempotent(
                 run_id=run_id,
@@ -310,5 +314,13 @@ class ControlPlaneService:
             raise KeyError(run_id)
         return run
 
+    def _require_mutable_run(self, operacao: OperacaoRepository, run_id: str) -> Run:
+        run = self._require_run(operacao, run_id)
+        if run.is_read_only:
+            raise HistoricoSomenteLeitura(
+                "run importada é histórico somente-leitura e não aceita comandos"
+            )
+        return run
 
-__all__ = ["ControlPlaneService", "RunDetail", "TransicaoInvalida"]
+
+__all__ = ["ControlPlaneService", "HistoricoSomenteLeitura", "RunDetail", "TransicaoInvalida"]

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import StreamingResponse
 
 from forge.api.contracts import EventPage
 from forge.api.errors import not_found
-from forge.api.sse import ServerSentEvent
+from forge.api.sse import ServerSentEvent, event_payload
 from forge.services.studio_query import StudioQueryService
 
 events_router = APIRouter()
@@ -51,7 +52,7 @@ def _encode_event(event: ServerSentEvent) -> bytes:
     if event.retry is not None:
         parts.append(f"retry: {event.retry}")
     if event.data is not None:
-        parts.append(f"data: {event.data}")
+        parts.append(f"data: {json.dumps(event.data, ensure_ascii=False)}")
     if event.comment is not None:
         parts.append(f": {event.comment}")
     body = "\n".join(parts) + "\n\n"
@@ -81,7 +82,7 @@ async def _sse_body(request: Request, last_event_id: int, run_id: str | None):
                     ServerSentEvent(
                         id=str(event.id),
                         retry=1500,
-                        data={"kind": event.kind, "message": event.message},
+                        data=event_payload(event),
                     )
                 )
             idle_for = 0.0

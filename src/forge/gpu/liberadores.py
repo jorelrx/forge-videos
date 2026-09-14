@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Callable
 
@@ -170,6 +171,71 @@ def liberar_para_tts(
     finally:
         if fechar:
             cliente.close()
+
+
+def garantir_comfy(
+    settings: Settings,
+    *,
+    probe: Callable[[], bool] | None = None,
+    launcher: Callable[..., object] | None = None,
+    registrar: Callable[[int], None] | None = None,
+) -> bool:
+    """Sobe o ComfyUI se ele não estiver no ar.
+
+    Necessário porque o broker encerra o ComfyUI antes do TTS: o processo segura
+    o heap Vulkan mesmo depois de `/free`. Como o áudio roda antes das imagens,
+    sem isto a etapa de imagem encontraria o servidor morto em todo run.
+    """
+    conferir = probe or (lambda: probe_comfy(settings))
+    if conferir():
+        return True
+
+    lançar = launcher or subprocess.Popen
+    python = settings.resolved_comfy_python
+    main = Path(settings.comfy_dir) / "main.py"
+    if not python.is_file() or not main.is_file():
+        logger.warning(
+            "ComfyUI ausente; não há o que subir",
+            python=str(python),
+            main=str(main),
+        )
+        return False
+
+    Path(settings.comfy_output_dir).mkdir(parents=True, exist_ok=True)
+    processo = lançar(
+        [str(python), str(main), *settings.comfy_args_list,
+         "--port", _porta_de(settings.comfy_url),
+         "--disable-auto-launch",
+         "--output-directory", str(settings.comfy_output_dir)],
+        cwd=str(settings.comfy_dir),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    pid = int(getattr(processo, "pid", 0) or 0)
+    if pid > 0:
+        # Só a árvore que o forge abriu pode ser encerrada por ele depois.
+        (registrar or registrar_comfy_lancado)(pid)
+
+    if _esperar_comfy(settings, conferir):
+        logger.info("ComfyUI no ar", pid=pid)
+        return True
+    logger.warning("ComfyUI não subiu a tempo", pid=pid, timeout=settings.comfy_boot_timeout)
+    return False
+
+
+def _porta_de(url: str) -> str:
+    partes = urllib.parse.urlsplit(url)
+    return str(partes.port or 8188)
+
+
+def _esperar_comfy(settings: Settings, conferir: Callable[[], bool]) -> bool:
+    limite = time.monotonic() + settings.comfy_boot_timeout
+    while time.monotonic() < limite:
+        if conferir():
+            return True
+        time.sleep(INTERVALO_POLL)
+    return False
 
 
 def registrar_comfy_lancado(pid: int) -> None:
@@ -371,5 +437,12 @@ def montar_broker(settings: Settings, *, base: Path | None = None) -> Broker:
             "llm": lambda: probe_lm_studio(settings),
             "imagem": lambda: probe_comfy(settings),
         },
-        preparadores={"tts": lambda: liberar_para_tts(settings)},
+        preparadores={
+            "tts": lambda: liberar_para_tts(settings),
+            # O áudio roda antes das imagens e pode ter encerrado o ComfyUI:
+            # reclamar o slot de imagem é o ponto certo para subi-lo de novo.
+            "imagem": lambda: (
+                garantir_comfy(settings) if settings.comfy_auto_start else None
+            ),
+        },
     )

@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     comfy_dir: Path = Path("data/comfy")
     comfy_python: Path | None = None
     comfy_output_dir: Path = Path("data/comfy/output")
+    # Subir o ComfyUI é trabalho do pipeline: o broker o encerra antes do TTS
+    # (o processo segura o heap Vulkan) e o áudio roda antes das imagens.
+    comfy_auto_start: bool = True
+    comfy_boot_timeout: float = Field(default=180.0, gt=0)
+    comfy_args: str = "--directml --lowvram --reserve-vram 0.5"
     lora_dir: Path = Path("library/loras")
     # VRAM que precisa estar livre para o ComfyUI aceitar a próxima geração.
     # 6 GB numa placa de 8 GB: o SDXL não entra abaixo disso.
@@ -147,6 +152,14 @@ class Settings(BaseSettings):
     @property
     def resolved_tts_voice_reference(self) -> Path:
         return self.tts_voice_reference or self.audio_generate_dir / "voice.wav"
+
+    @property
+    def resolved_comfy_python(self) -> Path:
+        return self.comfy_python or self.comfy_dir / "venv" / "Scripts" / "python.exe"
+
+    @property
+    def comfy_args_list(self) -> list[str]:
+        return [parte for parte in self.comfy_args.split() if parte]
 
     @property
     def resolved_model(self) -> str:

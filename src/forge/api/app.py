@@ -59,9 +59,11 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
 
     @app.exception_handler(TransicaoInvalida)
     async def transition_invalid(request, exc):
+        # Mesmo código de `errors.transition_error`: a rota e o handler de
+        # aplicação sinalizam a MESMA condição, e o painel decide pela chave.
         return JSONResponse(
             status_code=409,
-            content={"error": {"code": "invalid_transition", "message": str(exc)}},
+            content={"error": {"code": "transition_invalid", "message": str(exc)}},
         )
 
     @app.exception_handler(IdempotencyConflict)

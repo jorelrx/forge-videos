@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from forge.domain.execucao import FailureClass
@@ -25,13 +26,125 @@ def test_build_argv_uses_fixed_safe_batch_flags_and_no_sampling_knobs(tmp_path):
 
     argv = client.build_argv(batch_file, tmp_path / "out")
 
+    # Contrato verificado contra `audiocpp_cli.exe --help`: --task e --family
+    # são obrigatórios, a referência de voz é --voice-ref e a saída é --out-dir.
     assert argv == [
-        str(settings.tts_binary), "--model", str(settings.tts_model),
-        "--voice-reference", str(settings.tts_voice_reference),
-        "--batch-text-file", str(batch_file), "--output-dir", str(tmp_path / "out"),
+        str(settings.tts_binary),
+        "--task", "tts",
+        "--family", settings.tts_family,
+        "--model", str(settings.tts_model),
+        "--backend", settings.tts_backend,
+        "--voice-ref", str(settings.tts_voice_reference),
+        "--batch-text-file", str(batch_file),
+        "--out-dir", str(tmp_path / "out"),
         "--seed", "42",
     ]
     assert not {"--temperature", "--top-k", "--top-p"}.intersection(argv)
+
+
+def test_build_argv_carries_the_mandatory_task_and_family(tmp_path):
+    """Sem --task/--family o binário sai 1 sem gerar áudio."""
+    argv = AudioGenerateClient(_settings(tmp_path)).build_argv(
+        tmp_path / "batch.jsonl", tmp_path / "out"
+    )
+
+    assert "--task" in argv and argv[argv.index("--task") + 1] == "tts"
+    assert "--family" in argv and argv[argv.index("--family") + 1]
+    assert "--voice-ref" in argv
+    assert "--out-dir" in argv
+
+
+def test_build_argv_requests_a_batch_manifest(tmp_path):
+    """O nome do WAV é `line_<N>`: o manifest é a única fonte do mapeamento."""
+    argv = AudioGenerateClient(_settings(tmp_path)).build_argv(
+        tmp_path / "batch.jsonl", tmp_path / "out", manifest_path=tmp_path / "m.json"
+    )
+
+    assert "--batch-manifest-out" in argv
+    assert argv[argv.index("--batch-manifest-out") + 1] == str(tmp_path / "m.json")
+
+
+def test_synthesize_batch_maps_outputs_through_the_manifest(tmp_path):
+    """O binário ignora o id do pedido e grava `line_<N>.wav`; o manifesto
+    devolve esse nome na ordem das linhas. Sem lê-lo, o adaptador anunciaria
+    caminhos que não existem."""
+    captured = {}
+
+    def run(argv, **kwargs):
+        captured["argv"] = argv
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        manifest = Path(argv[argv.index("--batch-manifest-out") + 1])
+        for index in (1, 2):
+            (out / f"line_{index}.wav").write_bytes(b"RIFF ok")
+        manifest.write_text(
+            json.dumps(
+                {
+                    "requests": [
+                        {"id": "line_1", "sample_rate": 24000, "channels": 1, "samples": 10},
+                        {"id": "line_2", "sample_rate": 24000, "channels": 1, "samples": 20},
+                    ],
+                    "chapters": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    client = AudioGenerateClient(_settings(tmp_path), run=run)
+    outcomes = client.synthesize_batch(
+        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda")],
+        tmp_path / "out",
+    )
+
+    assert [outcome.ok for outcome in outcomes] == [True, True]
+    assert outcomes[0].path == tmp_path / "out" / "line_1.wav"
+    assert outcomes[1].path == tmp_path / "out" / "line_2.wav"
+
+
+def test_synthesize_batch_fails_when_the_manifest_does_not_cover_every_item(tmp_path):
+    """Manifesto curto não vira sucesso silencioso: item sem arquivo falha."""
+
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "line_1.wav").write_bytes(b"RIFF ok")
+        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
+            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
+            encoding="utf-8",
+        )
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    client = AudioGenerateClient(_settings(tmp_path), run=run)
+    outcomes = client.synthesize_batch(
+        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda")],
+        tmp_path / "out",
+    )
+
+    assert outcomes[0].ok
+    assert not outcomes[1].ok
+    assert outcomes[1].failure is not None
+    assert outcomes[1].failure.code == "tts_output_missing"
+
+
+def test_synthesize_batch_fails_when_a_manifest_entry_has_no_file(tmp_path):
+    """Manifesto que anuncia um áudio ausente é falha, não sucesso."""
+
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
+            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
+            encoding="utf-8",
+        )
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    client = AudioGenerateClient(_settings(tmp_path), run=run)
+    outcomes = client.synthesize_batch([AudioRequest("b001", "Primeira")], tmp_path / "out")
+
+    assert not outcomes[0].ok
+    assert outcomes[0].failure is not None
+    assert outcomes[0].failure.code == "tts_output_missing"
 
 
 def test_synthesize_batch_serializes_plain_text_without_emotion_tags(tmp_path):
@@ -40,9 +153,13 @@ def test_synthesize_batch_serializes_plain_text_without_emotion_tags(tmp_path):
     def run(argv, **kwargs):
         captured["argv"] = argv
         captured.update(kwargs)
-        out = Path(argv[argv.index("--output-dir") + 1])
+        out = Path(argv[argv.index("--out-dir") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "b001.wav").write_bytes(b"RIFF ok")
+        (out / "line_1.wav").write_bytes(b"RIFF ok")
+        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
+            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
+            encoding="utf-8",
+        )
         return type("Result", (), {"returncode": 0, "stderr": ""})()
 
     client = AudioGenerateClient(_settings(tmp_path), run=run)

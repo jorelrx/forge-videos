@@ -94,6 +94,67 @@ def classify_audio_failure(
     )
 
 
+_OUTPUT_MISSING = "tts_output_missing"
+
+
+def _missing_output(item_key: str, detail: str) -> AudioOutcome:
+    """Saída anunciada que não existe é falha determinística, não sucesso."""
+    return AudioOutcome(
+        item_key=item_key,
+        failure=FailureDetail(
+            code=_OUTPUT_MISSING,
+            message=f"Áudio não produzido: {detail}",
+            failure_class=FailureClass.DETERMINISTIC,
+            retriable=False,
+            recommended_action=(
+                "Conferir --out-dir/--batch-manifest-out do audiocpp_cli"
+            ),
+            adapter="audio_generate",
+            attempt=1,
+            item_key=item_key,
+        ),
+    )
+
+
+def _map_manifest_outputs(
+    items: Sequence[AudioRequest], output_dir: Path, manifest_path: Path
+) -> list[AudioOutcome]:
+    """Traduz o manifesto do batch em resultados por item.
+
+    O binário ignora o `id` do pedido e grava `line_<N>.wav`, devolvendo esse
+    nome no manifesto, na ordem das linhas. Sem ler o manifesto, o adaptador
+    anunciaria um `<item_key>.wav` que o disco não tem — e um exit 0 com N
+    áudios viraria N sucessos falsos.
+    """
+    try:
+        dados = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        entradas = dados.get("requests") or []
+    except (OSError, ValueError) as error:
+        return [
+            _missing_output(item.item_key, f"manifesto ilegível ({error})")
+            for item in items
+        ]
+
+    outcomes: list[AudioOutcome] = []
+    for index, item in enumerate(items):
+        if index >= len(entradas):
+            outcomes.append(
+                _missing_output(item.item_key, "manifesto não cobre todos os itens")
+            )
+            continue
+        nome = str((entradas[index] or {}).get("id") or "")
+        caminho = output_dir / f"{nome}.wav"
+        if not nome or not caminho.is_file():
+            outcomes.append(
+                _missing_output(
+                    item.item_key, f"arquivo declarado no manifesto ausente: {nome!r}"
+                )
+            )
+            continue
+        outcomes.append(AudioOutcome.succeeded(item.item_key, caminho))
+    return outcomes
+
+
 class AudioGenerateClient:
     def __init__(
         self,
@@ -105,16 +166,31 @@ class AudioGenerateClient:
         self._run = run or subprocess.run
 
     def build_argv(
-        self, batch_text_file: Path, output_dir: Path, *, seed: int | None = None
+        self,
+        batch_text_file: Path,
+        output_dir: Path,
+        *,
+        seed: int | None = None,
+        manifest_path: Path | None = None,
     ) -> list[str]:
-        return [
+        # Contrato real do audiocpp_cli: `--task` e `--family` são obrigatórios,
+        # a referência de voz é `--voice-ref` e a saída é `--out-dir`. As formas
+        # antigas (`--voice-reference`, `--output-dir`, sem task/family) fazem o
+        # binário sair 1 sem gerar nada.
+        argv = [
             str(self.settings.resolved_tts_binary),
+            "--task", "tts",
+            "--family", self.settings.tts_family,
             "--model", str(self.settings.resolved_tts_model),
-            "--voice-reference", str(self.settings.resolved_tts_voice_reference),
+            "--backend", self.settings.tts_backend,
+            "--voice-ref", str(self.settings.resolved_tts_voice_reference),
             "--batch-text-file", str(batch_text_file),
-            "--output-dir", str(output_dir),
+            "--out-dir", str(output_dir),
             "--seed", str(self.settings.tts_seed if seed is None else seed),
         ]
+        if manifest_path is not None:
+            argv += ["--batch-manifest-out", str(manifest_path)]
+        return argv
 
     @staticmethod
     def _clean_text(value: str) -> str:
@@ -137,7 +213,10 @@ class AudioGenerateClient:
                     ensure_ascii=False,
                 ) + "\n")
             batch_text_file = Path(source.name)
-        argv = self.build_argv(batch_text_file, output_dir, seed=items[0].seed)
+        manifest_path = batch_text_file.with_suffix(".manifest.json")
+        argv = self.build_argv(
+            batch_text_file, output_dir, seed=items[0].seed, manifest_path=manifest_path
+        )
         timeout = min(
             self.settings.tts_batch_timeout,
             self.settings.tts_item_timeout * len(items),
@@ -156,10 +235,7 @@ class AudioGenerateClient:
             stderr = _stderr_tail(getattr(completed, "stderr", ""))
             exit_code = int(getattr(completed, "returncode", 1))
             if exit_code == 0:
-                return [
-                    AudioOutcome.succeeded(item.item_key, output_dir / f"{item.item_key}.wav")
-                    for item in items
-                ]
+                return _map_manifest_outputs(items, output_dir, manifest_path)
         except (OSError, subprocess.SubprocessError) as error:
             stderr = _stderr_tail(error)
         return [

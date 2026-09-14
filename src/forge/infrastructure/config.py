@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     studio_sse_keepalive_seconds: float = Field(default=15.0, gt=0)
     studio_worker_poll_seconds: float = Field(default=1.0, gt=0)
     tts_backend: Literal["vulkan", "cpu"] = "vulkan"
+    # O audiocpp_cli exige --family além de --task: é ela que resolve o
+    # package-spec do modelo. Ver runtime/bin/model_specs no audio-generate.
+    tts_family: str = "higgs_audio_tts"
     audio_generate_dir: Path = Path(r"C:\dev\audio-generate")
     tts_binary: Path | None = None
     tts_model: Path | None = None

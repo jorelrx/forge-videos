@@ -27,6 +27,12 @@ FORGE_ANTHROPIC_API_KEY=sk-ant-...
 ## Uso
 
 ```bash
+# API (FastAPI)
+uv run forge-api
+
+# Dev web (Next.js)
+npm run dev --prefix web
+
 # Tema gerado pelo LLM
 uv run forge roteiro
 

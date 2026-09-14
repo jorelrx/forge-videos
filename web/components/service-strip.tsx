@@ -5,22 +5,33 @@ export interface ServiceStripProps {
   services: Record<string, ServiceHealth>;
 }
 
+const GPU_SERVICES = ["lm-studio", "comfyui", "tts", "audio-generate"];
+
 export function ServiceStrip({ services }: ServiceStripProps) {
+  const entries = Object.entries(services);
+  if (entries.length === 0) return null;
+
   return (
-    <section aria-label="Status dos serviços" className="service-strip">
-      <h3>Serviços</h3>
-      <ul>
-        {Object.entries(services).map(([name, health]) => (
-          <li key={name} className={`service-item state-${health.state}`}>
-            <span className="service-name">{name}</span>
-            <span className="service-state">{health.state}</span>
-            <span className="service-message">{health.message}</span>
-            {health.latency_ms != null && (
-              <span className="service-latency">{health.latency_ms}ms</span>
+    <div className="services-strip" aria-label="Status dos serviços">
+      {entries.map(([name, health]) => {
+        const isGpu = GPU_SERVICES.some((g) => name.includes(g));
+        const ledState =
+          health.state === "healthy"
+            ? "led"
+            : health.state === "degraded"
+              ? "led busy"
+              : "led off";
+        return (
+          <div key={name} className={`service-chip ${isGpu ? "gpu" : ""}`}>
+            <span className={ledState} aria-hidden="true" />
+            <span>{name}</span>
+            {health.message && (
+              <span style={{ color: "var(--muted)" }}>· {health.message}</span>
             )}
-          </li>
-        ))}
-      </ul>
-    </section>
+            {health.latency_ms != null && <span>{health.latency_ms}ms</span>}
+          </div>
+        );
+      })}
+    </div>
   );
 }

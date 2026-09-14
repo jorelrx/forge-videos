@@ -1,8 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import { FailureDrawer } from "./failure-drawer";
 
-describe("failure-drawer RED", () => {
-  it("fails: failure drawer renders error token", () => {
-    expect("token").toBe("failure_rendered");
+describe("FailureDrawer", () => {
+  it("expõe falha ao operador com semântica de alerta", () => {
+    render(<FailureDrawer error={new Error("Falha na pesquisa")} />);
+
+    expect(screen.getByRole("alert")).not.toBeNull();
+    expect(screen.getByText("Falha na pesquisa")).not.toBeNull();
   });
 });

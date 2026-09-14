@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 import sqlite3
-
 from forge.repositories.connection import Database
 
 SCHEMA_VERSION = 1
@@ -94,7 +92,7 @@ SCHEMA_SQL = (
     CREATE TABLE IF NOT EXISTS artifacts (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id),
-        stage_run_id TEXT NOT NULL REFERENCES stage_runs(id),
+        stage_run_id TEXT REFERENCES stage_runs(id),
         work_item_id TEXT REFERENCES work_items(id),
         kind TEXT NOT NULL,
         relative_path TEXT NOT NULL,

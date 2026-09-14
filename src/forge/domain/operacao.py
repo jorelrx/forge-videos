@@ -178,7 +178,7 @@ class WorkItem(BaseModel):
 class Artifact(BaseModel):
     id: str
     run_id: str
-    stage_run_id: str
+    stage_run_id: str | None = None
     work_item_id: str | None = None
     kind: str
     relative_path: str

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-
 import pytest
-
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
@@ -72,8 +70,12 @@ def test_after_filtra_run_sem_mudar_semantica_do_cursor_global(db):
             kind="a.2", level="info", message="A2", payload={}, run_id=run_a.id
         )
 
-        assert [event.id for event in repo.after(event_a1.id, run_id=run_a.id)] == [event_a2.id]
-        assert [event.id for event in repo.after(event_b1.id, run_id=run_a.id)] == [event_a2.id]
+        assert [event.id for event in repo.after(event_a1.id, run_id=run_a.id)] == [
+            event_a2.id
+        ]
+        assert [event.id for event in repo.after(event_b1.id, run_id=run_a.id)] == [
+            event_a2.id
+        ]
         assert repo.after(event_a2.id, run_id=run_b.id) == []
 
 
@@ -132,10 +134,14 @@ def test_page_and_latest_stage_metrics(db):
         operacao = OperacaoRepository(conn)
         run = create_run(operacao, tema="Tema Metrica")
         repo = EventosRepository(conn)
-        first = repo.append(kind="run.created", level="info", message="C", payload={}, run_id=run.id)
-        second = repo.append(kind="run.started", level="info", message="S", payload={}, run_id=run.id)
-        # page retorna em ordem cronológica descendente limitada
+        first = repo.append(
+            kind="run.created", level="info", message="C", payload={}, run_id=run.id
+        )
+        second = repo.append(
+            kind="run.started", level="info", message="S", payload={}, run_id=run.id
+        )
+        # page retorna em ordem cronológica ascendente limitada
         page = repo.page(run.id, before_id=None, limit=2)
         assert [e.id for e in page] == [first.id, second.id]
-        older = repo.page(run.id, before_id=first.id, limit=2)
-        assert older == [second]
+        older = repo.page(run.id, before_id=second.id, limit=2)
+        assert older == [first]

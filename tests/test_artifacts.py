@@ -1,14 +1,11 @@
-# RED: testes para ranges + artifacts falham conforme esperado
+import pytest
+
 from forge.api.ranges import parse_range, ByteRange, RangeNotSatisfiable
 
 
 def test_range_invalid_size_raises():
-    # RangeNotSatisfiable quando size <= 0
-    try:
+    with pytest.raises(RangeNotSatisfiable):
         parse_range("bytes=0-", 0)
-        assert False, "deveria levantar RangeNotSatisfiable"
-    except RangeNotSatisfiable:
-        pass
 
 
 def test_artifact_preview_mime_safety():

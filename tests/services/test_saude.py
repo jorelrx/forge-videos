@@ -91,8 +91,7 @@ def test_check_all_returns_six_services():
     assert set(result.keys()) == {"research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"}
 
 
-def test_red_stage_real_probes_not_implemented():
-    # RED: probes reais não estão ligadas a endpoints vivos ainda
+def test_default_probes_report_structured_health_when_services_are_offline():
     service = StudioHealthService()
     # Não falha imediatamente porque _default_probes captura exceções,
     # mas os probes retornam False (indisponível) na maioria dos casos.

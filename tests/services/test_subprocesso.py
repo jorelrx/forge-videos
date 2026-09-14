@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from forge.domain.operacao import RunStatus, StageName, StageStatus
 from forge.repositories.connection import Database
 from forge.repositories.schema import init_db
@@ -126,6 +125,8 @@ def process_exists(pid: int) -> bool:
             text=True,
             check=False,
         )
+        if result.stdout is None:
+            return False
         return any(
             len(row) > 1 and row[1].strip() == str(pid)
             for row in csv.reader(result.stdout.splitlines())

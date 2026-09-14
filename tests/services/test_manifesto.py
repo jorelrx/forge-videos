@@ -1,6 +1,8 @@
 import json
 from unittest import mock
 
+import pytest
+
 from forge.domain.midia import Beat, BlocoNarracao, PlanoMidia
 from forge.domain.operacao import ItemStatus, WorkItem
 from forge.services.manifesto import (
@@ -149,11 +151,8 @@ def test_escrita_interrompida_nao_corrompe_o_manifesto(tmp_path):
         m.itens[0].erro = "erro de teste"
 
         # Esperado: OSError se propaga
-        try:
+        with pytest.raises(OSError):
             gravar(tmp_path, m)
-            assert False, "Deveria ter levantado OSError"
-        except OSError:
-            pass
 
     # Verifica que o arquivo original permanece intacto (nunca truncado)
     m_preservado = carregar(tmp_path)

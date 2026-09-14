@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any, Callable
 
 from forge.domain.execucao import (
     ArtifactOutput,
@@ -16,8 +17,11 @@ from forge.domain.execucao import (
 )
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
+from forge.executors.ffmpeg import probe_media, run_ffmpeg
+from forge.infrastructure.logging import get_logger
 from forge.services.worker import EventSink
-from forge.executors.ffmpeg import probe_media
+
+logger = get_logger(__name__)
 
 
 class ValidationExecutor(StageImplementation):
@@ -28,9 +32,11 @@ class ValidationExecutor(StageImplementation):
         self,
         max_unplanned_silence_seconds: float = 2.0,
         frame_sample_fractions: tuple[float, float, float] = (0.10, 0.50, 0.90),
+        runner: Callable[..., tuple[int, str, Any]] = run_ffmpeg,
     ) -> None:
         self.max_unplanned_silence_seconds = max_unplanned_silence_seconds
         self.frame_sample_fractions = frame_sample_fractions
+        self.runner = runner
 
     def prepare(self, context: RunSnapshot) -> StagePlan:
         if context.stage is not StageName.VALIDACAO:
@@ -332,21 +338,12 @@ class ValidationExecutor(StageImplementation):
                 )
             )
 
-        # 6. Silence check from fixtures
-        silence_ok_path = Path("tests/fixtures/ffmpeg/silence-ok.txt")
-        silence_failed_path = Path("tests/fixtures/ffmpeg/silence-failed.txt")
-        unplanned_silences = []
-        for silence_path in [silence_failed_path, silence_ok_path]:
-            if silence_path.is_file():
-                content = silence_path.read_text(encoding="utf-8")
-                durations = re.findall(r"silence_duration:\s*([0-9.]+)", content)
-                for d_str in durations:
-                    try:
-                        d = float(d_str)
-                        if d > self.max_unplanned_silence_seconds:
-                            unplanned_silences.append(d)
-                    except ValueError:
-                        pass
+        # 6. Silence check on the REAL narration of this run.
+        unplanned_silences = [
+            duracao
+            for duracao in self._silencios_da_narracao(context)
+            if duracao > self.max_unplanned_silence_seconds
+        ]
         if unplanned_silences:
             findings.append(
                 GateFinding(
@@ -502,6 +499,39 @@ class ValidationExecutor(StageImplementation):
                 "image_artifacts": len(image_artifacts),
             },
         )
+
+    def _silencios_da_narracao(self, context: RunSnapshot) -> list[float]:
+        """Silêncios medidos na narração DESTA run, via `silencedetect`.
+
+        Antes o gate lia `tests/fixtures/ffmpeg/silence-*.txt` — fixtures de
+        teste — como se fossem a análise do áudio: com o CWD na raiz do repo,
+        toda validação em produção encontrava `silence_duration: 45.32` e
+        reprovava por um silêncio que o vídeo não tem.
+        """
+        narracao = context.run_dir / "video" / "narration.wav"
+        if not narracao.is_file():
+            return []
+        argv = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(narracao),
+            "-af",
+            f"silencedetect=noise=-35dB:d={self.max_unplanned_silence_seconds}",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            codigo, stderr, _ = self.runner(argv, timeout=120)
+        except Exception as error:  # noqa: BLE001 - diagnóstico não derruba o gate
+            logger.warning("silencedetect indisponível", error=str(error))
+            return []
+        if codigo != 0:
+            logger.warning("silencedetect falhou", returncode=codigo)
+            return []
+        return [float(valor) for valor in re.findall(r"silence_duration:\s*([0-9.]+)", stderr or "")]
 
     def run(self, context: RunSnapshot, emit: EventSink) -> StageChildResult:
         plan = self.prepare(context)

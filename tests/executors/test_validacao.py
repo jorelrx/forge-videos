@@ -84,11 +84,60 @@ def test_final_gate_cross_checks_plan_items_and_artifacts(tmp_path):
     assert any(f.code == "audio_count_mismatch" for f in result.gate.findings)
 
 
-def test_silence_longer_than_threshold_fails(tmp_path):
+def _wav_de_silencio(path: Path, segundos: float = 0.2) -> None:
+    """Narração real (silêncio puro) para o gate analisar."""
+    import wave
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x00\x00" * int(24000 * segundos))
+
+
+def _runner_sem_silencio(argv, **kwargs):
+    return 0, "size=N/A time=00:00:00.20 bitrate=N/A", b""
+
+
+def _runner_com_silencio(argv, **kwargs):
+    return 0, "silence_start: 1.0\nsilence_duration: 3.30\n", b""
+
+
+def test_silencio_real_da_narracao_reprova(tmp_path):
     snapshot = _snapshot(tmp_path)
-    result = ValidationExecutor(max_unplanned_silence_seconds=2.0).run(snapshot, lambda **e: None)
-    codes = [f.code for f in result.gate.findings]
-    assert "unexpected_silence" in codes
+    _wav_de_silencio(snapshot.run_dir / "video" / "narration.wav")
+
+    result = ValidationExecutor(
+        max_unplanned_silence_seconds=2.0, runner=_runner_com_silencio
+    ).run(snapshot, lambda **e: None)
+
+    assert "unexpected_silence" in [f.code for f in result.gate.findings]
+
+
+def test_fixtures_de_teste_nao_valem_como_analise_da_narracao(tmp_path):
+    """A fixture `silence-failed.txt` (45,32 s) não é análise desta run.
+
+    Enquanto o gate lia `tests/fixtures/ffmpeg/silence-*.txt`, toda validação em
+    produção — CWD na raiz do repo — reprovava por um silêncio que o vídeo não
+    tem, e a run terminava com o gate final reprovado sem defeito real.
+    """
+    fixtures = [
+        Path("tests/fixtures/ffmpeg/silence-failed.txt"),
+        Path("tests/fixtures/ffmpeg/silence-ok.txt"),
+    ]
+    assert all(item.is_file() for item in fixtures), "fixtures ausentes"
+    texto = "".join(item.read_text(encoding="utf-8") for item in fixtures)
+    assert "silence_duration: 45.32" in texto
+
+    snapshot = _snapshot(tmp_path)
+    _wav_de_silencio(snapshot.run_dir / "video" / "narration.wav")
+
+    result = ValidationExecutor(
+        max_unplanned_silence_seconds=2.0, runner=_runner_sem_silencio
+    ).run(snapshot, lambda **e: None)
+
+    assert "unexpected_silence" not in [f.code for f in result.gate.findings]
 
 
 def test_all_sample_frames_must_be_extractable(tmp_path):

@@ -113,4 +113,76 @@ describe("useDashboard", () => {
     expect(result.current.queue).toEqual([run]);
     expect(result.current.error?.message).toBe("API indisponível");
   });
+
+  it("mostra a run recém-enfileirada mesmo com GET /api/services pendente", async () => {
+    // GET /api/services sonda ComfyUI/LM Studio com timeout de 2s cada: medido
+    // em 3,1 s contra a API real, contra 64 ms de /api/queue. A projeção da
+    // fila não pode ficar refém dessa sondagem.
+    const api = makeApi();
+    (api.getQueue as ReturnType<typeof vi.fn>).mockResolvedValueOnce([run]);
+    (api.getServices as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<never>(() => {}),
+    );
+    const { result } = renderHook(() => useDashboard(api));
+    await waitFor(() => expect(result.current.queue).toEqual([run]));
+
+    const enqueued = {
+      run: { id: "run-2", status: "queued" },
+      video: { id: "video-2", tema: "Vídeo novo", tese: null },
+      progress: 0,
+      current_stage: null,
+    } as any;
+    (api.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue([run, enqueued]);
+
+    act(() => {
+      void result.current.createVideo({
+        tema: "Vídeo novo",
+        tese: null,
+        priority: 50,
+        preset: "local-recomendado-v1",
+      });
+    });
+
+    await waitFor(() => expect(result.current.queue).toHaveLength(2), { timeout: 2000 });
+    expect(result.current.queue[1].video.tema).toBe("Vídeo novo");
+  });
+
+  it("não descarta fila e runs quando GET /api/services falha", async () => {
+    const api = makeApi();
+    (api.getServices as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("probe indisponível"),
+    );
+    const { result } = renderHook(() => useDashboard(api));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.queue).toEqual([run]);
+    expect(result.current.runs).toEqual([run]);
+    expect(result.current.error?.message).toBe("probe indisponível");
+  });
+
+  it("não liga loading no refresh disparado por evento SSE", async () => {
+    const api = makeApi();
+    (api.getServices as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<never>(() => {}),
+    );
+    const { result } = renderHook(() =>
+      useDashboard(api, { EventSource: FakeEventSource as unknown as typeof EventSource }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      FakeEventSource.current?.emit({
+        id: 7,
+        run_id: "run-1",
+        kind: "stage.progress",
+        level: "info",
+        message: "50%",
+        payload: {},
+        created_at: "2026-09-14T00:00:02Z",
+      });
+    });
+
+    await waitFor(() => expect(api.getQueue).toHaveBeenCalledTimes(2));
+    expect(result.current.loading).toBe(false);
+  });
 });

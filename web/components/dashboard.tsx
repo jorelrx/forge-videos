@@ -32,14 +32,64 @@ const SIDEBAR_NAV = [
   { id: "nav-config", label: "Configuração", ico: "⚙" },
 ] as const;
 
+/**
+ * Ordem canônica do domínio (forge.domain.operacao.StageName / ETAPAS): é a
+ * ordem em que o worker executa e em que `GET /api/runs/{id}` devolve `stages`.
+ * `audio` roda antes de `imagens` (o broker encerra o ComfyUI antes do TTS).
+ */
+const STAGE_ORDER: StageName[] = [
+  "preparacao",
+  "pesquisa",
+  "roteiro",
+  "plano_midia",
+  "audio",
+  "imagens",
+  "montagem",
+  "validacao",
+];
+
 const PIPELINE_STAGES: { key: StageName; label: string; sub: string }[] = [
   { key: "pesquisa", label: "Pesquisa", sub: "fonte citável" },
   { key: "roteiro", label: "Roteiro", sub: "9 seções · score" },
-  { key: "imagens", label: "Imagens", sub: "beats · passos" },
   { key: "audio", label: "Áudio", sub: "blocos · f0" },
+  { key: "imagens", label: "Imagens", sub: "beats · passos" },
   { key: "montagem", label: "Montagem", sub: "trilhas · duração" },
   { key: "validacao", label: "Validação", sub: "codecs · frames" },
 ];
+
+type ChipStatus = "ok" | "live" | "wait" | "fail";
+
+/**
+ * Status do chip a partir do `stage_run.status` real da API. O índice na ordem
+ * canônica é só fallback para quando a projeção não traz `stages`: por posição,
+ * a etapa `imagens` aparecia como concluída enquanto `audio` executava, e uma
+ * run em `preparacao`/`plano_midia` não mostrava nenhuma etapa ativa.
+ */
+function pipelineChipStatus(
+  stage: StageName,
+  stageStatusValue: string | undefined,
+  currentStage: StageName | null,
+): ChipStatus {
+  switch (stageStatusValue) {
+    case "succeeded":
+      return "ok";
+    case "failed":
+    case "interrupted":
+      return "fail";
+    case "running":
+    case "pausing":
+    case "paused":
+      return "live";
+    case "pending":
+    case "invalidated":
+      return "wait";
+  }
+  const currentIdx = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
+  const idx = STAGE_ORDER.indexOf(stage);
+  if (currentIdx < 0 || idx < 0) return "wait";
+  if (idx === currentIdx) return "live";
+  return idx < currentIdx ? "ok" : "wait";
+}
 
 interface PipelineStageProps {
   stage: StageName;
@@ -94,7 +144,13 @@ function ServiceStripItem({
   );
 }
 
-function Sidebar({ queueCount }: { queueCount: number }) {
+function Sidebar({
+  queueCount,
+  onNewRun,
+}: {
+  queueCount: number;
+  onNewRun: () => void;
+}) {
   return (
     <aside className="sidebar" aria-label="Navegação">
       <div className="brand">
@@ -102,7 +158,12 @@ function Sidebar({ queueCount }: { queueCount: number }) {
         Forge Studio
       </div>
 
-      <button className="sidebar-btn" data-choice="new-run" type="button">
+      <button
+        className="sidebar-btn"
+        data-choice="new-run"
+        type="button"
+        onClick={onNewRun}
+      >
         ＋ Novo vídeo
       </button>
 
@@ -219,7 +280,14 @@ export function DashboardView({ state }: DashboardViewProps) {
   const error = state.error;
 
   const focusStatus = focusRun?.run?.status ?? "queued";
-  const isPaused = focusStatus === "pausing" || focusStatus === "paused";
+  // Mesmas regras de run-actions.tsx, que espelham o ControlPlane: retry_stage
+  // só é aceito a partir de paused/failed/completed e resume a partir de
+  // paused/failed/interrupted (fora disso a API responde 409
+  // "transition_invalid"). Oferecer o que a API recusa faz o clique não
+  // acontecer do ponto de vista do operador.
+  const canPauseRun = ["preparing", "running", "validating"].includes(focusStatus);
+  const canResumeRun = ["paused", "failed", "interrupted"].includes(focusStatus);
+  const canRetryRun = ["paused", "failed", "completed"].includes(focusStatus);
 
   const queueItemCount = queue.length;
 
@@ -230,22 +298,18 @@ export function DashboardView({ state }: DashboardViewProps) {
     items?: string;
   }[] = [];
   if (focusRun) {
-    const allStages = PIPELINE_STAGES;
-    const curIdx = allStages.findIndex((s) => s.key === focusRun.current_stage);
-    for (let i = 0; i < allStages.length; i++) {
-      const s = allStages[i];
-      let status: "ok" | "live" | "wait" | "fail" = "wait";
-      if (i === curIdx) {
-        status = "live";
-      } else if (i < curIdx) {
-        status = "ok";
-      }
+    for (const s of PIPELINE_STAGES) {
+      const stageView = focusRun.stages?.[s.key];
+      const status = pipelineChipStatus(
+        s.key,
+        stageView?.stage_run?.status,
+        focusRun.current_stage ?? null,
+      );
 
       let items = "";
-      if (focusRun.stages?.[s.key]) {
-        const sv = focusRun.stages[s.key];
-        const cur = sv.stage_run?.current_items;
-        const tot = sv.stage_run?.total_items;
+      if (stageView) {
+        const cur = stageView.stage_run?.current_items;
+        const tot = stageView.stage_run?.total_items;
         if (cur != null && tot != null && tot > 0) {
           items = `${cur}/${tot}`;
         }
@@ -270,7 +334,7 @@ export function DashboardView({ state }: DashboardViewProps) {
   }));
 
   const sidebar = (
-    <Sidebar queueCount={queueItemCount} />
+    <Sidebar queueCount={queueItemCount} onNewRun={focusNewVideoForm} />
   );
 
   function focusNewVideoForm() {
@@ -359,7 +423,7 @@ export function DashboardView({ state }: DashboardViewProps) {
             {focusStatus === "pausing" && (
               <span className="safe-note">Pausa aplicada após o bloco atual · zero artefato parcial</span>
             )}
-            {state.pause && focusStatus !== "paused" && focusStatus !== "completed" && focusStatus !== "failed" && focusStatus !== "interrupted" && focusStatus !== "cancelled" && (
+            {state.pause && canPauseRun && (
               <button
                 className="btn btn-warn"
                 data-choice="pause"
@@ -370,7 +434,7 @@ export function DashboardView({ state }: DashboardViewProps) {
                 Ⅱ Solicitar pausa
               </button>
             )}
-            {isPaused && state.resume && (
+            {canResumeRun && state.resume && (
               <button
                 className="btn"
                 data-choice="resume"
@@ -381,7 +445,7 @@ export function DashboardView({ state }: DashboardViewProps) {
                 ▶ Retomar
               </button>
             )}
-            {state.retry && (
+            {state.retry && canRetryRun && (
               <select
                 className="retry-select"
                 aria-label="Repetir etapa"

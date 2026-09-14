@@ -311,7 +311,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(fieldset?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("renderiza pausa e retry para run em execução", () => {
+  it("renderiza pausa e retry para run em execução", async () => {
     const state = fullState({
       focusRun: makeRun("running", 0.42, "pesquisa" as StageName),
       pause: vi.fn().mockResolvedValue(undefined),
@@ -320,7 +320,125 @@ describe("dashboard — comportamento completo (REAL)", () => {
     render(<DashboardView state={state} />);
 
     expect(screen.getByRole("button", { name: "Ⅱ Solicitar pausa" })).not.toBeNull();
-    expect(screen.getByLabelText("Repetir etapa")).not.toBeNull();
+    // A API recusa retry fora de paused/failed/completed com 409
+    // ({"detail": {"error": {"code": "transition_invalid", "message":
+    // "run: running -> queued"}}), então a etapa só é oferecida quando é aceita.
+    expect(screen.queryByLabelText("Repetir etapa")).toBeNull();
+  });
+
+  it("oferece retry somente quando a API aceita (paused/failed/completed)", () => {
+    for (const status of ["paused", "failed", "completed"] as const) {
+      const { unmount } = render(
+        <DashboardView
+          state={fullState({
+            focusRun: makeRun(status, 0.42, "pesquisa" as StageName),
+            retry: vi.fn().mockResolvedValue(undefined),
+          })}
+        />,
+      );
+      expect(screen.getByLabelText("Repetir etapa"), `status=${status}`).not.toBeNull();
+      unmount();
+    }
+    for (const status of ["running", "preparing", "validating"] as const) {
+      const { unmount } = render(
+        <DashboardView
+          state={fullState({
+            focusRun: makeRun(status, 0.42, "pesquisa" as StageName),
+            retry: vi.fn().mockResolvedValue(undefined),
+          })}
+        />,
+      );
+      expect(screen.queryByLabelText("Repetir etapa"), `status=${status}`).toBeNull();
+      unmount();
+    }
+  });
+
+  it("não oferece 'Retomar' enquanto a pausa está em andamento", () => {
+    // Capturado: POST .../resume com a run em `pausing` responde 409
+    // {"detail": {"error": {"code": "transition_invalid", "message": "run: pausing -> queued"}}}.
+    const state = fullState({
+      focusRun: makeRun("pausing", 0.42, "pesquisa" as StageName),
+      resume: vi.fn().mockResolvedValue(undefined),
+    });
+    render(<DashboardView state={state} />);
+
+    expect(screen.queryByRole("button", { name: "▶ Retomar" })).toBeNull();
+  });
+
+  it("marca a etapa pelo status real da API, não pela posição do chip", () => {
+    // Ordem canônica do domínio (GET /api/runs/{id} devolve as 8 etapas nessa
+    // ordem): preparacao, pesquisa, roteiro, plano_midia, audio, imagens,
+    // montagem, validacao. Na run real, `audio` executa antes de `imagens`.
+    const focusRun = {
+      ...makeRun("running", 0.5, "audio" as StageName),
+      stages: {
+        preparacao: { stage_run: { status: "succeeded" } },
+        pesquisa: { stage_run: { status: "succeeded" } },
+        roteiro: { stage_run: { status: "succeeded" } },
+        plano_midia: { stage_run: { status: "succeeded" } },
+        audio: { stage_run: { status: "running" } },
+        imagens: { stage_run: { status: "pending" } },
+        montagem: { stage_run: { status: "pending" } },
+        validacao: { stage_run: { status: "pending" } },
+      },
+    } as any;
+    render(<DashboardView state={fullState({ focusRun })} />);
+
+    const pipeline = screen.getByLabelText("Pipeline de etapas");
+    const chips = Array.from(pipeline.querySelectorAll(".stage"));
+    const chip = (label: string) =>
+      chips.find((c) => c.querySelector("b")?.textContent === label);
+
+    expect(chip("Áudio")?.className).toContain("live");
+    expect(chip("Imagens")?.className).toContain("wait");
+    expect(chip("Imagens")?.className).not.toContain("ok");
+    expect(chip("Pesquisa")?.className).toContain("ok");
+  });
+
+  it("marca a etapa corrente em preparacao/plano_midia sem mentir sobre as demais", () => {
+    const focusRun = {
+      ...makeRun("running", 0.13, "plano_midia" as StageName),
+      stages: {
+        preparacao: { stage_run: { status: "succeeded" } },
+        pesquisa: { stage_run: { status: "succeeded" } },
+        roteiro: { stage_run: { status: "succeeded" } },
+        plano_midia: { stage_run: { status: "running" } },
+        audio: { stage_run: { status: "pending" } },
+        imagens: { stage_run: { status: "pending" } },
+        montagem: { stage_run: { status: "pending" } },
+        validacao: { stage_run: { status: "pending" } },
+      },
+    } as any;
+    render(<DashboardView state={fullState({ focusRun })} />);
+
+    const chips = Array.from(
+      screen.getByLabelText("Pipeline de etapas").querySelectorAll(".stage"),
+    );
+    const chip = (label: string) =>
+      chips.find((c) => c.querySelector("b")?.textContent === label);
+
+    // Nenhum chip representa plano_midia, mas nada depois dele pode aparecer ok.
+    expect(chip("Pesquisa")?.className).toContain("ok");
+    expect(chip("Roteiro")?.className).toContain("ok");
+    for (const label of ["Áudio", "Imagens", "Montagem", "Validação"]) {
+      expect(chip(label)?.className, label).toContain("wait");
+    }
+  });
+
+  it("botão '＋ Novo vídeo' da barra lateral foca o formulário", async () => {
+    const createVideo = vi.fn();
+    const state = fullState({ focusRun: null, createVideo: createVideo as any });
+    const user = userEvent.setup();
+    const { container } = render(<DashboardView state={state} />);
+
+    const sidebarButton = container.querySelector(
+      '[data-choice="new-run"]',
+    ) as HTMLButtonElement;
+    expect(sidebarButton).not.toBeNull();
+    await user.click(sidebarButton);
+
+    expect(createVideo).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByLabelText("Tema"));
   });
 
   it("renderiza retomar para run pausado", () => {

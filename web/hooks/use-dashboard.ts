@@ -37,6 +37,7 @@ export function useDashboard(
   const [services, setServices] = useState<Record<string, ServiceHealth>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const servicesFailed = useRef(false);
 
   const captureFailure = useCallback((reason: unknown) => {
     setError(
@@ -46,31 +47,80 @@ export function useDashboard(
     );
   }, []);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [nextQueue, page, nextServices] = await Promise.all([
-        api.getQueue(),
-        api.getRuns(50, 0),
-        api.getServices(),
-      ]);
-      const focus = page.items.find((item) =>
-        ["preparing", "running", "pausing", "validating"].includes(item.run.status),
-      ) ?? page.items.find((item) =>
-        ["paused", "failed", "interrupted"].includes(item.run.status),
-      ) ?? null;
-      const nextFocus = focus ? await api.getRun(focus.run.id) : null;
-      setQueue(nextQueue);
-      setRuns(page.items);
-      setFocusRun(nextFocus);
-      setServices(nextServices);
-      setError(null);
-    } catch (reason) {
-      captureFailure(reason);
-    } finally {
-      setLoading(false);
-    }
-  }, [api, captureFailure]);
+  /**
+   * `silent` evita marcar loading em recargas disparadas por evento SSE: com
+   * loading ligado o formulário de novo vídeo fica desabilitado durante cada
+   * recarga, e a pipeline emite eventos o tempo todo.
+   */
+  const load = useCallback(
+    async (silent: boolean) => {
+      if (!silent) setLoading(true);
+      try {
+        // GET /api/services sonda ComfyUI/LM Studio com timeout de 2 s cada
+        // (medido: ~3,1 s contra a API real, contra ~65 ms de /api/queue). A
+        // fila não pode esperar por ela: o vídeo recém-enfileirado precisa
+        // aparecer na hora, e uma sondagem pendente nunca deve travar a
+        // projeção.
+        void api.getServices().then(
+          (value) => {
+            servicesFailed.current = false;
+            setServices(value);
+          },
+          (reason) => {
+            servicesFailed.current = true;
+            captureFailure(reason);
+          },
+        );
+
+        const [queueResult, runsResult] = await Promise.allSettled([
+          api.getQueue(),
+          api.getRuns(50, 0),
+        ]);
+
+        let failure: unknown = null;
+        if (queueResult.status === "fulfilled") {
+          setQueue(queueResult.value);
+        } else {
+          failure ??= queueResult.reason;
+        }
+
+        if (runsResult.status === "fulfilled") {
+          const page = runsResult.value;
+          setRuns(page.items);
+          const focus =
+            page.items.find((item) =>
+              ["preparing", "running", "pausing", "validating"].includes(item.run.status),
+            ) ??
+            page.items.find((item) =>
+              ["paused", "failed", "interrupted"].includes(item.run.status),
+            ) ??
+            null;
+          if (focus) {
+            try {
+              setFocusRun(await api.getRun(focus.run.id));
+            } catch (reason) {
+              failure ??= reason;
+            }
+          } else {
+            setFocusRun(null);
+          }
+        } else {
+          failure ??= runsResult.reason;
+        }
+
+        if (failure) {
+          captureFailure(failure);
+        } else if (!servicesFailed.current) {
+          setError(null);
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [api, captureFailure],
+  );
+
+  const refresh = useCallback(() => load(false), [load]);
 
   useEffect(() => {
     void refresh();
@@ -79,10 +129,10 @@ export function useDashboard(
   useEffect(() => {
     if (events.length === 0) return;
     const timer = window.setTimeout(() => {
-      void refresh();
+      void load(true);
     }, 100);
     return () => window.clearTimeout(timer);
-  }, [events, refresh]);
+  }, [events, load]);
 
   const runCommand = useCallback(
     async (command: (runId: string, key: string) => Promise<unknown>) => {

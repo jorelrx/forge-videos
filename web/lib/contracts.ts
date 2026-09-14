@@ -62,15 +62,13 @@ export type ChildEventKind =
   | "stage.progress"
   | "stage.result";
 
-export interface UtcDatetime {
-  readonly year: number;
-  readonly month: number;
-  readonly day: number;
-  readonly hour: number;
-  readonly minute: number;
-  readonly second: number;
-  readonly microsecond: number;
-}
+/**
+ * A API serializa `UtcDatetime` (pydantic AwareDatetime) como string ISO-8601
+ * com sufixo Z — ex.: "2026-09-14T13:57:53.033773Z". `StudioEvent` já usava
+ * `string`; o resto do painel declarava um objeto de campos, que nunca chega
+ * nesse formato pela rede.
+ */
+export type UtcDatetime = string;
 
 export type JsonValue =
   | string

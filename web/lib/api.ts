@@ -41,11 +41,57 @@ export interface StudioApi {
   retryStage(id: string, stage: StageName, key: string): Promise<CommandResponse>;
 }
 
-interface ApiErrorBody {
+interface ApiErrorEnvelope {
   error?: {
     code?: string;
     message?: string;
   };
+}
+
+interface ApiErrorBody extends ApiErrorEnvelope {
+  /**
+   * O FastAPI embrulha o detail do HTTPException em `detail`, e o
+   * RequestValidationError usa uma lista em `detail`. handlers de app
+   * (app.py) devolvem o envelope `error` no topo.
+   */
+  detail?: ApiErrorEnvelope | string | { msg?: string }[];
+}
+
+function isEnvelope(value: unknown): value is ApiErrorEnvelope {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeFailure(status: number, payload: unknown): ApiFailure {
+  const fallback: ApiFailure = {
+    status,
+    code: "http_error",
+    message: `Falha HTTP ${status}`,
+  };
+  if (!isEnvelope(payload)) return fallback;
+
+  const body = payload as ApiErrorBody;
+  const detail = body.detail;
+  const envelope = body.error ?? (isEnvelope(detail) ? detail.error : undefined);
+  if (envelope?.message) {
+    return {
+      status,
+      code: envelope.code ?? "http_error",
+      message: envelope.message,
+    };
+  }
+
+  if (Array.isArray(detail)) {
+    const first = detail.find((item) => typeof item?.msg === "string");
+    if (first?.msg) {
+      return { status, code: "validation_error", message: first.msg };
+    }
+  }
+
+  if (typeof detail === "string" && detail) {
+    return { status, code: "http_error", message: detail };
+  }
+
+  return fallback;
 }
 
 function normalizedBase(baseUrl: string): string {
@@ -68,12 +114,7 @@ async function request<T>(
   const payload = (await response.json().catch(() => null)) as T | ApiErrorBody | null;
 
   if (!response.ok) {
-    const error = payload as ApiErrorBody | null;
-    throw new ApiError({
-      status: response.status,
-      code: error?.error?.code ?? "http_error",
-      message: error?.error?.message ?? `Falha HTTP ${response.status}`,
-    });
+    throw new ApiError(decodeFailure(response.status, payload));
   }
 
   return payload as T;

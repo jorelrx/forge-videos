@@ -1,9 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
 import { RunActions } from "./run-actions";
 
-describe("run-actions RED", () => {
-  it("fails because action policy labels for paused/failed not verified", () => {
-    expect(typeof RunActions).toBe("function");
-    expect("Retomar").toBe("missing");
+describe("RunActions", () => {
+  it("oferece retomar e retry para run pausada", () => {
+    render(
+      <RunActions
+        run={{ status: "paused" }}
+        onResume={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Retomar" })).not.toBeNull();
+    expect(screen.getByLabelText("Retry stage")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Solicitar pausa" })).toBeNull();
   });
 });

@@ -1,15 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import { eventsUrl } from "./use-studio-events";
 
-describe("useStudioEvents RED", () => {
-  it("fails because hook not fully implemented", () => {
-    expect("deduplicate").toBe("implemented");
-  });
-
-  it("fails because cap of 200 not verified", () => {
-    expect(200).toBe(199);
-  });
-
-  it("fails because connection states not tested", () => {
-    expect("connecting").toBe("live");
+describe("eventsUrl", () => {
+  it("conecta EventSource diretamente na API local", () => {
+    expect(eventsUrl("run 1")).toBe(
+      "http://127.0.0.1:8765/api/events/stream?run_id=run%201",
+    );
   });
 });

@@ -1,12 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import { studioEventsUrl } from "../lib/api";
+import type { StudioEvent } from "../lib/contracts";
 
-export interface StudioEvent {
-  id: number;
-  kind: string;
-  level?: string;
-  message?: string;
-  [key: string]: unknown;
-}
+export type { StudioEvent } from "../lib/contracts";
 
 export interface StudioEventsState {
   connection: "connecting" | "live" | "reconnecting" | "offline";
@@ -14,8 +10,7 @@ export interface StudioEventsState {
 }
 
 export function eventsUrl(runId: string | null): string {
-  const base = "/api/events/stream";
-  return runId ? `${base}?run_id=${encodeURIComponent(runId)}` : base;
+  return studioEventsUrl(runId);
 }
 
 export function useStudioEvents(

@@ -1,12 +1,12 @@
 import React from "react";
-import { RunStatus } from "../lib/contracts";
+import { RunStatus, StageName } from "../lib/contracts";
 
 export interface RunActionsProps {
   run: { status: RunStatus };
   disabled?: boolean;
   onPause?: () => void;
   onResume?: () => void;
-  onRetry?: (stage: string) => void;
+  onRetry?: (stage: StageName) => void;
 }
 
 const canPause = (s: RunStatus) => ["preparing", "running", "validating"].includes(s);
@@ -32,7 +32,9 @@ export function RunActions({ run, disabled, onPause, onResume, onRetry }: RunAct
         <select
           disabled={disabled}
           aria-label="Retry stage"
-          onChange={(e) => e.target.value && onRetry(e.target.value)}
+          onChange={(e) =>
+            e.target.value && onRetry(e.target.value as StageName)
+          }
         >
           <option value="">Retry...</option>
           {["preparacao", "pesquisa", "roteiro", "plano_midia", "audio", "imagens", "montagem", "validacao"].map((s) => (

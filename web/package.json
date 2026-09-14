@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1 --port 3100",
     "build": "next build",
-    "start": "next start",
+    "start": "node -e \"process.env.HOSTNAME='127.0.0.1';process.env.PORT='3100';require('./.next/standalone/server.js')\"",
     "lint": "next lint",
     "test": "vitest run"
   },
@@ -15,14 +15,18 @@
     "react-dom": "19.2.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/react": "^19.0.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/testing-library__react": "^10.0.1",
+    "@vitejs/plugin-react": "^4.0.0",
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.0.0",
-    "vitest": "^5.0.0",
     "jsdom": "^25.0.0",
+    "typescript": "^5.0.0",
     "vite": "^6.0.0",
-    "@vitejs/plugin-react": "^4.0.0"
+    "vitest": "^5.0.0"
   }
 }

@@ -1,33 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useStudioEvents } from "./use-studio-events";
 import type { StudioEvent, StudioEventsState } from "./use-studio-events";
+import type { StudioApi } from "../lib/api";
+import type {
+  CreateVideoRequest,
+  RunSummary,
+  RunView,
+  ServiceHealth,
+  StageName,
+} from "../lib/contracts";
 
 export interface DashboardState {
-  queue: any[];
-  runs: any[];
-  focusRun: any | null;
-  services: Record<string, any>;
+  queue: RunSummary[];
+  runs: RunSummary[];
+  focusRun: RunView | null;
+  services: Record<string, ServiceHealth>;
   events: StudioEvent[];
   connection: StudioEventsState["connection"];
   loading: boolean;
-  error: any | null;
+  error: Error | null;
   refresh(): Promise<void>;
-  createVideo(input: any): Promise<void>;
+  createVideo(input: CreateVideoRequest): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  retry(stage: string): Promise<void>;
-}
-
-export interface StudioApi {
-  getQueue(): Promise<any[]>;
-  getRuns(limit?: number, offset?: number): Promise<{ items: any[]; total: number; limit: number; offset: number }>;
-  getRun(id: string): Promise<any>;
-  getServices(): Promise<Record<string, any>>;
-  getEvents?(id: string, beforeId?: number): Promise<any>;
-  createVideo(input: any): Promise<any>;
-  pauseRun(id: string, key: string): Promise<any>;
-  resumeRun(id: string, key: string): Promise<any>;
-  retryStage(id: string, stage: string, key: string): Promise<any>;
+  retry(stage: StageName): Promise<void>;
 }
 
 export function useDashboard(
@@ -35,15 +31,19 @@ export function useDashboard(
   dependencies: { EventSource?: typeof EventSource } = {},
 ): DashboardState {
   const { connection, events } = useStudioEvents(null, dependencies);
-  const [queue, setQueue] = useState<any[]>([]);
-  const [runs, setRuns] = useState<any[]>([]);
-  const [focusRun, setFocusRun] = useState<any | null>(null);
-  const [services, setServices] = useState<Record<string, any>>({});
+  const [queue, setQueue] = useState<RunSummary[]>([]);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [focusRun, setFocusRun] = useState<RunView | null>(null);
+  const [services, setServices] = useState<Record<string, ServiceHealth>>({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<any | null>(null);
+  const [error, setError] = useState<Error | null>(null);
 
   const captureFailure = useCallback((reason: unknown) => {
-    setError(reason);
+    setError(
+      reason instanceof Error
+        ? reason
+        : new Error("Falha desconhecida ao atualizar o dashboard"),
+    );
   }, []);
 
   const refresh = useCallback(async () => {
@@ -54,10 +54,10 @@ export function useDashboard(
         api.getRuns(50, 0),
         api.getServices(),
       ]);
-      const focus = page.items.find((item: any) =>
-        ["preparing", "running", "pausing", "validating"].includes(item.run?.status),
-      ) ?? page.items.find((item: any) =>
-        ["paused", "failed", "interrupted"].includes(item.run?.status),
+      const focus = page.items.find((item) =>
+        ["preparing", "running", "pausing", "validating"].includes(item.run.status),
+      ) ?? page.items.find((item) =>
+        ["paused", "failed", "interrupted"].includes(item.run.status),
       ) ?? null;
       const nextFocus = focus ? await api.getRun(focus.run.id) : null;
       setQueue(nextQueue);
@@ -85,7 +85,7 @@ export function useDashboard(
   }, [events, refresh]);
 
   const runCommand = useCallback(
-    async (command: (runId: string, key: string) => Promise<any>) => {
+    async (command: (runId: string, key: string) => Promise<unknown>) => {
       if (!focusRun) {
         captureFailure(new Error("Nenhuma run selecionada"));
         return;
@@ -113,7 +113,7 @@ export function useDashboard(
     loading,
     error,
     refresh,
-    async createVideo(input: any) {
+    async createVideo(input: CreateVideoRequest) {
       setLoading(true);
       try {
         await api.createVideo(input);
@@ -126,6 +126,6 @@ export function useDashboard(
     },
     pause: () => runCommand((runId: string, key: string) => api.pauseRun(runId, key)),
     resume: () => runCommand((runId: string, key: string) => api.resumeRun(runId, key)),
-    retry: (stage: string) => runCommand((runId: string, key: string) => api.retryStage(runId, stage, key)),
+    retry: (stage: StageName) => runCommand((runId, key) => api.retryStage(runId, stage, key)),
   };
 }

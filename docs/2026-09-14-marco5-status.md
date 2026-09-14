@@ -78,6 +78,44 @@ o teste Python equivalente.
   não estão em `FORGE_LORA_DIR`, então a geração usa só o style token. A
   inspeção de safetensors existe para não aplicar LoRA de SD 1.5 em silêncio.
 
-## Evidência da run real
+## Evidência da run real (parcial)
 
-Preenchida pelo `tests/integration/test_studio_e2e.py`. Ver a seção seguinte.
+`tests/integration/test_studio_e2e.py`, commit `dc19d7d`, 2026-09-14.
+
+| Etapa | Resultado | Duração |
+|---|---|---|
+| `preparacao` | ✅ `preparation_ready` | 0,4 s |
+| `pesquisa` | ✅ `research_ready` — 7 passagens citáveis, 0 queries sem resposta | 8 min 13 s |
+| `roteiro` | ❌ `subprocess_timeout` (teto de 3600 s atingido) | 60 min |
+| `audio` … `validacao` | não executadas | — |
+
+Artefatos produzidos: `video/input.json`, `01-research.raw.md` (34,6 kB),
+`video/research.json` (57,2 kB, 7 fontes canônicas).
+
+### Leitura
+
+A pesquisa passou a concluir: o teto anterior de 600 s a matava aos 10 min; com
+1800 s ela terminou em 8 min 13 s e produziu material citável de verdade. Isso
+confirma a classe do defeito (prazo calibrado para API em nuvem, não para
+inferência local) e move o gargalo para a etapa seguinte.
+
+O `roteiro` é a etapa mais cara: 9 seções mais o laço de review/reescrita
+(`max_review_rounds = 8`). O `gemma-4-e4b` foi medido em 14,6 min para **uma**
+passada completa, então 60 min cobrem poucas rodadas de reescrita — não o laço
+inteiro. Não há defeito de código demonstrado aqui: é a mesma calibração de
+prazo, uma etapa adiante.
+
+### O que ficou provado apesar da parada
+
+- O protocolo JSONL do subprocesso está íntegro: `pesquisa` emitiu
+  `artifact.created` e `stage.result` sem nenhum `worker.invalid_event`.
+- `StageContext.run_dir` está correto: os artefatos resolveram dentro da run.
+- O gate da pesquisa reprovou/reaprovou de verdade (7 de 29 passagens
+  aprovadas pelo juiz de relevância).
+
+### Pendência
+
+Rodar `roteiro` … `validacao` com prazo suficiente para o laço de review local,
+ou reduzir `max_review_rounds` para o provider local, e então completar a
+evidência (contagens de áudio/imagem, duração do MP4, `validation.json`).
+

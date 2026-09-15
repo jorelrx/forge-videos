@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .superpowers/
 .superpowers/*
+
 /output/
 
 .pi
@@ -26,3 +27,6 @@ data/studio/
 data/forge.db
 data/forge.db-shm
 data/forge.db-wal
+
+# worktrees isolados
+.worktrees/

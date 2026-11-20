@@ -3,13 +3,27 @@
 import React from "react";
 import { NewVideoForm } from "./new-video-form";
 import { ActiveRun } from "./active-run";
+import { ActivityDock } from "./activity-dock";
 import { Queue } from "./queue";
-import { History } from "./history";
+import { RecentRuns } from "./history";
 import { RunOutputs } from "./run-outputs";
 import { Publication } from "./publication";
+import { Sidebar } from "./sidebar";
+import {
+  GPU_SERVICES,
+  PageHeader,
+  QueueScreen,
+  RunsScreen,
+  ServicesScreen,
+  gpuSlotLabel,
+  serviceName,
+} from "./screens";
+import { IconArrowRight, IconPause, IconPlay } from "./icons";
+import { serviceTone } from "./status-badge";
 import { useDashboard, type DashboardState } from "../hooks/use-dashboard";
+import { screenHref, useScreen } from "../hooks/use-screen";
 import { createStudioApi, type StudioApi } from "../lib/api";
-import type { Artifact, StudioEvent, StageName } from "../lib/contracts";
+import type { Artifact, ServiceHealth, StageName } from "../lib/contracts";
 import { serviceStatusLabel, stageStatus } from "../lib/stage-map";
 
 export interface DashboardProps {
@@ -23,18 +37,7 @@ export interface DashboardViewProps {
   loadArtifacts?: (runId: string) => Promise<Artifact[]>;
 }
 
-type DashboardScreen = "dashboard" | "publicacao";
-
 const defaultApi = createStudioApi();
-
-const SIDEBAR_NAV = [
-  { id: "nav-dashboard", label: "Dashboard", ico: "◫", default: true },
-  { id: "nav-queue", label: "Fila", ico: "≡" },
-  { id: "nav-runs", label: "Runs", ico: "◷" },
-  { id: "nav-publicacao", label: "Publicação", ico: "⇪" },
-  { id: "nav-services", label: "Serviços", ico: "⌁" },
-  { id: "nav-config", label: "Configuração", ico: "⚙" },
-] as const;
 
 /**
  * Ordem canônica do domínio (forge.domain.operacao.StageName / ETAPAS): é a
@@ -52,13 +55,13 @@ const STAGE_ORDER: StageName[] = [
   "validacao",
 ];
 
-const PIPELINE_STAGES: { key: StageName; label: string; sub: string }[] = [
-  { key: "pesquisa", label: "Pesquisa", sub: "fonte citável" },
-  { key: "roteiro", label: "Roteiro", sub: "9 seções · score" },
-  { key: "audio", label: "Áudio", sub: "blocos · f0" },
-  { key: "imagens", label: "Imagens", sub: "beats · passos" },
-  { key: "montagem", label: "Montagem", sub: "trilhas · duração" },
-  { key: "validacao", label: "Validação", sub: "codecs · frames" },
+const PIPELINE_STAGES: { key: StageName; sub: string }[] = [
+  { key: "pesquisa", sub: "fontes do acervo" },
+  { key: "roteiro", sub: "9 seções revisadas" },
+  { key: "audio", sub: "narração por bloco" },
+  { key: "imagens", sub: "uma por cena" },
+  { key: "montagem", sub: "trilha e legendas" },
+  { key: "validacao", sub: "codecs e duração" },
 ];
 
 type ChipStatus = "ok" | "live" | "wait" | "fail";
@@ -95,186 +98,97 @@ function pipelineChipStatus(
   return idx < currentIdx ? "ok" : "wait";
 }
 
-interface PipelineStageProps {
+const CHIP_STATUS_TEXT: Record<ChipStatus, string> = {
+  ok: "concluída",
+  live: "em andamento",
+  wait: "aguardando",
+  fail: "falhou",
+};
+
+function PipelineStage({
+  stage,
+  status,
+  sub,
+  num,
+  items,
+}: {
   stage: StageName;
-  status: "ok" | "live" | "wait" | "fail";
+  status: ChipStatus;
   sub: string;
   num: number;
   items?: string;
-}
-
-function PipelineStage({ stage, status, sub, num, items }: PipelineStageProps) {
+}) {
   return (
-    <div className={`stage ${status}`}>
+    <li className={`stage ${status}`} aria-current={status === "live" ? "step" : undefined}>
       <div className="stage-topline">
         <span className="stage-num">{String(num).padStart(2, "0")}</span>
         <span className="statusdot" aria-hidden="true" />
+        <span className="sr-only">{CHIP_STATUS_TEXT[status]}</span>
       </div>
       <b>{stageStatus(stage)}</b>
       <small>
         {sub}
         {items ? ` · ${items}` : ""}
       </small>
-    </div>
+    </li>
   );
 }
 
-function ServiceStripItem({
-  name,
-  state,
-  message,
-  latencyMs,
-  isGpu,
+/**
+ * Faixa compacta de serviços na Produção: nome e estado. A mensagem só
+ * aparece quando o serviço não está disponível; latência e detalhes ficam na
+ * tela Serviços.
+ */
+function ServicesStrip({
+  services,
+  onOpen,
 }: {
-  name: string;
-  state: string;
-  message?: string;
-  latencyMs?: number | null;
-  isGpu?: boolean;
+  services: Record<string, ServiceHealth>;
+  onOpen: () => void;
 }) {
-  const ledState =
-    state === "available" || state === "healthy"
-      ? "led"
-      : state === "degraded"
-        ? "led busy"
-        : "led off";
+  const entries = Object.entries(services).filter(([key]) => key !== "gpu");
+  const slot = gpuSlotLabel(services);
+  if (entries.length === 0 && !slot) return null;
   return (
-    <div className={`service-chip ${isGpu ? "gpu" : ""}`}>
-      <span className={ledState} aria-hidden="true" />
-      <span>{name}</span>
-      {message && <span style={{ color: "var(--muted)" }}>· {message}</span>}
-      {latencyMs != null && <span>{latencyMs}ms</span>}
-    </div>
-  );
-}
-
-/** Itens da navegação que trocam de tela; os demais ainda são só rótulo. */
-const NAV_SCREENS: Partial<Record<string, DashboardScreen>> = {
-  "nav-dashboard": "dashboard",
-  "nav-publicacao": "publicacao",
-};
-
-function Sidebar({
-  queueCount,
-  onNewRun,
-  screen,
-  onNavigate,
-}: {
-  queueCount: number;
-  onNewRun: () => void;
-  screen: DashboardScreen;
-  onNavigate: (screen: DashboardScreen) => void;
-}) {
-  return (
-    <aside className="sidebar" aria-label="Navegação">
-      <div className="brand">
-        <div className="brand-mark" aria-hidden="true">F</div>
-        Forge Studio
-      </div>
-
-      <button
-        className="sidebar-btn"
-        data-choice="new-run"
-        type="button"
-        onClick={onNewRun}
-      >
-        ＋ Novo vídeo
-      </button>
-
-      <div className="section-label">Operação</div>
-      {SIDEBAR_NAV.map((item) => {
-        const target = NAV_SCREENS[item.id];
-        const isActive = target === screen;
-        const navigate = () => { if (target) onNavigate(target); };
+    <div className="services-strip" aria-label="Status dos serviços">
+      {entries.map(([key, svc]) => {
+        const tone = serviceTone(svc.state);
         return (
-          <div
-            key={item.id}
-            className={`nav-item ${isActive ? "active" : ""}`}
-            role="button"
-            tabIndex={0}
-            aria-current={isActive ? "page" : undefined}
-            onClick={navigate}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                navigate();
-              }
-            }}
+          <span
+            key={key}
+            className={`service-chip tone-${tone}${GPU_SERVICES.includes(key) ? " gpu" : ""}`}
+            title={svc.message || undefined}
           >
-            <span className="nav-ico">{item.ico}</span>
-            {item.label}
-            {item.id === "nav-queue" && queueCount > 0 && (
-              <span className="nav-count">{queueCount}</span>
-            )}
-          </div>
+            <span className="led" aria-hidden="true" />
+            <span>{serviceName(key)}</span>
+            {tone !== "ok" && svc.message && <span className="chip-msg">· {svc.message}</span>}
+          </span>
         );
       })}
-
-      <div className="section-label">Sistema</div>
-      <div className="nav-item" role="button" tabIndex={0}>
-        <span className="nav-ico">⌁</span> Serviços
-      </div>
-      <div className="nav-item" role="button" tabIndex={0}>
-        <span className="nav-ico">⚙</span> Configuração
-      </div>
-
-      <div className="sidebar-mini">
-        <b>V1 · operação local</b>
-        <br />
-        Um worker · um consumidor GPU por vez
-      </div>
-    </aside>
-  );
-}
-
-function Dock({ events, error }: {
-  events: StudioEvent[];
-  error?: Error | null;
-}) {
-  const hasFailures = error != null;
-
-  return (
-    <aside className="dock" aria-label="Painel lateral">
-      <div>
-        <h2>Log ao vivo</h2>
-        <div className="dock-sub">Áudio · atualização há 2s</div>
-      </div>
-
-      <div className="log-view" aria-label="Registros ao vivo">
-        {events.length === 0 ? (
-          <div className="log-line" style={{ color: "var(--muted)" }}>
-            Aguardando eventos…
-          </div>
-        ) : (
-          events.slice(-30).map((e) => (
-            <div key={e.id} className={`log-line log-${e.level === "error" ? "err" : e.level === "warn" ? "warn" : e.level === "ok" ? "ok" : ""}`}>
-              <span className="log-time">{e.created_at ? e.created_at.slice(11, 19) : "—"}</span>
-              <span style={{ color: "#506176" }}>[{e.kind}]</span>
-              <span>{e.message || "—"}</span>
-            </div>
-          ))
-        )}
-      </div>
-
-      {hasFailures && (
-        <div className="failure-box" role="alert" aria-label="Falhas recentes">
-          <b>{error!.message || "Falha desconhecida"}</b>
-          <p>
-            O run pode concluir parcialmente. Falhas permanecem visíveis no manifesto.
-          </p>
-          <button className="retry-btn" data-choice="retry-failed" type="button">
-            Repetir somente os falhos
-          </button>
-        </div>
+      {slot && (
+        <span className="service-chip slot">
+          <span className="led" aria-hidden="true" />
+          GPU · {slot}
+        </span>
       )}
-    </aside>
+      <a
+        className="strip-link"
+        href={screenHref("servicos")}
+        onClick={(event) => {
+          event.preventDefault();
+          onOpen();
+        }}
+      >
+        Detalhes
+      </a>
+    </div>
   );
 }
 
 export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
   const focusRun = state.focusRun;
   const formRef = React.useRef<HTMLFormElement>(null);
-  const [screen, setScreen] = React.useState<DashboardScreen>("dashboard");
+  const [screen, navigate] = useScreen();
   const [focusFormPending, setFocusFormPending] = React.useState(false);
   const services = state.services ?? {};
   const events = state.events ?? [];
@@ -282,6 +196,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
   const runs = state.runs ?? [];
   const loading = state.loading;
   const error = state.error;
+  const connection = state.connection ?? "offline";
 
   const focusStatus = focusRun?.run?.status ?? "queued";
   // Mesmas regras de run-actions.tsx, que espelham o ControlPlane: retry_stage
@@ -293,14 +208,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
   const canResumeRun = ["paused", "failed", "interrupted"].includes(focusStatus);
   const canRetryRun = ["paused", "failed", "completed"].includes(focusStatus);
 
-  const queueItemCount = queue.length;
-
-  const activePipeline: {
-    stage: StageName;
-    status: "ok" | "live" | "wait" | "fail";
-    sub: string;
-    items?: string;
-  }[] = [];
+  const activePipeline: { stage: StageName; status: ChipStatus; sub: string; items?: string }[] = [];
   if (focusRun) {
     for (const s of PIPELINE_STAGES) {
       const stageView = focusRun.stages?.[s.key];
@@ -309,238 +217,264 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
         stageView?.stage_run?.status,
         focusRun.current_stage ?? null,
       );
-
-      let items = "";
-      if (stageView) {
-        const cur = stageView.stage_run?.current_items;
-        const tot = stageView.stage_run?.total_items;
-        if (cur != null && tot != null && tot > 0) {
-          items = `${cur}/${tot}`;
-        }
-      }
-
+      const cur = stageView?.stage_run?.current_items;
+      const tot = stageView?.stage_run?.total_items;
+      const items = cur != null && tot != null && tot > 0 ? `${cur}/${tot}` : "";
       activePipeline.push({ stage: s.key, status, sub: s.sub, items });
     }
   }
 
-  const gpuSvc = services["gpu"];
-  const gpuConsumer = services["lm_studio"] || services["comfyui"] || services["tts"];
-  const gpuResident = gpuSvc?.message?.startsWith("Residente") ?? false;
-  const gpuLabel = gpuResident ? gpuSvc!.message : gpuConsumer?.message ?? "GPU livre";
-  const gpuActive = gpuConsumer?.state === "degraded" || gpuResident;
-
-  const serviceList = Object.entries(services).map(([name, svc]) => ({
-    name,
-    state: svc.state ?? "unknown",
-    message: svc.message,
-    latencyMs: svc.latency_ms ?? null,
-    isGpu: ["lm_studio", "comfyui", "tts"].includes(name),
-  }));
-
-  const sidebar = (
-    <Sidebar
-      queueCount={queueItemCount}
-      onNewRun={requestNewVideo}
-      screen={screen}
-      onNavigate={setScreen}
-    />
-  );
-
   // O formulário só existe na tela de produção: vindo de outra tela, troca
   // primeiro e foca depois que ele montar.
   React.useEffect(() => {
-    if (!focusFormPending || screen !== "dashboard") return;
+    if (!focusFormPending || screen !== "producao") return;
     setFocusFormPending(false);
-    const field = formRef.current?.querySelector<HTMLInputElement>("#tema")
-      ?? document.getElementById("tema");
-    field?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-    field?.focus();
+    focusNewVideoForm();
   }, [focusFormPending, screen]);
 
   function requestNewVideo() {
-    if (screen === "dashboard") {
+    if (screen === "producao") {
       focusNewVideoForm();
       return;
     }
-    setScreen("dashboard");
+    navigate("producao");
     setFocusFormPending(true);
   }
 
   function focusNewVideoForm() {
-    const form = formRef.current;
     const field =
-      form?.querySelector<HTMLInputElement>("#tema") ??
+      formRef.current?.querySelector<HTMLInputElement>("#tema") ??
       document.getElementById("tema");
     if (!field) return;
     field.scrollIntoView?.({ behavior: "smooth", block: "center" });
     field.focus();
   }
 
-  const mainContent = (
+  function openRun(id: string) {
+    void state.selectRun?.(id);
+    navigate("producao");
+  }
+
+  const progressPct = progressPercent(focusRun?.progress ?? 0);
+  const failureMessage = focusRun?.run?.failure_message;
+  const failureCode = focusRun?.run?.failure_code;
+  const showActions = focusStatus === "pausing" || canPauseRun || canResumeRun || canRetryRun;
+
+  const production = (
     <main className="main">
-      <div className="page-header">
-        <div>
-          <h1>Produção</h1>
-          <p>Fila, execução atual e histórico num único lugar</p>
-        </div>
-        <div className="head-actions">
-          <button className="btn" data-choice="open-folder" type="button">
-            Abrir output
-          </button>
-          <button
-            className="btn btn-primary"
-            data-choice="new-run-top"
-            type="button"
-            onClick={focusNewVideoForm}
-          >
-            Novo vídeo
-          </button>
-        </div>
-      </div>
-
-      <div className="services-strip" aria-label="Status dos serviços">
-        {serviceList.map((s) => (
-          <ServiceStripItem key={s.name} {...s} />
-        ))}
-        {gpuActive && (
-          <span className="service-chip gpu">
-            <span className="led busy" aria-hidden="true" />
-            GPU · LLM · {gpuLabel}
-          </span>
-        )}
-      </div>
-
-      <NewVideoForm
-        ref={formRef}
-        onSubmit={(input) => state.createVideo?.(input)}
-        disabled={loading}
+      <PageHeader
+        title="Produção"
+        description="Acompanhe a execução em foco e enfileire o próximo vídeo."
       />
 
-      {focusRun ? (
-        <section className="active-run-card" aria-label="Run ativa">
-          <ActiveRun
-            run={focusRun}
-            statusLabel={serviceStatusLabel(focusStatus)}
-            progressPercent={StateProgressPercent(focusRun.progress ?? 0)}
-            onPause={state.pause}
-            onResume={state.resume}
-            onRetry={state.retry}
-            disabled={loading}
-          />
+      <ServicesStrip services={services} onOpen={() => navigate("servicos")} />
 
-          <div className="progress-bar" aria-hidden="true">
-            <div
-              className="progress-bar-fill"
-              style={{ width: `${Math.min(100, Math.max(0, (focusRun.progress ?? 0) * 100))}%` }}
+      <div className="prod-grid">
+        <div className="prod-primary">
+          {focusRun ? (
+            <>
+              <section className="panel active-run-card" aria-label="Run em foco">
+                <ActiveRun
+                  run={focusRun}
+                  statusLabel={serviceStatusLabel(focusStatus)}
+                  progressPercent={progressPct}
+                />
+
+                <div
+                  className="progress-bar"
+                  role="progressbar"
+                  aria-label="Progresso da execução"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={progressPct}
+                >
+                  <div
+                    className="progress-bar-fill"
+                    style={{ transform: `scaleX(${progressPct / 100})` }}
+                  />
+                </div>
+
+                <ol className="pipeline" aria-label="Pipeline de etapas">
+                  {activePipeline.map((p) => (
+                    <PipelineStage
+                      key={p.stage}
+                      stage={p.stage}
+                      status={p.status}
+                      sub={p.sub}
+                      num={PIPELINE_STAGES.findIndex((s) => s.key === p.stage) + 1}
+                      items={p.items}
+                    />
+                  ))}
+                </ol>
+
+                {failureMessage && (
+                  <div className="run-failure">
+                    <b>A execução parou</b>
+                    <p>{failureMessage}</p>
+                    {failureCode && <code>{failureCode}</code>}
+                  </div>
+                )}
+
+                {showActions && (
+                  <div className="run-actions">
+                    {focusStatus === "pausing" && (
+                      <span className="safe-note">
+                        A pausa entra ao fim do bloco atual. Nenhum arquivo fica pela metade.
+                      </span>
+                    )}
+                    {state.pause && canPauseRun && (
+                      <button
+                        className="btn"
+                        data-choice="pause"
+                        type="button"
+                        onClick={() => state.pause()}
+                        disabled={loading}
+                      >
+                        <IconPause size={14} />
+                        Solicitar pausa
+                      </button>
+                    )}
+                    {canResumeRun && state.resume && (
+                      <button
+                        className="btn btn-primary"
+                        data-choice="resume"
+                        type="button"
+                        onClick={() => state.resume()}
+                        disabled={loading}
+                      >
+                        <IconPlay size={14} />
+                        Retomar
+                      </button>
+                    )}
+                    {state.retry && canRetryRun && (
+                      <select
+                        className="select"
+                        aria-label="Repetir etapa"
+                        value=""
+                        disabled={loading}
+                        onChange={(e) => {
+                          const val = e.target.value as StageName | "";
+                          if (val) state.retry(val);
+                        }}
+                      >
+                        <option value="">Repetir etapa…</option>
+                        {PIPELINE_STAGES.map((s) => (
+                          <option key={s.key} value={s.key}>
+                            {stageStatus(s.key)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+              </section>
+
+              <RunOutputs key={focusRun.run.id} run={focusRun} />
+            </>
+          ) : (
+            <section className="panel empty-hero" aria-label="Run em foco">
+              {state.selectedRunId ? (
+                <p className="empty-state">
+                  {error
+                    ? "A execução selecionada não pôde ser carregada."
+                    : "Abrindo execução selecionada…"}
+                </p>
+              ) : (
+                <>
+                  <h2>Nenhuma execução em andamento</h2>
+                  <p>
+                    Escreva um tema em <b>Novo vídeo</b>. O worker pesquisa o acervo, escreve o
+                    roteiro, narra, gera as imagens e monta o vídeo; cada etapa aparece aqui.
+                  </p>
+                </>
+              )}
+            </section>
+          )}
+        </div>
+
+        <div className="prod-side">
+          <section className="panel" aria-labelledby="novo-video-title">
+            <div className="panel-heading">
+              <h3 id="novo-video-title">Novo vídeo</h3>
+            </div>
+            <NewVideoForm
+              ref={formRef}
+              onSubmit={(input) => state.createVideo?.(input)}
+              disabled={loading}
             />
-          </div>
+          </section>
 
-          <div className="pipeline" aria-label="Pipeline de etapas">
-            {activePipeline.map((p) => (
-              <PipelineStage
-                key={p.stage}
-                stage={p.stage}
-                status={p.status}
-                sub={p.sub}
-                num={PIPELINE_STAGES.findIndex((s) => s.key === p.stage) + 1}
-                items={p.items}
-              />
-            ))}
-          </div>
+          <section className="panel queue-list-panel" aria-label="Fila de vídeos">
+            <div className="panel-heading">
+              <h3>Fila</h3>
+              <span>{queue.length} aguardando</span>
+            </div>
+            <Queue runs={queue} />
+          </section>
 
-          <RunOutputs key={focusRun.run.id} run={focusRun} />
-
-          <div className="run-actions">
-            {focusStatus === "pausing" && (
-              <span className="safe-note">Pausa aplicada após o bloco atual · zero artefato parcial</span>
-            )}
-            {state.pause && canPauseRun && (
-              <button
-                className="btn btn-warn"
-                data-choice="pause"
-                type="button"
-                onClick={() => state.pause()}
-                disabled={loading}
-              >
-                Ⅱ Solicitar pausa
-              </button>
-            )}
-            {canResumeRun && state.resume && (
-              <button
-                className="btn"
-                data-choice="resume"
-                type="button"
-                onClick={() => state.resume()}
-                disabled={loading}
-              >
-                ▶ Retomar
-              </button>
-            )}
-            {state.retry && canRetryRun && (
-              <select
-                className="retry-select"
-                aria-label="Repetir etapa"
-                value=""
-                onChange={(e) => {
-                  const val = e.target.value as StageName | "";
-                  if (val) state.retry(val);
+          <section className="panel" aria-label="Runs recentes">
+            <div className="panel-heading">
+              <h3>Recentes</h3>
+              <a
+                className="link"
+                href={screenHref("runs")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigate("runs");
                 }}
               >
-                <option value="">Repetir etapa…</option>
-                {PIPELINE_STAGES.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {stageStatus(s.key)}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </section>
-      ) : (
-        <p className="empty-state">{state.selectedRunId
-          ? error ? "A execução selecionada não pôde ser carregada." : "Abrindo execução selecionada…"
-          : "Nenhuma run ativa."}</p>
-      )}
-
-      <div className="columns">
-        <section className="panel queue-list-panel" aria-label="Fila de vídeos">
-          <div className="panel-heading">
-            <h3>Fila de vídeos</h3>
-            <span>{queue.length} aguardando</span>
-          </div>
-          <Queue runs={queue} />
-        </section>
-
-        <section className="panel" aria-label="Histórico de runs">
-          <div className="panel-heading">
-            <h3>Runs recentes</h3>
-            <span>Ver todos →</span>
-          </div>
-          <History runs={runs} selectedRunId={state.selectedRunId} onSelectRun={state.selectRun} />
-        </section>
+                Ver todas
+                <IconArrowRight size={13} />
+              </a>
+            </div>
+            <RecentRuns runs={runs} selectedRunId={state.selectedRunId} onSelectRun={openRun} />
+          </section>
+        </div>
       </div>
     </main>
   );
 
-  const dockContent = (
-    <Dock
-      events={events}
-      error={error}
-    />
-  );
+  let content: React.ReactNode;
+  switch (screen) {
+    case "publicacao":
+      content = <Publication runs={runs} loadArtifacts={loadArtifacts} />;
+      break;
+    case "fila":
+      content = <QueueScreen queue={queue} />;
+      break;
+    case "runs":
+      content = (
+        <RunsScreen runs={runs} selectedRunId={state.selectedRunId} onOpenRun={openRun} />
+      );
+      break;
+    case "servicos":
+      content = <ServicesScreen services={services} />;
+      break;
+    default:
+      content = production;
+  }
 
   return (
     <div className="app">
-      {sidebar}
-      {screen === "publicacao"
-        ? <Publication runs={runs} loadArtifacts={loadArtifacts} />
-        : mainContent}
-      {dockContent}
+      <Sidebar
+        screen={screen}
+        onNavigate={navigate}
+        onNewRun={requestNewVideo}
+        queueCount={queue.length}
+        connection={connection}
+      />
+      {content}
+      <ActivityDock
+        events={events}
+        connection={connection}
+        error={error}
+        onRetry={state.refresh ? () => void state.refresh() : undefined}
+      />
     </div>
   );
 }
 
-function StateProgressPercent(progress: number): number {
+function progressPercent(progress: number): number {
   return Math.round(Math.min(1, Math.max(0, progress)) * 100);
 }
 

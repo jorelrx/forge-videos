@@ -34,33 +34,53 @@ export const NewVideoForm = forwardRef<HTMLFormElement, NewVideoFormProps>(
         onSubmit={handleSubmit}
       >
         <fieldset disabled={disabled}>
-          <label htmlFor="tema">Tema</label>
-          <input
-            id="tema"
-            name="tema"
-            type="text"
-            value={tema}
-            onChange={(event) => setTema(event.target.value)}
-            required
-          />
-          <label htmlFor="tese">Tese opcional</label>
-          <textarea
-            id="tese"
-            name="tese"
-            value={tese}
-            onChange={(event) => setTese(event.target.value)}
-          />
-          <label htmlFor="priority">Prioridade</label>
-          <input
-            id="priority"
-            name="priority"
-            type="number"
-            min="0"
-            max="100"
-            value={priority}
-            onChange={(event) => setPriority(Number(event.target.value))}
-          />
-          <button type="submit">Enfileirar vídeo</button>
+          <div className="field">
+            <label htmlFor="tema">Tema</label>
+            <input
+              id="tema"
+              name="tema"
+              type="text"
+              autoComplete="off"
+              placeholder="Ex.: Por que adiamos o que importa"
+              value={tema}
+              onChange={(event) => setTema(event.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="tese">
+              Tese opcional
+            </label>
+            <textarea
+              id="tese"
+              name="tese"
+              rows={3}
+              aria-describedby="tese-hint"
+              value={tese}
+              onChange={(event) => setTese(event.target.value)}
+            />
+            <small id="tese-hint" className="field-hint">
+              Em branco, o planejamento escolhe a tese que o acervo sustenta.
+            </small>
+          </div>
+          <div className="form-row">
+            <div className="field field-priority">
+              <label htmlFor="priority">Prioridade</label>
+              <input
+                id="priority"
+                name="priority"
+                type="number"
+                inputMode="numeric"
+                min="0"
+                max="100"
+                value={priority}
+                onChange={(event) => setPriority(Number(event.target.value))}
+              />
+            </div>
+            <button className="btn btn-primary btn-block" type="submit">
+              Enfileirar vídeo
+            </button>
+          </div>
         </fieldset>
       </form>
     );

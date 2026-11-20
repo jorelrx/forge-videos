@@ -305,7 +305,7 @@ export function RunOutputs({ run }: { run: RunView }) {
 
   return (
     <section className="run-outputs" aria-label="Saídas da execução">
-      <header className="run-outputs-head"><div><span>ARQUIVOS DESTA EXECUÇÃO</span><h2>Saídas</h2></div><small>{artifacts.length} disponíveis</small></header>
+      <header className="run-outputs-head"><h2>Saídas</h2><small>{artifacts.length} {artifacts.length === 1 ? "arquivo" : "arquivos"}</small></header>
       <div className="output-tabs" role="tablist" aria-label="Tipos de saída">
         {TABS.map((item) => {
           const count = item.id === "audios" ? grouped.audios.length : item.id === "imagens" ? grouped.imagens.length : item.id === "video" ? grouped.video.length : grouped.roteiro.length;

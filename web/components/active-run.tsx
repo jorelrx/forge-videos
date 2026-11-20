@@ -1,6 +1,8 @@
 import React from "react";
 import { StageName } from "../lib/contracts";
 import { stageStatus } from "../lib/stage-map";
+import { formatClock, formatDuration, parseInstant, shortId } from "../lib/format";
+import { StatusBadge, runTone } from "./status-badge";
 
 const STAGE_ORDER: StageName[] = [
   "preparacao",
@@ -47,6 +49,9 @@ export interface ActiveRunProps {
   onRetry?: (stage: StageName) => void;
 }
 
+/** Estados em que a run ainda corre: só nelas a duração conta até agora. */
+const LIVE_STATUSES = ["preparing", "running", "validating", "pausing"];
+
 export function runKicker(status: string | undefined | null): string {
   const key = status ?? "";
   return KICKER_BY_STATUS[key] ?? "Run";
@@ -75,34 +80,45 @@ export function ActiveRun({
   run,
   statusLabel,
   progressPercent,
-  disabled,
-  onPause,
-  onResume,
-  onRetry,
 }: ActiveRunProps) {
   const tema = run.video?.tema || run.run?.tema || "Run ativa";
   const runId = run.run?.id ?? "—";
   const runStatus = run.run?.status;
-  const status = statusLabel ?? runStatus ?? "—";
   const pct = progressPercent ?? Math.round((run.progress ?? 0) * 100);
   const stageKey = run.current_stage ?? lastStageWithData(run.stages);
   const currentStage = stageKey ? stageStatus(stageKey) : "—";
-  const startedAt = (run.run as { started_at?: unknown }).started_at;
-  const startedStr = startedAt ? ` · iniciado ${fmtTime(startedAt)}` : "";
+  const meta = run.run as { started_at?: unknown; finished_at?: unknown };
+  const started = meta.started_at;
 
   return (
     <section aria-label="Run ativa" className="active-run-detail">
       <div className="run-top">
-        <div>
-          <div className="run-kicker">{runKicker(runStatus)}</div>
+        <div className="run-heading">
+          <div className="run-kicker">
+            <StatusBadge tone={runTone(runStatus)}>{runKicker(runStatus)}</StatusBadge>
+            {statusLabel && <span className="sr-only">Status: {statusLabel}</span>}
+          </div>
           <h2 className="run-title">{tema}</h2>
-          <div className="run-meta">
-            {runId} · {status}
-            {startedStr}
-          </div>
-          <div className="run-stage">
-            Etapa atual: <b>{currentStage}</b>
-          </div>
+          <dl className="run-meta">
+            <div>
+              <dt>Etapa atual</dt>
+              <dd><b>{currentStage}</b></dd>
+            </div>
+            <div>
+              <dt>Início</dt>
+              <dd>{formatClock(started)}</dd>
+            </div>
+            {parseInstant(started) && (parseInstant(meta.finished_at) || LIVE_STATUSES.includes(runStatus ?? "")) && (
+              <div>
+                <dt>Duração</dt>
+                <dd>{formatDuration(started, meta.finished_at)}</dd>
+              </div>
+            )}
+            <div>
+              <dt>ID</dt>
+              <dd className="mono" title={runId}>{shortId(runId)}</dd>
+            </div>
+          </dl>
         </div>
         <div className="big-progress">
           <strong>{pct}%</strong>
@@ -111,11 +127,4 @@ export function ActiveRun({
       </div>
     </section>
   );
-}
-
-function fmtTime(t: unknown): string {
-  if (typeof t !== "string") return "—";
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }

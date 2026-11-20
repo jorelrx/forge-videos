@@ -63,7 +63,7 @@ describe("ActiveRun — progresso", () => {
 describe("ActiveRun — etapa atual", () => {
   it("usa current_stage quando presente", () => {
     render(<ActiveRun run={makeRun({ current_stage: "montagem" })} />);
-    expect(screen.getByText("Etapa atual:").parentElement?.textContent).toContain("Montagem");
+    expect(screen.getByText("Etapa atual").parentElement?.textContent).toContain("Montagem");
   });
 
   it("deriva a última etapa com dados quando interrupted e current_stage nulo", () => {
@@ -80,7 +80,7 @@ describe("ActiveRun — etapa atual", () => {
         })}
       />,
     );
-    expect(screen.getByText("Etapa atual:").parentElement?.textContent).toContain("Roteiro");
+    expect(screen.getByText("Etapa atual").parentElement?.textContent).toContain("Roteiro");
   });
 
   it("mantém '—' quando não há etapas com dados", () => {
@@ -92,7 +92,7 @@ describe("ActiveRun — etapa atual", () => {
         })}
       />,
     );
-    expect(screen.getByText("Etapa atual:").parentElement?.textContent).toContain("—");
+    expect(screen.getByText("Etapa atual").parentElement?.textContent).toContain("—");
   });
 
   it("lastStageWithData ignora stage_run sem atividade", () => {

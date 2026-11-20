@@ -6,6 +6,7 @@ import {
   publishRun, setDefaultChannel, startYouTubeLogin, uploadYouTubeClient,
 } from "../lib/api";
 import type { Artifact, PublicacaoView, RunSummary, YouTubeView } from "../lib/contracts";
+import { serviceStatusLabel } from "../lib/stage-map";
 
 /**
  * Aba Publicação: o que o dono do canal cola e sobe à mão no YouTube, terminada
@@ -485,7 +486,7 @@ function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) 
       <>
         <p>Enviando vídeo… {pct}%</p>
         <div className="pub-progress" role="progressbar" aria-label="Progresso do envio" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
-          <div className="pub-progress-bar" style={{ width: `${pct}%` }} />
+          <div className="pub-progress-bar" style={{ transform: `scaleX(${pct / 100})` }} />
         </div>
       </>
     ) : (
@@ -689,7 +690,7 @@ export function Publication({ runs, loadArtifacts = listRunArtifacts }: Publicat
             >
               {runs.map((summary) => (
                 <option key={summary.run.id} value={summary.run.id}>
-                  {(summary.video?.tema || summary.run.id)} · {summary.run.status}
+                  {(summary.video?.tema || summary.run.id)} · {serviceStatusLabel(summary.run.status)}
                 </option>
               ))}
             </select>

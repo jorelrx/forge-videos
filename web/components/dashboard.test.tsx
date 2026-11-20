@@ -125,8 +125,8 @@ describe("dashboard — comportamento completo (REAL)", () => {
 
     const h1 = screen.getByRole("heading", { level: 1 });
     expect(h1.textContent).toBe("Produção");
-    expect(screen.getByText("Fila, execução atual e histórico num único lugar")).not.toBeNull();
-    expect(screen.getByText("Nenhuma run ativa.")).not.toBeNull();
+    expect(screen.getByText("Acompanhe a execução em foco e enfileire o próximo vídeo.")).not.toBeNull();
+    expect(screen.getByText("Nenhuma execução em andamento")).not.toBeNull();
     expect(screen.getByText("Nenhum vídeo aguardando")).not.toBeNull();
     expect(screen.getByText("Forge Studio")).not.toBeNull();
   });
@@ -142,10 +142,11 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(screen.getByText("O tédio como alarme")).not.toBeNull();
     const progressVals = screen.getAllByText("42%");
     expect(progressVals.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByRole("button", { name: "Ⅱ Solicitar pausa" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Solicitar pausa" })).not.toBeNull();
   });
 
-  it("renderiza serviços com estado e latência", () => {
+  it("resume serviços na Produção e detalha estado e latência na tela Serviços", async () => {
+    const user = userEvent.setup();
     const state = fullState({
       services: {
         transcricao: { name: "transcricao", state: "healthy", message: "Operacional", latency_ms: 240 },
@@ -155,12 +156,21 @@ describe("dashboard — comportamento completo (REAL)", () => {
     });
     render(<DashboardView state={state} />);
 
-    expect(screen.getByText("transcricao")).not.toBeNull();
-    expect(screen.getByText(/Operacional/)).not.toBeNull();
-    expect(screen.getByText("240ms")).not.toBeNull();
-    expect(screen.getByText("modelagem")).not.toBeNull();
-    expect(screen.getByText(/Latência alta/)).not.toBeNull();
-    expect(screen.getByText("1800ms")).not.toBeNull();
+    const strip = screen.getByLabelText("Status dos serviços");
+    expect(strip.textContent).toContain("transcricao");
+    // Serviço degradado mostra o motivo já na faixa; o saudável não.
+    expect(strip.textContent).toContain("Latência alta");
+    expect(strip.textContent).not.toContain("Operacional");
+
+    await user.click(screen.getByRole("link", { name: /Serviços/ }));
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Serviços");
+    const table = screen.getByRole("table");
+    expect(table.textContent).toContain("transcricao");
+    expect(table.textContent).toContain("Operacional");
+    expect(table.textContent).toContain("240ms");
+    expect(table.textContent).toContain("Latência alta");
+    expect(table.textContent).toContain("1800ms");
+    expect(table.textContent).toContain("LM Studio");
   });
 
   it("marca GPU pelos nomes reais do backend (underscore)", () => {
@@ -173,13 +183,13 @@ describe("dashboard — comportamento completo (REAL)", () => {
     });
     render(<DashboardView state={state} />);
 
-    const lmChip = screen.getByText("lm_studio").closest(".service-chip");
-    const comfyChip = screen.getByText("comfyui").closest(".service-chip");
-    const ttsChip = screen.getByText("tts").closest(".service-chip");
+    const lmChip = screen.getByText("LM Studio").closest(".service-chip");
+    const comfyChip = screen.getByText("ComfyUI").closest(".service-chip");
+    const ttsChip = screen.getByText("TTS").closest(".service-chip");
     expect(lmChip?.classList.contains("gpu")).toBe(true);
     expect(comfyChip?.classList.contains("gpu")).toBe(true);
     expect(ttsChip?.classList.contains("gpu")).toBe(true);
-    expect(screen.getByText(/GPU · LLM · ocupado/)).not.toBeNull();
+    expect(screen.getByText(/GPU · ocupado/)).not.toBeNull();
   });
 
   it("header 'Novo vídeo' foca o formulário e não cria vídeo vazio", async () => {
@@ -209,14 +219,17 @@ describe("dashboard — comportamento completo (REAL)", () => {
     for (const el of stages) {
       expect(el.textContent).not.toContain("—");
     }
-    expect(pipeline.textContent).toContain("fonte citável");
+    expect(pipeline.textContent).toContain("fontes do acervo");
   });
 
-  it("renderiza histórico com runs e progresso", () => {
+  it("renderiza histórico com runs e progresso na tela Runs", async () => {
+    const user = userEvent.setup();
     const r1 = makeRun("completed", 1.0, null);
     const r2 = makeRun("failed", 0.07, "montagem" as StageName);
+    const selectRun = vi.fn().mockResolvedValue(undefined);
     const state: DashboardState = {
       ...fullState({ focusRun: r1 }),
+      selectRun,
       runs: [
         { run: { ...r1.run, id: "run-1", status: "completed" }, video: { ...r1.video, id: "v1", tema: "Felicidade" }, progress: 1.0, current_stage: null } as any,
         { run: { ...r2.run, id: "run-2", status: "failed" }, video: { ...r2.video, id: "v2", tema: "Existencialismo" }, progress: 0.07, current_stage: "montagem" } as any,
@@ -224,14 +237,28 @@ describe("dashboard — comportamento completo (REAL)", () => {
     };
     render(<DashboardView state={state} />);
 
+    // A Produção mostra só a lista curta de recentes.
+    expect(screen.queryByRole("table")).toBeNull();
+    await user.click(screen.getByRole("link", { name: /Ver todas/ }));
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Runs");
+
     const table = screen.getByRole("table");
     const tbody = table.querySelector("tbody");
-    expect(tbody?.children.length).toBeGreaterThanOrEqual(2);
-
+    expect(tbody?.children.length).toBe(2);
     const allText = table.textContent ?? "";
-    expect(allText).toContain("completed");
-    expect(allText).toContain("failed");
+    expect(allText).toContain("Concluído");
+    expect(allText).toContain("Falhou");
     expect(allText).toContain("Montagem");
+    expect(allText).toContain("7%");
+
+    // Filtro "Com falha" deixa só a run que falhou.
+    await user.click(screen.getByRole("button", { name: /Com falha/ }));
+    expect(screen.getByRole("table").querySelector("tbody")?.children.length).toBe(1);
+
+    // Abrir uma run volta à Produção com ela em foco.
+    await user.click(screen.getByRole("button", { name: /Abrir execução Existencialismo/ }));
+    expect(selectRun).toHaveBeenCalledWith("run-2");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");
   });
 
   it("renderiza log ao vivo com eventos e níveis", () => {
@@ -323,7 +350,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     });
     render(<DashboardView state={state} />);
 
-    expect(screen.getByRole("button", { name: "Ⅱ Solicitar pausa" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Solicitar pausa" })).not.toBeNull();
     // A API recusa retry fora de paused/failed/completed com 409
     // ({"detail": {"error": {"code": "transition_invalid", "message":
     // "run: running -> queued"}}), então a etapa só é oferecida quando é aceita.
@@ -366,7 +393,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     });
     render(<DashboardView state={state} />);
 
-    expect(screen.queryByRole("button", { name: "▶ Retomar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retomar" })).toBeNull();
   });
 
   it("marca a etapa pelo status real da API, não pela posição do chip", () => {
@@ -453,7 +480,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     });
     render(<DashboardView state={state} />);
 
-    expect(screen.getByRole("button", { name: "▶ Retomar" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Retomar" })).not.toBeNull();
     expect(screen.getByLabelText("Repetir etapa")).not.toBeNull();
   });
 
@@ -465,7 +492,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     const user = userEvent.setup();
     render(<DashboardView state={state} loadArtifacts={loadArtifacts} />);
 
-    const nav = screen.getByRole("button", { name: /Publicação/ });
+    const nav = screen.getByRole("link", { name: /Publicação/ });
     await user.click(nav);
 
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Publicação");
@@ -473,7 +500,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(await screen.findByText("Embalagem ausente")).not.toBeNull();
     expect(loadArtifacts).toHaveBeenCalledWith(done.run.id);
 
-    await user.click(screen.getByRole("button", { name: /Dashboard/ }));
+    await user.click(screen.getByRole("link", { name: /Produção/ }));
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");
   });
 
@@ -482,7 +509,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     const user = userEvent.setup();
     const { container } = render(<DashboardView state={state} loadArtifacts={async () => []} />);
 
-    await user.click(screen.getByRole("button", { name: /Publicação/ }));
+    await user.click(screen.getByRole("link", { name: /Publicação/ }));
     await user.click(container.querySelector('[data-choice="new-run"]') as HTMLButtonElement);
 
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");

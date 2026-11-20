@@ -449,6 +449,11 @@ class SubprocessExecutor:
             text=True,
             encoding="utf-8",
             errors="replace",
+            # O pai decodifica UTF-8; o filho Python, com stdout em pipe,
+            # codificaria no locale do sistema (cp1252 no Windows) e "áudio"
+            # chegaria à API como "�udio". Os dois lados do canal precisam
+            # concordar, então o pai fixa o encoding do filho aqui.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             **self._popen_kwargs(),
         )
         process_group_id = self._capture_process_group(process)

@@ -12,6 +12,7 @@ from forge.agents import review as review_stage
 from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
 from forge.agents.research import PassageEvidence
+from forge.domain.models import Fonte
 from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
 
@@ -102,8 +103,10 @@ def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
     logger.debug("Continuing to write phase", round=rounds)
     return "write"
 
-def build_graph(model, settings, inicio: str = "tema"):
+def build_graph(model, settings, inicio: str = "tema", revisor=None):
+    """`revisor`, quando dado, é o modelo do nó `review` — de outro provider."""
     logger.info("Building graph", stages=["tema", "research", "plan", "write", "review"])
+    modelo_revisao = revisor if revisor is not None else model
 
     # Um cliente por grafo: `research` é reentrado pelo reviewer e pelo write,
     # e abrir conexão nova a cada passagem não paga nada.
@@ -111,7 +114,9 @@ def build_graph(model, settings, inicio: str = "tema"):
 
     def node_tema(state):
         logger.debug("Running tema generation", tema=state.get("tema"))
-        result = {"tema": tema_stage.gerar_tema(model, state.get("tema"))}
+        result = {"tema": tema_stage.gerar_tema(
+            model, state.get("tema"), acervo=acervo, settings=settings,
+        )}
         logger.info("Tema generated", tema=result["tema"])
         return result
 
@@ -142,10 +147,16 @@ def build_graph(model, settings, inicio: str = "tema"):
             evidencia for evidencia in [*anteriores, *bundle.passages]
             if not getattr(evidencia, "path", None)
         )
+        fontes_combinadas = [
+            Fonte(titulo=p.title, autor=", ".join(p.authors) or None,
+                  frase=p.text, path=p.path, book_id=p.book_id,
+                  url=getattr(p, "url", "") or None)
+            for p in combinadas if getattr(p, "path", None)
+        ]
         logger.info("Research completed", num_fontes=len(fontes), reentrada=bool(pedido))
         return {
             "research_notes": combinado,
-            "fontes": fontes,
+            "fontes": fontes_combinadas or fontes,
             "research_passages": combinadas,
             "pedido": None,
             "_raw": raw,
@@ -153,11 +164,11 @@ def build_graph(model, settings, inicio: str = "tema"):
 
     def node_plan(state):
         logger.debug("Starting planning phase")
-        tese, esboco = plan_stage.planejar(
+        plano = plan_stage.planejar(
             model, state["tema"], state["research_notes"], run_dir=state.get("run_dir")
         )
-        result = {"tese": tese, "esboco": esboco}
-        logger.info("Planning completed", tese=tese[:100] + "..." if len(tese) > 100 else tese)
+        result = {"tese": plano.tese, "esboco": plano.esboco, "eixo": plano.eixo}
+        logger.info("Planning completed", eixo=plano.eixo)
         return result
 
     def node_write(state):
@@ -172,7 +183,10 @@ def build_graph(model, settings, inicio: str = "tema"):
             state["research_notes"],
             state["fontes"],
             notas,
+            research_passages=state.get("research_passages", []),
             run_dir=state.get("run_dir"),
+            anterior=state.get("roteiro"),
+            eixo=state.get("eixo"),
         )
         if falta:
             logger.info("Handoff to research from write", motivo=falta[:120])
@@ -183,11 +197,18 @@ def build_graph(model, settings, inicio: str = "tema"):
     def node_review(state):
         logger.debug("Starting review phase")
         result = review_stage.revisar(
-            model, state["roteiro"], run_dir=state.get("run_dir")
+            modelo_revisao, state["roteiro"], run_dir=state.get("run_dir"),
+            research_notes=state.get("research_notes", ""),
+            research_passages=state.get("research_passages", []),
+            eixo=state.get("eixo"),
         )
         rounds = state.get("rounds", 0) + 1
         pedido = "\n".join(result.verificar) if result.verificar else None
-        logger.info("Review completed", aprovado=result.aprovado, round=rounds)
+        logger.info(
+            "Review completed", aprovado=result.aprovado, round=rounds,
+            revisor_provider=settings.review_provider if revisor is not None else settings.provider,
+            revisor_model=getattr(modelo_revisao, "model", None),
+        )
         return {"review": result, "rounds": rounds, "pedido": pedido}
 
     g = StateGraph(RoteiroState)

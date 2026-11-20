@@ -50,6 +50,51 @@ def test_effective_config_redacts_keys(client: TestClient) -> None:
     assert "secret" not in serialized
 
 
+def test_codex_services_and_effective_config_follow_selected_backends():
+    from forge.services.saude import HealthProbes
+    from forge.api.routes.system import effective_config
+
+    settings = Settings(_env_file=None, provider='codex', image_provider='codex')
+    probes = HealthProbes(
+        research=lambda:True, lm_studio=lambda:False, comfyui=lambda:False,
+        tts=lambda:True, ffmpeg=lambda:True, gpu=lambda:None,
+        codex=lambda:True, codex_llm=True, codex_images=True,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        services=SimpleNamespace(settings=settings, health=StudioHealthService(probes)),
+    )))
+    response = asyncio.run(list_services(request))
+    assert set(response['required']) == {'research', 'codex', 'tts', 'ffmpeg', 'gpu'}
+    assert {item['name'] for item in response['items']} == set(response['required'])
+    config = asyncio.run(effective_config(request))
+    assert config['generation']['llm_provider'] == 'codex'
+    assert config['generation']['image_provider'] == 'codex'
+    assert config['services']['research_url'] == settings.acervo_url
+
+
+def test_claude_services_e_config_efetiva():
+    from forge.services.saude import HealthProbes
+    from forge.api.routes.system import effective_config
+
+    settings = Settings(_env_file=None, provider='claude', review_provider='codex')
+    probes = HealthProbes(
+        research=lambda: True, lm_studio=lambda: False, comfyui=lambda: True,
+        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
+        claude=lambda: True, claude_llm=True,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        services=SimpleNamespace(settings=settings, health=StudioHealthService(probes)),
+    )))
+    response = asyncio.run(list_services(request))
+    assert 'claude' in response['required'] and 'lm_studio' not in response['required']
+    config = asyncio.run(effective_config(request))
+    assert config['generation']['llm_provider'] == 'claude'
+    assert config['generation']['llm_model'] == 'claude-opus-5-5'
+    assert config['generation']['review_provider'] == 'codex'
+    assert config['generation']['review_model'] is None
+    assert config['generation']['claude_effort'] == 'high'
+
+
 def test_system_routes_return_structured_health(client: TestClient) -> None:
     resp = client.get("/api/services")
     assert resp.status_code == 200, resp.text

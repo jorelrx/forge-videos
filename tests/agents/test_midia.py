@@ -62,6 +62,31 @@ def test_bloco_id_com_colchetes_mas_ainda_invalido_e_descartado(scripted):
     assert "carro" in beats[0].prompt
 
 
+def test_plano_preserva_referencias_em_blocos_autorados(scripted):
+    from forge.domain.models import BlocoRoteiro, Roteiro, Secao
+
+    block = BlocoRoteiro(texto="A escolha tem consequências.", referencias=["12/ch1/p2"])
+    roteiro = Roteiro(
+        tema="tema", tese="tese", fontes=[],
+        secoes=[Secao(nome="Gancho", conteudo=block.texto, blocos=[block])],
+    )
+    model = scripted(structured=[BeatsDaSecao(beats=[
+        BeatProposto(bloco_id="b001", prompt="A person at a crossroads"),
+    ])])
+
+    plano = __import__("forge.agents.midia", fromlist=["planejar_midia"]).planejar_midia(model, roteiro)
+
+    assert plano.blocos[0].texto == block.texto
+    assert plano.blocos[0].referencias == ["12/ch1/p2"]
+
+
+def test_marcador_de_citacao_legado_nao_vai_para_a_fala():
+    from forge.narracao.fatiar import fatiar, texto_narravel, REFERENCIA_LEGADA_RE
+
+    original = "Uma afirmação útil. [4363/ch2/p7] Outra frase segue."
+    assert "4363/ch2/p7" not in texto_narravel(original)
+    assert fatiar(original) == ["Uma afirmação útil. Outra frase segue."]
+    assert REFERENCIA_LEGADA_RE.findall(original) == ["4363/ch2/p7"]
 def test_beat_para_bloco_de_fora_da_secao_e_descartado(scripted):
     """O modelo só recebeu os blocos desta seção; citar outro é invenção."""
     model = scripted(structured=[BeatsDaSecao(beats=[
@@ -425,3 +450,60 @@ def test_midia_nao_declara_le_porque_nao_e_no_do_grafo():
     import forge.agents.midia as midia_mod
 
     assert not hasattr(midia_mod, "LE")
+
+
+# --- bloco autorado grande demais para o TTS ---
+
+def _roteiro_com_bloco(texto, **campos):
+    from forge.domain.models import BlocoRoteiro, Roteiro, Secao
+
+    bloco = BlocoRoteiro(texto=texto, **campos)
+    return Roteiro(
+        tema="tema", tese="tese", fontes=[],
+        secoes=[Secao(nome="Gancho", conteudo=texto, blocos=[bloco])],
+    )
+
+
+def _planejar(scripted, roteiro):
+    from forge.agents.midia import planejar_midia
+
+    return planejar_midia(scripted(structured=[BeatsDaSecao(beats=[])]), roteiro)
+
+
+def test_bloco_autorado_longo_e_fatiado_no_alvo_de_palavras(scripted):
+    """Na run real o modelo escreveu blocos de 50 a 83 palavras, e todos acima
+    de ~50 estouraram a VRAM do TTS (`tts_vulkan_oom`): 28 de 36 sem áudio."""
+    frases = [f"Esta é a frase número {i} e ela tem exatamente doze palavras contadas aqui." for i in range(6)]
+    texto = " ".join(frases)
+
+    plano = _planejar(scripted, _roteiro_com_bloco(texto, referencias=["12/ch1/p2"]))
+
+    assert len(plano.blocos) > 1
+    assert all(len(b.texto.split()) <= 40 for b in plano.blocos)
+    assert " ".join(b.texto for b in plano.blocos) == texto, "nenhuma palavra perdida"
+    assert [b.id for b in plano.blocos] == [f"b{i:03d}" for i in range(1, len(plano.blocos) + 1)]
+    # A paráfrase atribuída vale para o parágrafo inteiro.
+    assert all(b.referencias == ["12/ch1/p2"] for b in plano.blocos)
+
+
+def test_citacao_literal_fica_so_no_pedaco_que_a_fala(scripted):
+    from forge.domain.models import CitacaoLiteral
+
+    antes = " ".join(f"Frase de preparação número {i} com mais algumas palavras de enchimento." for i in range(4))
+    citada = "A vida não examinada não vale a pena ser vivida."
+    texto = f"{antes} Em tradução livre: {citada} E isso muda a pergunta."
+    literal = CitacaoLiteral(path="1656/a/p40", trecho="The unexamined life is not worth living.", traducao=citada)
+
+    plano = _planejar(scripted, _roteiro_com_bloco(texto, citacoes_literais=[literal]))
+
+    com_citacao = [b for b in plano.blocos if b.citacoes_literais]
+    assert len(com_citacao) == 1
+    assert citada in com_citacao[0].texto
+
+
+def test_bloco_autorado_curto_passa_intacto(scripted):
+    texto = "A escolha tem consequências. E você sabe disso."
+
+    plano = _planejar(scripted, _roteiro_com_bloco(texto, referencias=["12/ch1/p2"]))
+
+    assert [b.texto for b in plano.blocos] == [texto]

@@ -13,18 +13,26 @@ from forge.domain.execucao import (
     ArtifactOutput, GateFinding, GateResult, RunSnapshot, StageExecutionResult,
     StagePlan,
 )
-from forge.domain.models import Roteiro
+from forge.domain.models import Fonte, Roteiro, Secao
+from forge.domain.roteiro import SECOES_NOMES
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
 from forge.executors.lm_studio import LMStudioManager
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
-from forge.llms.model import build_chat_model
+from forge.llms.model import build_chat_model, build_review_model
 from forge.orchestration.graph import build_graph
+from forge.services.citacoes import derivar_citacoes, gravar_citacoes
 from forge.services.persistencia import carregar_modelo, gravar_modelo
 from forge.services.qualidade_roteiro import conferir_roteiro
 from forge.services.storage import _render
+from forge.services.artefatos import _ultimo, _corpo, _parse_blocos, ler_eixo
 from forge.services.worker import EventSink
+from pydantic import BaseModel, Field
+
+
+class _ResearchEvidence(BaseModel):
+    passages: list[PassageEvidence] = Field(default_factory=list)
 
 
 class _NoopBroker:
@@ -48,6 +56,51 @@ class ScriptExecutor(StageImplementation):
         self._roteiro: Roteiro | dict[str, Any] | None = None
         self._passages_by_section: dict[str, list[Any]] = {}
 
+    @staticmethod
+    def _resume_content(context: RunSnapshot, bundle: ResearchBundle) -> dict:
+        """Uma falha de transporte na revisão não deve descartar o texto salvo.
+
+        Pesquisa refeita invalida a retomada do rascunho anterior. Arquivos
+        incompletos também voltam ao planejamento normal.
+        """
+        if context.attempt <= 1:
+            return {}
+        draft = _ultimo(context.run_dir, "write")
+        plan = _ultimo(context.run_dir, "plan")
+        research = context.run_dir / "video/research.json"
+        if draft is None or plan is None or not research.is_file():
+            return {}
+        research_markdown = _ultimo(context.run_dir, "research")
+        research_time = research.stat().st_mtime_ns
+        if research_markdown is not None:
+            research_time = max(research_time, research_markdown.stat().st_mtime_ns)
+        # Uma pesquisa posterior ao plano/rascunho invalida a retomada.
+        # Um plano novo já gerado após essa pesquisa pode ser retomado.
+        if min(draft.stat().st_mtime_ns, plan.stat().st_mtime_ns) < research_time:
+            return {}
+        sections = _parse_blocos(_corpo(draft.read_text(encoding="utf-8")), set(SECOES_NOMES))
+        plan_text = plan.read_text(encoding="utf-8")
+        planning = _parse_blocos(_corpo(plan_text), {"Tese", "Esboço"})
+        if set(sections) != set(SECOES_NOMES) or not all(sections.values()) or not all(planning.get(k) for k in ("Tese", "Esboço")):
+            return {}
+        draft_json = draft.with_suffix(".json")
+        if draft_json.is_file():
+            roteiro_salvo = Roteiro.model_validate_json(draft_json.read_text(encoding="utf-8"))
+            roteiro_salvo = roteiro_salvo.model_copy(update={
+                "tema": context.tema, "tese": planning["Tese"],
+            })
+        else:
+            # Explicit legacy load: no references are inferred from prose.
+            roteiro_salvo = Roteiro(
+                tema=context.tema, tese=planning["Tese"], fontes=bundle.fontes,
+                secoes=[Secao(nome=name, conteudo=text) for name, text in sections.items()],
+            )
+        return {
+            "tese": planning["Tese"], "esboco": planning["Esboço"],
+            "eixo": ler_eixo(plan_text),
+            "roteiro": roteiro_salvo,
+        }
+
     def prepare(self, context: RunSnapshot) -> StagePlan:
         if context.stage is not StageName.ROTEIRO:
             raise ValueError("context stage does not match script executor")
@@ -70,6 +123,10 @@ class ScriptExecutor(StageImplementation):
             "model": self.settings.resolved_model,
             "preset": context.config_snapshot,
         }
+        # Trocar o revisor muda o roteiro aprovado: não pode reaproveitar. Só
+        # entra quando existe de fato, para não mudar o hash das runs antigas.
+        if self.settings.review_provider not in (None, self.settings.provider):
+            payload["revisor"] = [self.settings.review_provider, self.settings.review_model]
         encoded = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
@@ -91,11 +148,26 @@ class ScriptExecutor(StageImplementation):
 
     @staticmethod
     def _load_bundle(run_dir: Path) -> ResearchBundle:
-        return carregar_modelo(run_dir / "video" / "research.json", ResearchBundle)
+        bundle = carregar_modelo(run_dir / "video" / "research.json", ResearchBundle)
+        evidencia_path = run_dir / "video" / "research-evidence.json"
+        if evidencia_path.is_file():
+            passages = carregar_modelo(evidencia_path, _ResearchEvidence).passages
+            fontes = [
+                Fonte(titulo=p.title, autor=", ".join(p.authors) or None,
+                      frase=p.text, path=p.path, book_id=p.book_id)
+                for p in passages if p.path
+            ]
+            bundle = bundle.model_copy(update={
+                "passages": passages, "fontes": fontes,
+                "passage_count": len(passages),
+                "canonical_paths": [p.path for p in passages if p.path],
+            })
+        return bundle
 
     @staticmethod
     def _write_artifacts(
         run_dir: Path, roteiro: Roteiro, settings: Settings, emit: EventSink,
+        evidencias: list[PassageEvidence] | None = None,
     ) -> list[ArtifactOutput]:
         structured = gravar_modelo(run_dir / "video" / "roteiro.json", roteiro)
         markdown = run_dir / "roteiro.md"
@@ -114,6 +186,27 @@ class ScriptExecutor(StageImplementation):
                 mime_type="text/markdown", metadata={"sections": len(roteiro.secoes)},
             ),
         ]
+        if evidencias is not None:
+            gravar_modelo(
+                run_dir / "video" / "research-evidence.json",
+                _ResearchEvidence(passages=evidencias),
+            )
+            outputs.append(ArtifactOutput(
+                item_key="", kind="research_evidence",
+                relative_path="video/research-evidence.json",
+                mime_type="application/json", metadata={"passages": len(evidencias)},
+            ))
+            # Auditoria de fontes: derivada dos blocos e das evidências, sem
+            # modelo. A embalagem (descrição do vídeo) lê este arquivo.
+            citacoes = derivar_citacoes(
+                roteiro, [e for e in evidencias if isinstance(e, PassageEvidence)],
+            )
+            gravar_citacoes(run_dir, citacoes)
+            outputs.append(ArtifactOutput(
+                item_key="", kind="citacoes",
+                relative_path="video/citacoes.json",
+                mime_type="application/json", metadata={"citations": len(citacoes)},
+            ))
         for output in outputs:
             emit(
                 kind="artifact.created", level="info", message="Artefato criado",
@@ -128,10 +221,14 @@ class ScriptExecutor(StageImplementation):
     ) -> StageExecutionResult:
         model, broker = self._runtime()
         bundle = self._load_bundle(context.run_dir)
+        resumed = self._resume_content(context, bundle)
         with broker.exclusivo("llm"):
             if self.settings.provider == "lm-studio":
                 (self.lm_manager or LMStudioManager(self.settings)).ensure_loaded()
-            graph = build_graph(model, self.settings, inicio="plan")
+            graph = build_graph(
+                model, self.settings, inicio="review" if resumed else "plan",
+                revisor=build_review_model(self.settings),
+            )
             state = graph.invoke({
                 "tema": context.tema,
                 "tese": context.tese or "",
@@ -143,6 +240,7 @@ class ScriptExecutor(StageImplementation):
                 "passos": 0,
                 "review": None,
                 "pedido": None,
+                **resumed,
             })
         roteiro = state.get("roteiro")
         if roteiro is None:
@@ -172,7 +270,7 @@ class ScriptExecutor(StageImplementation):
         self._passages_by_section = {
             section.nome: list(evidencias) for section in roteiro.secoes
         }
-        outputs = self._write_artifacts(context.run_dir, roteiro, self.settings, emit)
+        outputs = self._write_artifacts(context.run_dir, roteiro, self.settings, emit, evidencias)
         return StageExecutionResult(
             current_items=1, total_items=1, artifacts=outputs,
         )

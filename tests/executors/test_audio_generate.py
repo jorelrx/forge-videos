@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import wave
 
 from forge.domain.execucao import FailureClass
 from forge.executors.audio_generate import AudioGenerateClient, AudioRequest
@@ -35,6 +36,7 @@ def test_build_argv_uses_fixed_safe_batch_flags_and_no_sampling_knobs(tmp_path):
         "--model", str(settings.tts_model),
         "--backend", settings.tts_backend,
         "--voice-ref", str(settings.tts_voice_reference),
+        "--reference-text", settings.tts_reference_text,
         "--batch-text-file", str(batch_file),
         "--out-dir", str(tmp_path / "out"),
         "--seed", "42",
@@ -98,8 +100,8 @@ def test_synthesize_batch_maps_outputs_through_the_manifest(tmp_path):
     )
 
     assert [outcome.ok for outcome in outcomes] == [True, True]
-    assert outcomes[0].path == tmp_path / "out" / "line_1.wav"
-    assert outcomes[1].path == tmp_path / "out" / "line_2.wav"
+    assert outcomes[0].path == tmp_path / "out" / "b001.wav"
+    assert outcomes[1].path == tmp_path / "out" / "b002.wav"
 
 
 def test_synthesize_batch_fails_when_the_manifest_does_not_cover_every_item(tmp_path):
@@ -170,9 +172,31 @@ def test_synthesize_batch_serializes_plain_text_without_emotion_tags(tmp_path):
     assert outcomes[0].ok
     batch_text = Path(captured["argv"][captured["argv"].index("--batch-text-file") + 1]).read_text(encoding="utf-8")
     assert "<|emotion:" not in batch_text
+    assert batch_text == "Olá  mundo\n"
     assert captured["shell"] is False
     assert captured["cwd"] == tmp_path / "audio-generate"
     assert captured["timeout"] == 900
+
+
+def test_lotes_diferentes_preservam_audios_anteriores(tmp_path):
+    raw_dirs = []
+
+    def run(argv, **kwargs):
+        raw = Path(argv[argv.index("--out-dir") + 1])
+        raw_dirs.append(raw)
+        raw.mkdir(parents=True, exist_ok=True)
+        (raw / "line_1.wav").write_bytes(f"lote-{len(raw_dirs)}".encode())
+        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
+            json.dumps({"requests": [{"id": "line_1"}]}), encoding="utf-8",
+        )
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    client = AudioGenerateClient(_settings(tmp_path), run=run)
+    first = client.synthesize_batch([AudioRequest("b001", "Primeira")], tmp_path / "out")[0]
+    second = client.synthesize_batch([AudioRequest("b002", "Segunda")], tmp_path / "out")[0]
+    assert first.path.read_bytes() == b"lote-1"
+    assert second.path.read_bytes() == b"lote-2"
+    assert raw_dirs[0] != raw_dirs[1]
 
 
 def test_synthesize_batch_classifies_known_stderr_and_bounds_diagnostics(tmp_path):
@@ -202,3 +226,82 @@ def test_synthesize_batch_classifies_max_tokens_as_deterministic(tmp_path):
     assert outcome.failure is not None
     assert outcome.failure.code == "tts_max_tokens_before_eoc"
     assert outcome.failure.failure_class is FailureClass.DETERMINISTIC
+    assert outcome.failure.retriable is False
+
+
+def test_failed_batch_preserves_completed_lines_and_maps_unfinished_items(tmp_path):
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out / "line_1.wav"), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(b"\0\0" * 2400)
+        return type("Result", (), {
+            "returncode": 1,
+            "stderr": "Higgs TTS generation reached max_tokens before EOC",
+        })()
+
+    outcomes = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
+        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda"), AudioRequest("b003", "Terceira")],
+        tmp_path / "out",
+    )
+
+    assert outcomes[0].ok
+    assert outcomes[0].path == tmp_path / "out" / "b001.wav"
+    assert [outcome.item_key for outcome in outcomes[1:]] == ["b002", "b003"]
+    assert [outcome.failure.code for outcome in outcomes[1:]] == [
+        "tts_max_tokens_before_eoc", "tts_max_tokens_before_eoc",
+    ]
+
+
+def test_single_failed_line_is_not_accepted_as_completed_partial_audio(tmp_path):
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out / "line_1.wav"), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(b"\0\0" * 2400)
+        return type("Result", (), {
+            "returncode": 1,
+            "stderr": "Higgs TTS generation reached max_tokens before EOC",
+        })()
+
+    outcome = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
+        [AudioRequest("b002", "Segunda")], tmp_path / "out",
+    )[0]
+
+    assert not outcome.ok
+    assert outcome.failure is not None
+    assert outcome.failure.code == "tts_max_tokens_before_eoc"
+
+
+def test_synthesize_batch_can_override_backend_for_one_call(tmp_path):
+    captured = {}
+
+    def run(argv, **kwargs):
+        captured["backend"] = argv[argv.index("--backend") + 1]
+        out = Path(argv[argv.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out / "line_1.wav"), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(b"\0\0" * 2400)
+        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
+            json.dumps({"requests": [{"id": "line_1"}]}), encoding="utf-8",
+        )
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    settings = _settings(tmp_path)
+    client = AudioGenerateClient(settings, run=run)
+    outcome = client.synthesize_batch(
+        [AudioRequest("b002", "Segunda")], tmp_path / "out", backend="cpu",
+    )[0]
+
+    assert outcome.ok
+    assert captured["backend"] == "cpu"
+    assert settings.tts_backend == "vulkan"

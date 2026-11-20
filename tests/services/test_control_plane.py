@@ -257,6 +257,21 @@ def test_interrupt_expired_records_recoverable_interruption(control_plane, db):
     ]
 
 
+def test_resume_revoga_pausa_pendente_antes_da_interrupcao(control_plane, db):
+    _, run = enqueue(control_plane)
+    save_run_status(db, run.id, RunStatus.RUNNING)
+    pause = control_plane.request_pause(run.id, idempotency_key="pause-before-crash")
+    save_run_status(db, run.id, RunStatus.INTERRUPTED)
+
+    control_plane.request_resume(run.id, idempotency_key="resume-after-crash")
+
+    with db.connection() as conn:
+        obsolete = ComandosRepository(conn).get(pause.id)
+    assert obsolete.status is CommandStatus.REJECTED
+    assert obsolete.result["reason"] == "superseded_by_resume"
+    assert control_plane.get_run(run.id).run.status is RunStatus.QUEUED
+
+
 @pytest.mark.parametrize(
     "initial_status",
     [RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.VALIDATING],

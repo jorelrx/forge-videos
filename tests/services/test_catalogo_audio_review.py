@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from forge.domain.operacao import Artifact, ItemStatus, StageName
+from forge.domain.operacao import Artifact, ItemStatus, RunStatus, StageName
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
@@ -68,8 +68,10 @@ def test_worker_projects_audio_artifact_to_current_catalog_before_audit_event(tm
     assert [event.kind for event in events] == ["artifact.created"]
 
 
-def test_catalog_find_reusable_output_requires_intact_prior_current_item(tmp_path):
+def test_catalog_reuses_intact_succeeded_item_after_retry_invalidates_its_artifact(tmp_path):
+    from forge.domain.execucao import WorkItemPlan
     from forge.services.catalogo import CatalogoArtefatos
+    from forge.services.control_plane import ControlPlaneService
 
     db, run_dir, run, stage, item = _run_with_audio_item(tmp_path)
     path = _wav(run_dir / "video" / "audio" / "b001.wav")
@@ -83,18 +85,43 @@ def test_catalog_find_reusable_output_requires_intact_prior_current_item(tmp_pat
             mime_type="audio/wav", metadata={}, is_current=True,
             created_at=datetime.now(UTC),
         ))
-        conn.execute(
-            "INSERT INTO stage_runs (id, run_id, stage, attempt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("audio-attempt-2", run.id, "audio", 2, "pending", datetime.now(UTC).isoformat()),
-        )
+        repo.save_run(run.model_copy(update={"status": RunStatus.FAILED}))
 
-    found = CatalogoArtefatos(db, run_dir).find_reusable_output(
-        run_id=run.id, stage=StageName.AUDIO, item_key="b001", input_hash="a" * 64,
-        current_stage_run_id="audio-attempt-2",
+    ControlPlaneService(db).request_retry_stage(
+        run.id, StageName.AUDIO, idempotency_key="retry-audio-for-reuse",
+    )
+    with db.connection() as conn:
+        current_stage = next(
+            candidate for candidate in OperacaoRepository(conn).current_stages(run.id)
+            if candidate.stage is StageName.AUDIO
+        )
+        prior = next(
+            candidate for candidate in OperacaoRepository(conn).list_artifacts(run.id, current_only=False)
+            if candidate.id == artifact.id
+        )
+    assert current_stage.attempt == 2
+    assert prior.is_current is False
+
+    catalog = CatalogoArtefatos(db, run_dir)
+    outputs = catalog.reusable_outputs(
+        run_id=run.id, stage=StageName.AUDIO, current_stage_run_id=current_stage.id,
+        items=[WorkItemPlan(item_key="b001", input={"texto": "Texto"}, input_hash="a" * 64)],
     )
 
-    assert found is not None
-    assert found.id == artifact.id
+    assert len(outputs) == 1
+    assert outputs[0].artifact.id == artifact.id
+    assert outputs[0].artifact.is_current is False
+
+    assert catalog.reusable_outputs(
+        run_id=run.id, stage=StageName.AUDIO, current_stage_run_id=current_stage.id,
+        items=[WorkItemPlan(item_key="b001", input={"texto": "Texto"}, input_hash="b" * 64)],
+    ) == []
+
+    path.write_bytes(b"corrompido")
+    assert catalog.reusable_outputs(
+        run_id=run.id, stage=StageName.AUDIO, current_stage_run_id=current_stage.id,
+        items=[WorkItemPlan(item_key="b001", input={"texto": "Texto"}, input_hash="a" * 64)],
+    ) == []
 
 
 def test_projector_rejects_path_escape_without_creating_artifact(tmp_path):
@@ -111,6 +138,25 @@ def test_projector_rejects_path_escape_without_creating_artifact(tmp_path):
     with db.connection() as conn:
         assert OperacaoRepository(conn).list_artifacts(run.id) == []
     assert outside.is_file()
+
+
+def test_projector_accepts_stage_artifact_with_omitted_item_key(tmp_path):
+    db, run_dir, run, stage, _ = _run_with_audio_item(tmp_path)
+    path = run_dir / "video" / "stage-input.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    projector = ChildEventProjector(db, run_dir, stage.id)
+
+    projector.project("artifact.created", {
+        "kind": "stage.input", "relative_path": "video/stage-input.json",
+        "mime_type": "application/json", "metadata": {},
+    })
+
+    with db.connection() as conn:
+        artifacts = OperacaoRepository(conn).list_artifacts(run.id)
+    assert len(artifacts) == 1
+    assert artifacts[0].stage_run_id == stage.id
+    assert artifacts[0].work_item_id is None
 
 
 def test_audio_child_events_project_without_invalid_transitions_or_duplicate_terminals(tmp_path):

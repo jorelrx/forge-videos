@@ -6,9 +6,11 @@ from pathlib import Path
 
 from forge.gpu.broker import GPUOcupada
 from forge.gpu.liberadores import montar_broker
-from forge.infrastructure.config import get_settings
+from typing import get_args
+
+from forge.infrastructure.config import Provider, get_settings
 from forge.infrastructure.logging import get_logger, setup_logging
-from forge.llms.model import build_chat_model
+from forge.llms.model import build_chat_model, build_review_model
 from forge.orchestration.graph import build_graph
 from forge.services.storage import gravar_roteiro
 
@@ -36,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--tema", default=None, help="Tema (opcional; gerado se ausente)")
     r.add_argument(
         "--provider",
-        choices=["anthropic", "lm-studio", "openai"],
+        choices=list(get_args(Provider)),
         default=None,
         help="Provider do LLM (default: config/env, senão anthropic)",
     )
@@ -46,9 +48,185 @@ def main(argv: list[str] | None = None) -> int:
         help="Diretório de uma run anterior; pula estágios já concluídos",
     )
 
+    t = sub.add_parser("temas", help="Sugere temas que o acervo sustenta")
+    t.add_argument("--n", type=int, default=5, help="Quantos temas sugerir")
+    t.add_argument(
+        "--provider",
+        choices=list(get_args(Provider)),
+        default=None,
+        help="Provider do LLM (default: config/env, senão anthropic)",
+    )
+
+    auth = sub.add_parser("auth", help="Autenticação independente do Forge")
+    auth.add_argument("backend", choices=["codex", "youtube"])
+    auth.add_argument("action", choices=["login", "status"])
+
+    p = sub.add_parser("publicar", help="Envia uma run aprovada ao YouTube (privado ou agendado)")
+    p.add_argument("run_dir", help="Diretório da run (output/runs/<id>)")
+    p.add_argument("--titulo", default=None,
+                   help="Número do título da embalagem (1, 2, 3) ou o texto do título")
+    p.add_argument("--canal", default=None,
+                   help="Id do canal (UC...) conectado; sem ele, usa o canal padrão")
+    p.add_argument("--agendar", default=None,
+                   help="Data ISO 8601 com fuso, ex. 2026-11-21T18:00-03:00; sem ela, fica privado")
     args = parser.parse_args(argv)
 
+    if args.cmd == "auth" and args.backend == "youtube":
+        return _cmd_auth_youtube(args)
+
+    if args.cmd == "publicar":
+        return _cmd_publicar(args)
+
+    if args.cmd == "auth":
+        from forge.services.codex_auth import OAuthCredentials, CodexAuthError
+        credentials = OAuthCredentials(get_settings().codex_auth_file)
+        try:
+            if args.action == "login":
+                print("Autorize sua conta ChatGPT no navegador. Callback local: porta 1455.")
+                credentials.login(show_url=lambda url: print("Login OAuth: " + url))
+            else:
+                credentials.access_token()
+            print("Sessão ChatGPT disponível; nenhum token exibido.")
+            return 0
+        except CodexAuthError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+
+    if args.cmd == "temas":
+        return _cmd_temas(args)
+
     return _cmd_roteiro(args)
+
+
+def _cmd_auth_youtube(args) -> int:
+    import secrets
+
+    from forge.services.youtube import YouTubeError
+    from forge.services.youtube_auth import GoogleCredentials
+    from forge.services.youtube_canais import CanaisYouTube
+    settings = get_settings()
+    canais = CanaisYouTube(settings)
+    try:
+        if args.action == "login":
+            print("Autorize sua conta Google no navegador e escolha o canal do YouTube.")
+            canais.dir.mkdir(parents=True, exist_ok=True)
+            temporario = canais.dir / f".login-{secrets.token_hex(8)}.json"
+            try:
+                GoogleCredentials(temporario, settings.youtube_client_secrets).login(
+                    show_url=lambda url: print("Login OAuth: " + url))
+                canal = canais.registrar(temporario)
+            finally:
+                temporario.unlink(missing_ok=True)
+            print(f"Canal conectado e definido como padrão: {canal.titulo} ({canal.id})")
+            return 0
+        conectados = canais.listar()
+        if not conectados:
+            raise YouTubeError("Nenhum canal do YouTube conectado; execute forge auth youtube login")
+        for canal in conectados:
+            canais.credenciais(canal.id).access_token()  # renova ou acusa login vencido
+            print(f"{canal.titulo} ({canal.id})" + (" [padrão]" if canal.padrao else ""))
+        return 0
+    except YouTubeError as erro:
+        print(str(erro), file=sys.stderr)
+        return 1
+
+
+def _titulo_pedido(run_dir: Path, valor: str | None) -> str | None:
+    if valor is None or not valor.strip().isdigit():
+        return valor
+    from forge.domain.embalagem import Embalagem
+    from forge.services.youtube import YouTubeError
+    try:
+        embalagem = Embalagem.model_validate_json(
+            (run_dir / "video" / "embalagem.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as erro:
+        raise YouTubeError("Run sem embalagem válida para escolher o título") from erro
+    indice = int(valor)
+    if not 1 <= indice <= len(embalagem.titulos):
+        raise YouTubeError(
+            f"Título {indice} não existe; a embalagem tem {len(embalagem.titulos)}")
+    return embalagem.titulos[indice - 1].texto
+
+
+def _cmd_publicar(args) -> int:
+    from datetime import datetime
+
+    from forge.services import publicacao
+    from forge.services.youtube import YouTubeClient, YouTubeError
+    settings = get_settings()
+    run_dir = Path(args.run_dir)
+    try:
+        titulo = _titulo_pedido(run_dir, args.titulo)
+        try:
+            quando = datetime.fromisoformat(args.agendar) if args.agendar else None
+        except ValueError as erro:
+            raise YouTubeError(f"Data de agendamento inválida: {args.agendar}") from erro
+        from forge.services.youtube_canais import CanaisYouTube
+        canais = CanaisYouTube(settings)
+        if not canais.listar():
+            raise YouTubeError("Nenhum canal do YouTube conectado; execute forge auth youtube login")
+        # O que já subiu pertence ao canal gravado; o pedido só vale do zero.
+        canal = publicacao.canal_da_retomada(run_dir) or args.canal or canais.padrao()
+        try:
+            cliente = YouTubeClient(canais.credenciais(canal).access_token)
+        except KeyError:
+            raise YouTubeError(f"Canal {canal} não está conectado; rode forge auth youtube status") from None
+
+        def progresso(estado):
+            if estado.etapa == "enviando" and estado.total_bytes:
+                pct = 100 * estado.bytes_enviados / estado.total_bytes
+                print(f"[publicar] enviando {pct:.0f}%", file=sys.stderr)
+            else:
+                print(f"[publicar] {estado.etapa}", file=sys.stderr)
+
+        estado = publicacao.publicar(run_dir, cliente=cliente, settings=settings,
+                                     titulo=titulo, publicar_em=quando, ao_progredir=progresso,
+                                     canal_id=canal, canal_titulo=canais.titulo(canal))
+    except YouTubeError as erro:
+        print(str(erro), file=sys.stderr)
+        return 1
+    for aviso in estado.avisos:
+        print(f"aviso: {aviso}", file=sys.stderr)
+    print(estado.url)
+    return 0
+
+
+def _cmd_temas(args) -> int:
+    """Lista temas sustentados pelo acervo, do mais atraente para o menos.
+
+    Os temas vão para stdout (dá para colar no dashboard ou encadear num
+    script); os eixos sem cobertura vão para stderr — são um recado sobre o
+    acervo, não parte da lista.
+    """
+    from forge.agents import tema as tema_stage
+    from forge.services.acervo import Acervo, AcervoIndisponivel
+
+    settings = get_settings()
+    if args.provider is not None:
+        settings = settings.model_copy(update={"provider": args.provider})
+    setup_logging(settings.log_level)
+    model = build_chat_model(settings)
+    acervo = Acervo(settings.acervo_url, timeout=settings.acervo_timeout)
+    try:
+        sugestoes = tema_stage.sugerir_temas(model, acervo, settings, n=args.n)
+    except AcervoIndisponivel as erro:
+        print(str(erro), file=sys.stderr)
+        return 1
+
+    for posicao, tema in enumerate(sugestoes.temas, start=1):
+        print(
+            f"{posicao}. {tema.tema} [{tema.eixo}] apelo {tema.apelo}/5 — "
+            + "; ".join(tema.livros)
+        )
+    if sugestoes.eixos_sem_cobertura:
+        print(
+            "Eixos sem cobertura no acervo: " + ", ".join(sugestoes.eixos_sem_cobertura),
+            file=sys.stderr,
+        )
+    if not sugestoes.temas:
+        print("Nenhum tema sustentado pelo acervo.", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_roteiro(args) -> int:
@@ -82,7 +260,9 @@ def _cmd_roteiro(args) -> int:
         run_dir = criar_run_dir(settings, args.tema or "roteiro")
         conteudo, inicio = {"tema": args.tema}, "tema"
 
-    graph = build_graph(model, settings, inicio=inicio)
+    revisor = build_review_model(settings)
+    extra = {"revisor": revisor} if revisor is not None else {}
+    graph = build_graph(model, settings, inicio=inicio, **extra)
     estado_inicial = {**conteudo, "rounds": 0, "passos": 0, "run_dir": run_dir}
 
     # O slot cobre o grafo E o plano de mídia: o plano é emitido de propósito
@@ -114,6 +294,7 @@ def _cmd_roteiro(args) -> int:
             logger.info("Completed", output_path=str(path), aprovados=aprovado)
 
             _plano_de_midia(model, settings, run_dir, result, aprovado)
+            _embalagem(model, settings, run_dir, result, aprovado)
     except GPUOcupada as e:
         # Outro forge segurando a placa é o caso NORMAL que o lock existe para
         # produzir, não um bug: sai como os demais erros previstos deste comando
@@ -174,6 +355,44 @@ def _salvar_parcial(state: dict, run_dir: Path) -> None:
         logger.info("Partial state saved", path=str(partial_path))
     except Exception:
         pass
+
+
+def _embalagem(model, settings, run_dir: Path, final: dict,
+               aprovado: bool | None) -> None:
+    """Citações e embalagem de publicação, só de roteiro APROVADO.
+
+    Sai junto do plano de mídia pelo mesmo motivo: é chamada de modelo, e o
+    modelo ainda está residente. Como lá, nenhuma falha aqui derruba o comando —
+    o roteiro aprovado é o entregável e a embalagem pode ser refeita.
+    """
+    from forge.agents import embalagem as embalagem_mod
+    from forge.services.citacoes import derivar_citacoes, gravar_citacoes
+
+    if aprovado is not True:
+        logger.info("Embalagem pulada: roteiro não aprovado", aprovado=aprovado)
+        return
+
+    try:
+        citacoes = derivar_citacoes(
+            final["roteiro"], final.get("research_passages") or []
+        )
+        gravar_citacoes(run_dir, citacoes)
+        embalagem = embalagem_mod.embalar(
+            model, final["roteiro"], citacoes,
+            aviso_ia=settings.aviso_ia, run_dir=run_dir,
+        )
+        _, legivel = embalagem_mod.gravar_embalagem(run_dir, embalagem)
+        logger.info("Embalagem gravada", path=str(legivel), fontes=len(embalagem.fontes))
+    except embalagem_mod.EmbalagemReprovada as e:
+        # O modelo errou o formato duas vezes (título longo, capítulo curto) ou
+        # o roteiro não tem fonte rastreável. Retentar pode resolver o primeiro
+        # caso, nunca o segundo.
+        logger.error(
+            "Embalagem reprovada no gate", achados=sorted(e.report.codes),
+            retentar="descricao_sem_fontes" not in e.report.codes,
+        )
+    except Exception as e:
+        logger.error("Embalagem falhou", error=str(e), exc_info=True, retentar=True)
 
 
 def _plano_de_midia(model, settings, run_dir: Path, final: dict,

@@ -284,6 +284,17 @@ class ControlPlaneService:
                     )
                 )
             operacao.save_run(queued)
+            # Uma pausa aceita antes da queda do worker deixa de valer quando
+            # o usuário retoma a run. Sem revogá-la, o próximo término de etapa
+            # tenta aplicar uma pausa antiga sobre uma run já RUNNING.
+            for row in conn.execute(
+                "SELECT id FROM commands WHERE run_id = ? AND type = ? AND status = ?",
+                (run_id, CommandType.PAUSE.value, CommandStatus.ACCEPTED.value),
+            ).fetchall():
+                comandos.set_status(
+                    row["id"], CommandStatus.REJECTED,
+                    result={"reason": "superseded_by_resume", "resume_command_id": command.id},
+                )
             EventosRepository(conn).append(
                 kind="run.queued",
                 level="info",

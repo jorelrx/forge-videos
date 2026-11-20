@@ -4,23 +4,26 @@ from forge.infrastructure.logging import get_logger
 from forge.prompts.loader import load_prompt
 from forge.domain.models import Plano
 from forge.llms.model import invoke_structured
-from forge.skills.loader import load_skills
+from forge.skills.loader import load_skills, resumo_eixos
 
 logger = get_logger(__name__)
 
-SKILLS = ["story"]
+SKILLS = ["story", "canal"]
 LE = ["tema", "research_notes", "run_dir"]
 
-def planejar(model, tema: str, research: str, *, run_dir=None) -> tuple[str, str]:
+def planejar(model, tema: str, research: str, *, run_dir=None) -> Plano:
     logger.debug("Starting planning phase", tema=tema[:50] + "..." if len(tema) > 50 else tema)
     prompt = load_prompt("plan").format(
-        tema=tema, research=research, skills=load_skills(SKILLS, "plan")
+        tema=tema, research=research, skills=load_skills(SKILLS, "plan"),
+        eixos=resumo_eixos(),
     )
     plano = invoke_structured(
         model, Plano, [HumanMessage(content=prompt)],
         run_dir=run_dir, etapa="plan", subfase="structured",
     )
-    tese_resultado = plano.tese
-    esboco_resultado = plano.esboco
-    logger.info("Planning completed", tese=tese_resultado[:100] + "..." if len(tese_resultado) > 100 else tese_resultado)
-    return tese_resultado, esboco_resultado
+    logger.info(
+        "Planning completed",
+        tese=plano.tese[:100] + "..." if len(plano.tese) > 100 else plano.tese,
+        eixo=plano.eixo,
+    )
+    return plano

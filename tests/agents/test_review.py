@@ -15,6 +15,33 @@ def test_revisar_reprovado_com_notas(scripted):
     assert rr.aprovado is False and rr.notas[0].dimensao == "fato"
 
 
+def test_revisor_recebe_passagens_e_verificacao_dirigida(monkeypatch):
+    from forge.agents import review
+    from forge.agents.research import PassageEvidence
+
+    prompts = []
+
+    def invoke(model, schema, messages, **kwargs):
+        prompts.append(messages[0].content)
+        return ReviewResult(aprovado=True)
+
+    monkeypatch.setattr(review, "invoke_structured", invoke)
+    evidence = PassageEvidence(
+        path="2.2.60.f3", title="The Principles of Psychology",
+        authors=["William James"], text="A man's Social Self is the recognition which he gets from his mates.",
+    )
+    revisar(
+        object(), _roteiro(), research_notes="A verificação dirigida confirmou o eu social.",
+        research_passages=[evidence],
+    )
+
+    assert evidence.path in prompts[0]
+    assert evidence.title in prompts[0]
+    assert evidence.text in prompts[0]
+    assert "A verificação dirigida confirmou o eu social." in prompts[0]
+    assert {"research_notes", "research_passages"} <= set(review.LE)
+
+
 def test_checklist_do_revisor_nao_vira_alegacao():
     """Payload real do run de 2026-09-06 (04-review-r2.md).
 
@@ -145,3 +172,27 @@ def test_teto_de_seis_palavras_segue_valendo_com_marcador():
 
 def test_item_que_e_so_marcador_nao_vira_alegacao():
     assert alegacoes_reais(["-", "*", "1."]) == []
+
+
+def test_revisor_recebe_a_referencia_do_eixo(monkeypatch):
+    """A referência traz os alertas de atribuição falsa do eixo."""
+    from forge.agents import review
+
+    prompts = []
+
+    def invoke(model, schema, messages, **kwargs):
+        prompts.append(messages[0].content)
+        return ReviewResult(aprovado=True)
+
+    monkeypatch.setattr(review, "invoke_structured", invoke)
+    revisar(object(), _roteiro(), eixo="estoicismo")
+    revisar(object(), _roteiro())
+
+    assert "Will Durant" in prompts[0]
+    assert "(sem referência de eixo)" in prompts[1]
+    assert "eixo" in review.LE
+
+
+def test_nota_pode_apontar_a_secao():
+    assert Nota(dimensao="story", problema="p", sugestao="s").secao is None
+    assert Nota(dimensao="story", problema="p", sugestao="s", secao="Prova").secao == "Prova"

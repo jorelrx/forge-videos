@@ -760,3 +760,28 @@ def test_worker_persists_live_subprocess_event_in_database(db):
     assert detail.run.status is RunStatus.RUNNING
     assert stage.status is StageStatus.SUCCEEDED
     assert persisted.payload == {"current_items": 1}
+
+
+def test_resultado_de_etapa_com_dezenas_de_artefatos_cabe_no_limite_padrao():
+    """57 imagens com prompt e caminhos no metadata somam ~76 KB numa linha só.
+
+    O limite antigo de 64 KiB derrubava a etapa de imagens inteira depois de
+    todas as imagens prontas.
+    """
+    script = (
+        "import json; "
+        "artifacts = [{'item_key': f'i{n:03d}', 'kind': 'image.png', "
+        "'relative_path': f'video/images/i{n:03d}.png', 'mime_type': 'image/png', "
+        "'metadata': {'prompt': 'p' * 1500}} for n in range(120)]; "
+        "print(json.dumps({'kind': 'stage.result', 'level': 'info', 'message': 'done', "
+        "'payload': {'current_items': 120, 'total_items': 120, 'artifacts': artifacts, "
+        "'failure': None, 'gate': {'approved': True, 'code': 'approved', "
+        "'findings': [], 'metrics': {}}}}))"
+    )
+
+    result = SubprocessExecutor([sys.executable, "-c", script]).execute(
+        None, lambda **event: None
+    )
+
+    assert result.failure_code is None
+    assert result.current_items == 120

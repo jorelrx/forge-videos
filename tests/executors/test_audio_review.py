@@ -133,7 +133,7 @@ def test_reused_output_runs_a_new_valid_item_lifecycle_with_relative_path(tmp_pa
     events = []
     client = Client()
     result = AudioExecutor(settings=_settings(tmp_path), client=client, broker=Broker()).run(
-        _snapshot(tmp_path, reusable_outputs=[{"artifact": prior.model_dump(mode="json"), "input_hash": hash_json(BlocoNarracao(id="b001", secao="A", texto="Primeiro texto."))}]),
+        _snapshot(tmp_path, reusable_outputs=[{"artifact": prior.model_dump(mode="json"), "input_hash": hash_json({"id": "b001", "secao": "A", "texto": "Primeiro texto."})}]),
         lambda **event: events.append(event),
     )
     reused = [event for event in events if event["payload"].get("item_key") == "b001"]
@@ -148,7 +148,7 @@ def test_current_succeeded_item_is_not_replanned_or_rerun(tmp_path):
     block = BlocoNarracao(id="b001", secao="A", texto="Primeiro texto.")
     current = WorkItem(
         id="current-b001", stage_run_id="current-stage", item_key="b001", status=ItemStatus.SUCCEEDED,
-        input=block.model_dump(mode="json"), input_hash=hash_json(block), attempts=1,
+        input=block.model_dump(mode="json"), input_hash=hash_json({"id": block.id, "secao": block.secao, "texto": block.texto}), attempts=1,
     )
     artifact_path = _wav(tmp_path / "runs" / "run-1" / "video" / "audio" / "b001.wav")
     artifact = Artifact(

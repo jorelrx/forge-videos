@@ -15,11 +15,12 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 
 from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, BlocoNarracao, PlanoMidia
-from forge.domain.models import Roteiro
+from forge.domain.models import BlocoRoteiro, Roteiro
 from forge.infrastructure.logging import get_logger
 from forge.llms.model import invoke_structured
 from forge.narracao.fatiar import (
     PALAVRAS_POR_SEGUNDO,
+    REFERENCIA_LEGADA_RE,
     extrair_rubrica,
     fatiar,
     texto_narravel,
@@ -79,16 +80,28 @@ def planejar_midia(
 
     # Primeira passada: só corte, sem modelo nenhum.
     for secao in roteiro.secoes:
-        textos = fatiar(secao.conteudo, alvo_palavras=alvo_palavras)
+        if secao.blocos:
+            textos, metadados = _fatiar_autorados(secao.blocos, alvo_palavras)
+        else:
+            textos = fatiar(secao.conteudo, alvo_palavras=alvo_palavras)
+            metadados = [None] * len(textos)
         if not textos:
             # Seção só com rubrica não tem narração; não gasta chamada.
             logger.info("Seção sem texto narrável", secao=secao.nome)
             continue
 
-        da_secao = [
-            BlocoNarracao(id=f"b{len(blocos) + i + 1:03d}", secao=secao.nome, texto=t)
-            for i, t in enumerate(textos)
-        ]
+        da_secao = []
+        for i, (texto, origem) in enumerate(zip(textos, metadados)):
+            da_secao.append(BlocoNarracao(
+                id=f"b{len(blocos) + i + 1:03d}", secao=secao.nome, texto=texto,
+                referencias=origem.referencias if origem else [],
+                citacoes_literais=origem.citacoes_literais if origem else [],
+                referencias_legadas=origem.referencias_legadas if origem else [],
+            ))
+        if not secao.blocos and da_secao:
+            da_secao[0].referencias_legadas = list(dict.fromkeys(
+                REFERENCIA_LEGADA_RE.findall(secao.conteudo)
+            ))
         blocos.extend(da_secao)
         fatiado.append((secao.nome, extrair_rubrica(secao.conteudo), da_secao))
 
@@ -115,6 +128,59 @@ def planejar_midia(
     logger.info("Plano de mídia pronto", blocos=len(blocos), beats=len(beats),
                 palavras=sum(len(b.texto.split()) for b in blocos))
     return PlanoMidia(blocos=blocos, beats=beats)
+
+
+def _fatiar_autorados(
+    autorados: list[BlocoRoteiro], alvo_palavras: int,
+) -> tuple[list[str], list[BlocoRoteiro]]:
+    """Corta cada bloco escrito pelo modelo no mesmo alvo de palavras do fatiador.
+
+    O bloco autorado é a unidade de CITAÇÃO (um parágrafo e suas fontes), não
+    de narração: o modelo escreve parágrafos de 50 a 80 palavras, e o TTS desta
+    máquina estoura a VRAM acima de ~50 — numa run real, 28 de 36 blocos
+    ficaram sem áudio. Além disso, um bloco por parágrafo dava uma imagem a
+    cada ~25 s.
+
+    As referências de paráfrase valem para o parágrafo inteiro e vão para todos
+    os pedaços. A citação literal vai só para o pedaço que a fala: é nele que o
+    cartão com o trecho precisa aparecer.
+    """
+    textos: list[str] = []
+    metadados: list[BlocoRoteiro] = []
+    for bloco in autorados:
+        pedacos = fatiar(bloco.texto, alvo_palavras=alvo_palavras) or [bloco.texto]
+        literais: list[list] = [[] for _ in pedacos]
+        for literal in bloco.citacoes_literais:
+            literais[_pedaco_da_citacao(pedacos, literal.traducao or literal.trecho)].append(literal)
+        for i, pedaco in enumerate(pedacos):
+            textos.append(pedaco)
+            metadados.append(BlocoRoteiro(
+                texto=pedaco,
+                referencias=list(bloco.referencias),
+                citacoes_literais=literais[i],
+                referencias_legadas=list(bloco.referencias_legadas) if i == 0 else [],
+            ))
+    return textos, metadados
+
+
+def _pedaco_da_citacao(pedacos: list[str], falado: str) -> int:
+    """Índice do pedaço que contém a citação — ou onde ela começa.
+
+    O fatiador nunca corta no meio de uma frase, mas uma citação de várias
+    frases pode atravessar dois pedaços; aí vale o pedaço em que ela começa.
+    Sem casar em nenhum, fica no primeiro: perder a citação tiraria da tela
+    uma fonte que o roteiro declarou.
+    """
+    alvo = " ".join(falado.split())
+    inicio = alvo[:24]
+    normalizados = [" ".join(pedaco.split()) for pedaco in pedacos]
+    for i, pedaco in enumerate(normalizados):
+        if alvo and alvo in pedaco:
+            return i
+    for i, pedaco in enumerate(normalizados):
+        if inicio and inicio in pedaco:
+            return i
+    return 0
 
 
 def _conferir_cobertura_relativa(roteiro: Roteiro, blocos: list[BlocoNarracao]) -> None:

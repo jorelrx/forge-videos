@@ -18,6 +18,10 @@ from forge.domain.operacao import Artifact, StageName
 from forge.executors.ffmpeg import MediaProbe
 from forge.executors.montagem import ComposeExecutor
 from forge.infrastructure.config import Settings
+from forge.repositories.connection import Database
+from forge.repositories.operacao import OperacaoRepository
+from forge.repositories.schema import init_db
+from forge.services.catalogo import ChildEventProjector, ChildProtocolError
 from forge.services.persistencia import gravar_modelo
 
 
@@ -66,6 +70,9 @@ def _settings(tmp_path: Path) -> Settings:
         studio_runs_dir=tmp_path / "runs",
         output_dir=tmp_path / "roteiros",
         midia_alvo_segundos=15,
+        # Pasta do teste, não a do operador: uma faixa real em library/trilhas
+        # mudaria os comandos esperados.
+        trilhas_dir=tmp_path / "trilhas",
     )
 
 
@@ -189,6 +196,22 @@ class TestPlan:
 
         assert plan.items[0].input["audio"] == plan.items[2].input["audio"]
 
+    def test_one_image_beat_carries_through_following_audio_blocks(self, tmp_path):
+        snapshot = _snapshot(tmp_path, blocos=2, beats_por_bloco=1)
+        gravar_modelo(snapshot.run_dir / "video" / "midia.json", PlanoMidia(
+            blocos=[
+                BlocoNarracao(id="b001", secao="Gancho", texto="fala 1"),
+                BlocoNarracao(id="b002", secao="Gancho", texto="fala 2"),
+            ],
+            beats=[Beat(id="i001", bloco_id="b001", prompt="cena")],
+        ))
+
+        plan = _executor(tmp_path, RecordingRunner()).prepare(snapshot)
+
+        assert plan.items[0].input["audios"] == [
+            "video/audio/b001.wav", "video/audio/b002.wav",
+        ]
+
 
 class TestExecute:
     def test_builds_one_clip_per_beat_then_concats_and_muxes(self, tmp_path):
@@ -199,10 +222,40 @@ class TestExecute:
 
         result = executor.execute(snapshot, plan, lambda **event: None)
 
-        # 2 clipes + 1 concat de vídeo + 1 concat de áudio + 1 mux
-        assert len(runner.calls) == 5
+        # 2 clipes + concat da narração + mixagem + crossfade + mux
+        assert len(runner.calls) == 6
         assert (snapshot.run_dir / "video" / "final.mp4").is_file()
-        assert [a.kind for a in result.artifacts] == ["video/final.mp4"]
+        assert [a.kind for a in result.artifacts] == ["video/final.mp4", "legendas.srt"]
+
+    def test_catalogs_montage_artifact_without_individual_item(self, tmp_path):
+        db = Database(tmp_path / "forge.db")
+        init_db(db)
+        with db.transaction(immediate=True) as conn:
+            repo = OperacaoRepository(conn)
+            _, run = repo.create_video_and_run(
+                tema="Tema", tese="Tese", priority=50, config_snapshot={},
+                workflow_version=2, git_commit="abc123",
+            )
+            stage = next(item for item in repo.current_stages(run.id) if item.stage is StageName.MONTAGEM)
+
+        snapshot = _snapshot(tmp_path).model_copy(update={"run_id": run.id, "video_id": run.video_id})
+        events = []
+        executor = _executor(tmp_path, RecordingRunner())
+        plan = executor.prepare(snapshot)
+        executor.execute(snapshot, plan, lambda **event: events.append(event))
+        artifact_event = next(event for event in events if event["kind"] == "artifact.created")
+
+        projector = ChildEventProjector(db, snapshot.run_dir, stage.id)
+        invalid_item_event = {**artifact_event["payload"], "item_key": "unknown-item"}
+        with pytest.raises(ChildProtocolError, match="unknown item_key"):
+            projector.project("artifact.created", invalid_item_event)
+        projector.project("artifact.created", artifact_event["payload"])
+
+        with db.connection() as conn:
+            artifacts = OperacaoRepository(conn).list_artifacts(run.id)
+        assert len(artifacts) == 1
+        assert artifacts[0].stage_run_id == stage.id
+        assert artifacts[0].work_item_id is None
 
     def test_every_clip_uses_the_ken_burns_chain_at_1080p(self, tmp_path):
         runner = RecordingRunner()
@@ -242,9 +295,11 @@ class TestExecute:
 
         executor.execute(snapshot, plan, lambda **event: None)
 
-        # 10 s de narração divididos entre 2 beats
-        for call in runner.calls[:2]:
-            assert call[call.index("-t") + 1].startswith("5.0")
+        # 10 s de narração divididos entre 2 beats; o primeiro arquivo leva o
+        # crossfade (0,6 s) a mais, que a transição consome.
+        primeiro, segundo = runner.calls[:2]
+        assert primeiro[primeiro.index("-t") + 1].startswith("5.6")
+        assert segundo[segundo.index("-t") + 1].startswith("5.0")
 
     def test_mux_uses_aac_and_shortest(self, tmp_path):
         runner = RecordingRunner()
@@ -302,7 +357,8 @@ class TestValidate:
         gate = executor.validate(snapshot, plan, result)
 
         assert gate.approved is True
-        assert gate.findings == []
+        # Sem trilha na pasta e sem citações: aprova, com os dois avisos.
+        assert [f.code for f in gate.findings] == ["trilha_ausente", "cartoes_ausentes"]
 
     @pytest.mark.parametrize(
         ("field", "value", "code"),
@@ -360,3 +416,273 @@ class TestValidate:
 
         assert gate.approved is False
         assert "compose_output_missing" in {finding.code for finding in gate.findings}
+
+
+# --- acabamento: crossfade, trilha, cartões, legenda, capítulos reais ---
+
+def _rodar(tmp_path, snapshot, *, durations=None, runner=None):
+    runner = runner or RecordingRunner()
+    executor = _executor(tmp_path, runner, durations=durations)
+    plan = executor.prepare(snapshot)
+    result = executor.execute(snapshot, plan, lambda **event: None)
+    return executor, plan, result, runner
+
+
+def _com_citacoes(snapshot: RunSnapshot) -> None:
+    """Põe uma referência em cada bloco e o `citacoes.json` que a resolve."""
+    from forge.services.citacoes import Citacao, gravar_citacoes
+
+    caminho = snapshot.run_dir / "video" / "midia.json"
+    from forge.services.persistencia import carregar_modelo
+
+    plano = carregar_modelo(caminho, PlanoMidia)
+    for bloco in plano.blocos:
+        bloco.referencias = ["4363/ch2/p7"]
+    gravar_modelo(caminho, plano)
+    gravar_citacoes(snapshot.run_dir, [
+        Citacao(
+            secao="Gancho", bloco=0, tipo="parafrase", texto="texto",
+            autor="Nietzsche", obra="Beyond Good and Evil", path="4363/ch2/p7",
+        )
+    ])
+
+
+def test_preto_so_na_abertura_e_no_fim(tmp_path):
+    """Fade para preto a cada imagem é o que denunciava vídeo automático."""
+    _, _, _, runner = _rodar(tmp_path, _snapshot(tmp_path, blocos=3))
+
+    primeiro, meio, ultimo = runner.filters()[:3]
+    assert "fade=t=in" in primeiro and "fade=t=out" not in primeiro
+    assert "fade=t=" not in meio
+    assert "fade=t=out" in ultimo and "fade=t=in" not in ultimo
+
+
+def test_video_mudo_sai_do_crossfade_e_o_audio_da_mixagem(tmp_path):
+    _, _, _, runner = _rodar(tmp_path, _snapshot(tmp_path, blocos=2))
+
+    saidas = [Path(call[-1]).name for call in runner.calls]
+    assert saidas == [
+        "0000-i001.mp4", "0001-i002.mp4", "narration.wav", "mix.wav", "silent.mp4", "final.mp4",
+    ]
+    mux = runner.calls[-1]
+    assert any(arg.endswith("mix.wav") for arg in mux)
+    assert not any(arg.endswith("narration.wav") for arg in mux)
+
+
+def test_legenda_usa_os_tempos_reais_dos_blocos(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+
+    _, _, result, _ = _rodar(
+        tmp_path, snapshot, durations={"b001.wav": 4.0, "b002.wav": 6.0}
+    )
+
+    srt = (snapshot.run_dir / "video" / "legendas.srt").read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:04,000" in srt
+    assert "00:00:04,000 --> 00:00:10,000" in srt
+    legenda = next(a for a in result.artifacts if a.kind == "legendas.srt")
+    assert legenda.mime_type == "application/x-subrip"
+    assert legenda.relative_path == "video/legendas.srt"
+
+
+def test_projetor_aceita_a_legenda(tmp_path):
+    from forge.services.catalogo import ALLOWED_MIME
+
+    assert "application/x-subrip" in ALLOWED_MIME
+
+
+def test_cartoes_de_fonte_sao_queimados_no_passe_de_crossfade(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+    _com_citacoes(snapshot)
+
+    executor, plan, result, runner = _rodar(tmp_path, snapshot)
+
+    ass = (snapshot.run_dir / "video" / "cartoes.ass").read_text(encoding="utf-8")
+    assert "Nietzsche — Beyond Good and Evil" in ass
+    # O grafo vai em arquivo ao lado da saída (limite de linha de comando no
+    # Windows); é nele que o filtro `ass` aparece.
+    grafo = (snapshot.run_dir / "video" / "silent.filtergraph.txt").read_text(encoding="utf-8")
+    assert "ass=filename=cartoes.ass" in grafo
+    codigos = [f.code for f in executor.validate(snapshot, plan, result).findings]
+    assert "cartoes_ausentes" not in codigos
+
+
+def test_sem_citacoes_nao_ha_cartao_nem_filtro(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+
+    _, _, _, runner = _rodar(tmp_path, snapshot)
+
+    assert not (snapshot.run_dir / "video" / "cartoes.ass").exists()
+    grafo = (snapshot.run_dir / "video" / "silent.filtergraph.txt").read_text(encoding="utf-8")
+    assert "ass=" not in grafo
+
+
+def test_trilha_da_pasta_entra_na_mixagem(tmp_path):
+    (tmp_path / "trilhas").mkdir()
+    (tmp_path / "trilhas" / "calma.mp3").write_bytes(b"ID3")
+    snapshot = _snapshot(tmp_path, blocos=2)
+
+    executor, plan, result, runner = _rodar(tmp_path, snapshot)
+
+    mix = next(call for call in runner.calls if call[-1].endswith("mix.wav"))
+    assert any(arg.endswith("calma.mp3") for arg in mix)
+    assert result.artifacts[0].metadata["trilha"] == "calma.mp3"
+    codigos = [f.code for f in executor.validate(snapshot, plan, result).findings]
+    assert "trilha_ausente" not in codigos
+
+
+def test_sem_trilha_o_video_sai_so_com_a_narracao(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+
+    _, _, result, runner = _rodar(tmp_path, snapshot)
+
+    assert result.failure is None
+    assert result.artifacts[0].metadata["trilha"] is None
+    mix = next(call for call in runner.calls if call[-1].endswith("mix.wav"))
+    assert "-stream_loop" not in mix
+
+
+def _com_embalagem(snapshot: RunSnapshot, *, abertura: str = "Abertura.") -> None:
+    from forge.domain.embalagem import Capitulo, Embalagem, ThumbnailProposta
+
+    gravar_modelo(
+        snapshot.run_dir / "video" / "embalagem.json",
+        Embalagem(
+            thumbnail=ThumbnailProposta(texto="Texto", prompt="p"),
+            descricao="velha",
+            capitulos=[Capitulo(secao="Gancho", titulo="O começo", inicio_segundos=0)],
+            abertura=abertura,
+            fontes=["Nietzsche — Beyond Good and Evil"],
+        ),
+    )
+
+
+def test_embalagem_e_regravada_com_o_tempo_real_e_o_credito_da_musica(tmp_path):
+    from forge.domain.embalagem import Embalagem
+    from forge.services.persistencia import carregar_modelo
+
+    (tmp_path / "trilhas").mkdir()
+    (tmp_path / "trilhas" / "calma.mp3").write_bytes(b"ID3")
+    (tmp_path / "trilhas" / "calma.txt").write_text("Calma — Fulano (CC BY 4.0)", encoding="utf-8")
+    snapshot = _snapshot(tmp_path, blocos=2)
+    _com_embalagem(snapshot)
+
+    executor, plan, result, _ = _rodar(tmp_path, snapshot)
+
+    real = carregar_modelo(snapshot.run_dir / "video" / "embalagem.json", Embalagem)
+    assert real.capitulos_estimados is False
+    assert "Música: Calma — Fulano (CC BY 4.0)" in real.descricao
+    assert "00:00 O começo" in (snapshot.run_dir / "embalagem.md").read_text(encoding="utf-8")
+    assert [a.kind for a in result.artifacts] == [
+        "video/final.mp4", "legendas.srt", "embalagem", "embalagem_markdown",
+    ]
+    codigos = [f.code for f in executor.validate(snapshot, plan, result).findings]
+    assert "capitulos_estimados" not in codigos
+
+
+def test_embalagem_antiga_fica_estimada_com_aviso(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+    _com_embalagem(snapshot, abertura="")
+
+    executor, plan, result, _ = _rodar(tmp_path, snapshot)
+
+    gate = executor.validate(snapshot, plan, result)
+    assert gate.approved
+    assert "capitulos_estimados" in [f.code for f in gate.findings]
+    assert all(not a.kind.startswith("embalagem") for a in result.artifacts)
+
+
+def test_legenda_ausente_reprova(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+    executor, plan, result, _ = _rodar(tmp_path, snapshot)
+    final = result.artifacts[0]
+    sem_legenda = result.model_copy(update={"artifacts": [
+        final.model_copy(update={"metadata": {**final.metadata, "legendas": 0}})
+    ]})
+
+    gate = executor.validate(snapshot, plan, sem_legenda)
+
+    assert not gate.approved
+    assert "subtitles_missing" in [f.code for f in gate.findings]
+
+
+def test_trocar_a_trilha_ou_o_crossfade_muda_o_hash_da_etapa(tmp_path):
+    snapshot = _snapshot(tmp_path, blocos=2)
+    executor = _executor(tmp_path, RecordingRunner())
+    antes = executor.prepare(snapshot).input_hash
+
+    (tmp_path / "trilhas").mkdir()
+    (tmp_path / "trilhas" / "calma.mp3").write_bytes(b"ID3")
+    com_trilha = executor.prepare(snapshot).input_hash
+    outro_crossfade = executor.prepare(
+        snapshot.model_copy(update={"config_snapshot": {"crossfade_segundos": 1.0}})
+    ).input_hash
+
+    assert len({antes, com_trilha, outro_crossfade}) == 3
+
+
+# --- achados da revisão independente ---
+
+def test_piso_de_duracao_nao_deixa_o_video_maior_que_a_narracao(tmp_path):
+    """Bloco de 1,2 s com dois beats: cada um sobe para o piso de 0,8 s. Os 0,4 s
+    a mais saem do clipe seguinte, senão toda imagem depois dali atrasa em
+    relação à voz e o fade final é cortado pelo `-shortest`."""
+    snapshot = _snapshot(tmp_path, blocos=2, beats_por_bloco=2)
+
+    _, _, _, runner = _rodar(
+        tmp_path, snapshot, durations={"b001.wav": 1.2, "b002.wav": 10.0}
+    )
+
+    tempos = [float(call[call.index("-t") + 1]) for call in runner.calls[:4]]
+    # Nominais 0,8 + 0,8 + 4,6 + 5,0 = 11,2 s, a duração da narração; os três
+    # primeiros arquivos levam o crossfade de 0,6 s a mais.
+    assert tempos == pytest.approx([1.4, 1.4, 5.2, 5.0])
+
+
+def test_trilha_ilegivel_nao_derruba_a_montagem(tmp_path):
+    (tmp_path / "trilhas").mkdir()
+    (tmp_path / "trilhas" / "ruim.mp3").write_bytes(b"nao e audio")
+    snapshot = _snapshot(tmp_path, blocos=2)
+
+    executor, plan, result, runner = _rodar(
+        tmp_path, snapshot, runner=RecordingRunner(fail_on="ruim.mp3")
+    )
+
+    assert result.failure is None
+    assert result.artifacts[0].metadata["trilha"] is None
+    mixes = [call for call in runner.calls if call[-1].endswith("mix.wav")]
+    assert len(mixes) == 2 and "-stream_loop" not in mixes[-1]
+    gate = executor.validate(snapshot, plan, result)
+    assert gate.approved and "trilha_ausente" in [f.code for f in gate.findings]
+
+
+def test_bloco_que_nenhum_beat_cobre_vira_aviso(tmp_path):
+    """Bloco antes do primeiro beat da seção não é narrado: palavras do roteiro
+    somem do vídeo, e isso não pode passar calado."""
+    from forge.services.persistencia import carregar_modelo
+
+    snapshot = _snapshot(tmp_path, blocos=2)
+    caminho = snapshot.run_dir / "video" / "midia.json"
+    plano = carregar_modelo(caminho, PlanoMidia)
+    plano.beats = [beat for beat in plano.beats if beat.bloco_id != "b001"]
+    gravar_modelo(caminho, plano)
+    sem_beat = snapshot.model_copy(update={"artifacts": [
+        a for a in snapshot.artifacts if a.relative_path != "video/images/i001.png"
+    ]})
+
+    executor, plan, result, _ = _rodar(tmp_path, sem_beat)
+
+    assert result.artifacts[0].metadata["blocos_sem_narracao"] == ["b001"]
+    gate = executor.validate(sem_beat, plan, result)
+    assert gate.approved and "blocos_sem_narracao" in [f.code for f in gate.findings]
+
+
+def test_hash_da_etapa_e_estavel_depois_de_montar(tmp_path):
+    """A montagem regrava a embalagem; o hash não pode depender do que ela escreve."""
+    snapshot = _snapshot(tmp_path, blocos=2)
+    _com_embalagem(snapshot)
+    executor = _executor(tmp_path, RecordingRunner())
+    plan = executor.prepare(snapshot)
+
+    executor.execute(snapshot, plan, lambda **event: None)
+
+    assert executor.prepare(snapshot).input_hash == plan.input_hash

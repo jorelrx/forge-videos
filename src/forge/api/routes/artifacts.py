@@ -20,6 +20,7 @@ PREVIEW_MIME = frozenset({
     "image/webp",
     "audio/wav",
     "video/mp4",
+    "application/x-subrip",
 })
 
 
@@ -48,7 +49,7 @@ async def list_artifacts(run_id: str, request: Request) -> list[ArtifactListItem
 
 
 @artifacts_router.get("/artifacts/{artifact_id}/content")
-async def artifact_content(artifact_id: str, request: Request):
+async def artifact_content(artifact_id: str, request: Request, download: bool = False):
     # Segurança: rejeita path traversal no artifact_id
     if (
         artifact_id.startswith(("/", "\\"))
@@ -71,6 +72,16 @@ async def artifact_content(artifact_id: str, request: Request):
     size = path.stat().st_size
 
     range_value = request.headers.get("Range")
+    if download:
+        # `?download=1` vem dos botões de baixar da aba de publicação. O painel
+        # roda em outra porta, e entre origens o navegador ignora o atributo
+        # `download` do link: só o cabeçalho faz o arquivo ser salvo.
+        return FileResponse(
+            path,
+            media_type=mime,
+            filename=path.name,
+            headers={"accept-ranges": "bytes"},
+        )
     if not range_value:
         return FileResponse(
             path,

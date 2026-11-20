@@ -15,6 +15,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from forge.agents.embalagem import EmbalagemReprovada, embalar, gravar_embalagem
 from forge.agents.midia import (
     CoberturaInsuficiente,
     _conferir_cobertura_relativa,
@@ -43,6 +44,7 @@ from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
 from forge.llms.model import build_chat_model
 from forge.services.artefatos import _parse_blocos
+from forge.services.citacoes import citacoes_da_run
 from forge.services.persistencia import carregar_modelo
 from forge.services.worker import EventSink
 
@@ -149,6 +151,9 @@ class MediaPlanExecutor(StageImplementation):
             "model": self.settings.resolved_model,
             "media_settings": {
                 "midia_alvo_segundos": self.settings.midia_alvo_segundos,
+                # O aviso muda o texto da descrição: trocar a opção tem de
+                # invalidar a embalagem já gravada.
+                "aviso_ia": self.settings.aviso_ia,
                 # Visual/image knobs live in the immutable preset snapshot;
                 # keeping it in ``preset`` above makes any future knob hash
                 # visible without depending on a Settings field that does not
@@ -214,6 +219,31 @@ class MediaPlanExecutor(StageImplementation):
             with broker.exclusivo("llm"):
                 if self.settings.provider == "lm-studio":
                     (self.lm_manager or LMStudioManager(self.settings)).ensure_loaded()
+                # A embalagem vem ANTES do plano de mídia: é uma chamada só, e
+                # um título reprovado não deve custar as chamadas dos beats.
+                try:
+                    embalagem = embalar(
+                        model,
+                        roteiro,
+                        citacoes_da_run(context.run_dir, roteiro),
+                        aviso_ia=self.settings.aviso_ia,
+                        run_dir=context.run_dir,
+                    )
+                except EmbalagemReprovada as error:
+                    self._pre_gate = GateResult(
+                        approved=False,
+                        code="packaging_gate_failed",
+                        findings=[
+                            GateFinding(
+                                code=finding.code,
+                                message=finding.message,
+                                details={**finding.details, "severity": finding.severity},
+                            )
+                            for finding in error.report.findings
+                            if finding.serious
+                        ],
+                    )
+                    return StageExecutionResult(current_items=0, total_items=1)
                 plano = planejar_midia(
                     model,
                     roteiro,
@@ -245,6 +275,37 @@ class MediaPlanExecutor(StageImplementation):
         if not candidate_gate.approved:
             return StageExecutionResult(current_items=0, total_items=1)
 
+        # Só grava a embalagem com o plano de mídia aprovado: uma etapa que
+        # falha não deixa meio resultado para a retentativa confundir com pronto.
+        gravar_embalagem(context.run_dir, embalagem)
+        embalagem_outputs = [
+            ArtifactOutput(
+                item_key="",
+                kind="embalagem",
+                relative_path="video/embalagem.json",
+                mime_type="application/json",
+                metadata={
+                    "titles": len(embalagem.titulos),
+                    "chapters": len(embalagem.capitulos),
+                    "sources": len(embalagem.fontes),
+                },
+            ),
+            ArtifactOutput(
+                item_key="",
+                kind="embalagem_markdown",
+                relative_path="embalagem.md",
+                mime_type="text/markdown",
+                metadata={},
+            ),
+        ]
+        for embalagem_output in embalagem_outputs:
+            emit(
+                kind="artifact.created",
+                level="info",
+                message="Embalagem criada",
+                payload=embalagem_output.model_dump(mode="json"),
+            )
+
         gravar_plano(context.run_dir, plano, forcar=True)
         self._work_item_plans = _plan_work_items(plano)
         for item in self._work_item_plans:
@@ -274,7 +335,7 @@ class MediaPlanExecutor(StageImplementation):
         return StageExecutionResult(
             current_items=1,
             total_items=1,
-            artifacts=[output],
+            artifacts=[*embalagem_outputs, output],
         )
 
     def validate(

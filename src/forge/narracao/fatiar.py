@@ -41,6 +41,9 @@ RUBRICA_RE = re.compile(r"^[ \t]*\(([^)\n\r]*)\)[ \t]*\r?$", re.MULTILINE)
 # `_` colado a letras dos dois lados, nunca casa.
 _ASTERISCO_RE = re.compile(r"(\*\*|\*)([^*\n]+?)\1")
 _SUBLINHADO_RE = re.compile(r"(?<!\w)_([^_\n]+?)_(?!\w)")
+REFERENCIA_LEGADA_RE = re.compile(
+    r"\[([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+|[0-9]+(?:\.[0-9]+)*(?:\.f[0-9]+)?)\]"
+)
 
 # Abreviações que terminam em ponto sem terminar a frase. Cortar depois delas
 # partiria a narração no meio de uma oração.
@@ -71,9 +74,10 @@ def extrair_rubrica(conteudo: str) -> str:
 
 
 def texto_narravel(conteudo: str) -> str:
-    """O que a voz de fato diz: sem rubrica, sem ênfase markdown."""
+    """Texto falado limpo; marcadores antigos não verificados são removidos."""
     sem_rubrica = RUBRICA_RE.sub("", conteudo)
-    sem_asterisco = _ASTERISCO_RE.sub(r"\2", sem_rubrica)
+    sem_caminhos = REFERENCIA_LEGADA_RE.sub("", sem_rubrica)
+    sem_asterisco = _ASTERISCO_RE.sub(r"\2", sem_caminhos)
     sem_enfase = _SUBLINHADO_RE.sub(r"\1", sem_asterisco)
     return " ".join(sem_enfase.split())
 

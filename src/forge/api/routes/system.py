@@ -19,6 +19,19 @@ REQUIRED_SERVICES = frozenset({
 async def list_services(request: Request) -> dict:
     services = request.app.state.services
     health = services.health
+    settings = getattr(services, "settings", None)
+    required = set(REQUIRED_SERVICES)
+    if settings is not None:
+        if settings.provider == "codex":
+            required.discard("lm_studio")
+            required.add("codex")
+        if settings.image_provider == "codex":
+            required.discard("comfyui")
+            required.add("codex")
+        if settings.provider == "claude":
+            required.discard("lm_studio")
+        if "claude" in (settings.provider, settings.review_provider):
+            required.add("claude")
     checks = await asyncio.to_thread(health.check_all)
     items = []
     for name in sorted(checks.keys()):
@@ -30,7 +43,7 @@ async def list_services(request: Request) -> dict:
         })
     return {
         "items": items,
-        "required": list(REQUIRED_SERVICES),
+        "required": list(REQUIRED_SERVICES) if required == REQUIRED_SERVICES else sorted(required),
     }
 
 
@@ -45,6 +58,18 @@ async def effective_config(request: Request) -> dict:
         "worker": {
             "lease_seconds": settings.worker_lease_seconds,
             "heartbeat_seconds": settings.worker_heartbeat_seconds,
+        },
+        "generation": {
+            "llm_provider": settings.provider,
+            "llm_model": settings.resolved_model,
+            "review_provider": settings.review_provider,
+            "review_model": settings.review_model,
+            "claude_effort": settings.claude_effort,
+            "image_provider": settings.image_provider,
+            "codex_model": settings.codex_model,
+            "codex_transport": settings.codex_transport,
+            "codex_image_model": settings.codex_image_model,
+            "codex_image_quality": settings.codex_image_quality,
         },
         "services": {
             "research_url": settings.acervo_url,

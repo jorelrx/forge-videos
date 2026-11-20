@@ -16,6 +16,74 @@ from forge.services.preflight import (
 )
 
 
+def test_codex_preflight_checks_chatgpt_without_unused_local_services(tmp_path, monkeypatch):
+    checked = []
+    def service(name, *args, **kwargs):
+        checked.append(name)
+        return PreflightCheck(name=name, state='passed', message='OK', action='')
+    monkeypatch.setattr('forge.services.preflight._check_service', service)
+    calls = []
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return MagicMock(returncode=0, stdout='', stderr='Logged in using ChatGPT')
+    settings = _settings(tmp_path).model_copy(update={'provider':'codex', 'image_provider':'codex', 'codex_transport':'cli'})
+    report = check_preflight(settings, runner=runner, which=lambda _:None, path_exists=lambda _:True)
+    assert checked == ['research']
+    assert next(c for c in report.checks if c.name == 'codex').state == 'passed'
+    assert [settings.codex_bin, 'login', 'status'] in calls
+
+
+def test_codex_preflight_rejects_api_key_login(tmp_path, monkeypatch):
+    monkeypatch.setattr('forge.services.preflight._check_service', lambda name,*a,**kw:PreflightCheck(name,'passed','',''))
+    settings = _settings(tmp_path).model_copy(update={'image_provider':'codex', 'codex_transport':'cli'})
+    report = check_preflight(settings, runner=lambda *a,**kw:MagicMock(returncode=0,stdout='Logged in using an API key',stderr=''), which=lambda _:None, path_exists=lambda _:True)
+    assert next(c for c in report.checks if c.name == 'codex').state == 'failed'
+
+
+def _runner_claude(saida_sonda: dict):
+    import json as _json
+
+    def runner(argv, **kwargs):
+        if argv[1:] == ['auth', 'status']:
+            return MagicMock(returncode=0, stdout=_json.dumps({'loggedIn': True, 'authMethod': 'claude.ai'}), stderr='')
+        if '-p' in argv:
+            return MagicMock(returncode=1 if saida_sonda.get('is_error') else 0,
+                             stdout=_json.dumps(saida_sonda), stderr='')
+        return MagicMock(returncode=0, stdout='', stderr='')
+    return runner
+
+
+def test_claude_preflight_prova_a_sessao_com_chamada_real(tmp_path, monkeypatch):
+    checked = []
+    monkeypatch.setattr('forge.services.preflight._check_service',
+                        lambda name, *a, **kw: checked.append(name) or PreflightCheck(name, 'passed', '', ''))
+    settings = _settings(tmp_path).model_copy(update={'provider': 'claude', 'image_provider': 'codex',
+                                                      'codex_transport': 'cli', 'claude_runs_dir': tmp_path / 'c'})
+    runner = _runner_claude({'is_error': False, 'result': 'ok'})
+    report = check_preflight(settings, runner=runner, which=lambda _: None, path_exists=lambda _: True)
+    assert 'lm_studio' not in checked
+    assert next(c for c in report.checks if c.name == 'claude').state == 'passed'
+
+
+def test_claude_preflight_reprova_sessao_expirada_mesmo_com_status_logado(tmp_path, monkeypatch):
+    monkeypatch.setattr('forge.services.preflight._check_service', lambda name, *a, **kw: PreflightCheck(name, 'passed', '', ''))
+    settings = _settings(tmp_path).model_copy(update={'provider': 'claude', 'claude_runs_dir': tmp_path / 'c'})
+    runner = _runner_claude({'is_error': True, 'result': 'Failed to authenticate: OAuth session expired'})
+    report = check_preflight(settings, runner=runner, which=lambda _: None, path_exists=lambda _: True)
+    check = next(c for c in report.checks if c.name == 'claude')
+    assert check.state == 'failed'
+    assert 'claude auth login' in check.action
+
+
+def test_revisor_claude_tambem_e_conferido(tmp_path, monkeypatch):
+    monkeypatch.setattr('forge.services.preflight._check_service', lambda name, *a, **kw: PreflightCheck(name, 'passed', '', ''))
+    settings = _settings(tmp_path).model_copy(update={'provider': 'codex', 'review_provider': 'claude',
+                                                      'codex_transport': 'cli', 'claude_runs_dir': tmp_path / 'c'})
+    runner = _runner_claude({'is_error': False, 'result': 'ok'})
+    report = check_preflight(settings, runner=runner, which=lambda _: None, path_exists=lambda _: True)
+    assert next(c for c in report.checks if c.name == 'claude').state == 'passed'
+
+
 def _settings(tmp_path: Path) -> Settings:
     audio = tmp_path / "audio"
     audio.mkdir()

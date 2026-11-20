@@ -127,8 +127,31 @@ def invoke_with_thinking(model, messages, *, run_dir=None, etapa="llm", subfase=
     return resp
 
 
+def build_review_model(settings: Settings) -> BaseChatModel | None:
+    """Modelo do revisor quando ele é de outro provider; senão `None`."""
+    if settings.review_provider is None or settings.review_provider == settings.provider:
+        return None
+    # `model` e `api_key` genéricos são do escritor: herdados, mandariam o
+    # modelo ou a chave de um provider para o endpoint de outro.
+    revisor = settings.model_copy(update={
+        "provider": settings.review_provider, "model": settings.review_model,
+        "api_key": None,
+    })
+    return build_chat_model(revisor)
+
+
 def build_chat_model(settings: Settings) -> BaseChatModel:
     modelo = settings.resolved_model
+    if settings.provider == "codex":
+        from forge.llms.codex import CodexChatModel
+
+        logger.info("Building LLM model", provider="codex", model=modelo)
+        return CodexChatModel(settings=settings, model=modelo)
+    if settings.provider == "claude":
+        from forge.llms.claude import ClaudeChatModel
+
+        logger.info("Building LLM model", provider="claude", model=modelo)
+        return ClaudeChatModel(settings=settings, model=modelo)
     chave = settings.exigir_api_key()
     logger.info("Building LLM model", provider=settings.provider, model=modelo)
 

@@ -1,14 +1,37 @@
 Revise este roteiro contra os critérios abaixo.
 
 As nove seções obrigatórias são Gancho, Estake, Tensao, Virada, Filosofo,
-Prova, Espelho, Aplicacao e Fecho, nesta ordem. Gancho não precisa de citação;
-as demais seções factuais precisam ancorar autor ou título na pesquisa. Espelho
-deve terminar com pergunta ao público e Fecho deve fechar o loop do Gancho.
+Prova, Espelho, Aplicacao e Fecho, nesta ordem. Gancho não precisa de
+referência. Nas outras seções, confira as referências estruturadas por bloco
+contra as passagens disponíveis e avalie se elas sustentam semanticamente as
+afirmações. Referências são metadados: não precisam ser faladas em voz alta.
+Espelho deve terminar com pergunta ao público e Fecho deve fechar o loop do
+Gancho.
 
 {skills}
 
 Aprove (aprovado=true) somente se o roteiro passa em todos. Caso contrário,
 aprovado=false e liste notas objetivas: dimensão, problema, sugestão.
+
+Em cada nota, preencha `secao` com o nome exato da seção a que ela se aplica
+(um dos nove acima). Só a seção apontada será reescrita; as outras passam
+intactas. Um problema que atinge duas seções vira duas notas. Deixe `secao`
+vazio apenas quando a nota valer para o roteiro inteiro — isso manda reescrever
+tudo.
+
+## Citações traduzidas
+
+Quando um bloco traz uma citação com `traducao`, compare a tradução com o
+`trecho` original da passagem. Tradução que acrescenta, corta ou muda o sentido
+é nota de fact_check na seção correspondente.
+
+## Referência do eixo
+
+O texto abaixo orienta a leitura e lista atribuições falsas comuns neste
+território. Não é evidência: uma afirmação só está sustentada se uma passagem
+do acervo a sustenta.
+
+{eixo_referencia}
 
 ## O campo `verificar`
 
@@ -32,5 +55,17 @@ Cada item que você põe aqui manda o roteiro de volta para uma nova rodada de
 pesquisa, que custa caro. Se não há nenhuma afirmação factual duvidosa, devolva
 `verificar` vazio — essa é a resposta normal e esperada.
 
-Roteiro:
+## Pesquisa disponível
+
+Síntese e verificações dirigidas:
+{research_notes}
+
+Passagens originais do acervo, com caminhos canônicos:
+{research_passages}
+
+Use as passagens para conferir as atribuições do roteiro. A síntese orienta a
+leitura, mas não substitui a fonte. Peça nova pesquisa somente para alegações
+que permaneçam sem apoio ou contraditórias depois dessa conferência.
+
+## Roteiro
 {roteiro}

@@ -12,6 +12,12 @@ __pycache__/
 .pi
 .pi/*
 
+# Testes cache
+.pytest-tmp-audio-reuse-final
+.pytest-tmp-audio-reuse
+.pytest-tmp-audio-reuse-verification
+.pytest-tmp-retry-reuse
+
 # Graphify machine-local cache/runtime
 /graphify-out/cache/
 /graphify-out/.graphify_python
@@ -30,3 +36,7 @@ data/forge.db-wal
 
 # worktrees isolados
 .worktrees/
+
+# Artefatos locais do painel web
+web/*.log
+web/tsconfig.tsbuildinfo

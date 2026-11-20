@@ -1,3 +1,4 @@
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -10,12 +11,15 @@ from forge.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
-Provider = Literal["anthropic", "lm-studio", "openai"]
+Provider = Literal["anthropic", "lm-studio", "openai", "codex", "claude"]
 
 MODELO_PADRAO: dict[str, str] = {
     "anthropic": "claude-opus-4-8",
     "openai": "gpt-5-nano",
     "lm-studio": "google/gemma-4-e4b",
+    "codex": "gpt-6.1-sol",
+    # Assinatura Claude via `claude -p`; "anthropic" é a API por chave.
+    "claude": "claude-opus-5-5",
 }
 
 # Nome do GGUF que o audio-generate baixa em `runtime/models`.
@@ -60,9 +64,63 @@ class Settings(BaseSettings):
     # uma seção comporta. Um 0 configurado chegaria como ZeroDivisionError lá
     # dentro; melhor a validação recusar o valor aqui, na borda da config.
     midia_alvo_segundos: int = Field(default=15, gt=0)
+    # Linha na descrição do vídeo avisando que narração e imagens são geradas
+    # por IA. Ligada por padrão: transparência custa uma linha e protege o
+    # canal na política de conteúdo sintético do YouTube.
+    aviso_ia: bool = True
+    # Acabamento do vídeo. A trilha vem de uma pasta do usuário porque música
+    # precisa de licença para monetizar; o pipeline não baixa nem gera faixa.
+    # Pasta vazia não é erro: o vídeo sai só com a narração.
+    trilhas_dir: Path = Path("library/trilhas")
+    # Volume-base da trilha antes do ducking. Negativo: é atenuação.
+    trilha_volume_db: float = Field(default=-20.0, le=0)
+    crossfade_segundos: float = Field(default=0.6, ge=0)
+    # Nome de família para o libass (cartões) e arquivo para o Pillow
+    # (thumbnail): as duas bibliotecas localizam fonte de jeitos diferentes.
+    fonte_video: str = "Georgia"
+    fonte_thumbnail: Path = Path(r"C:\Windows\Fonts\georgiab.ttf")
 
     provider: Provider = "anthropic"
+    # Revisor de outro provider. Modelo que revisa o próprio texto tende a
+    # aprová-lo; vazio (ou igual a `provider`) mantém um modelo só.
+    # `review_model` vazio = padrão do provider revisor — `FORGE_MODEL` é do
+    # escritor e não vale para ele.
+    review_provider: Provider | None = None
+    review_model: str | None = None
     lm_studio_base_url: str = "http://localhost:1234/v1"
+    # Nativo: HTTP/OAuth próprio, sem Hermes nem CLI em execução.
+    codex_transport: Literal["native", "cli"] = "native"
+    codex_auth_file: Path = Field(default_factory=lambda: Path.home() / ".forge" / "codex" / "auth.json")
+    codex_image_model: Literal["gpt-image-2"] = "gpt-image-2"
+    codex_image_quality: Literal["low", "medium", "high"] = "medium"
+    # Compatibilidade explícita com o transporte CLI anterior.
+    codex_bin: str = "codex"
+    codex_model: str = "gpt-6-astra"
+    codex_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    codex_runs_dir: Path = Path("output/codex")
+    # Publicação no YouTube: cliente OAuth desktop do próprio usuário (JSON do
+    # Google Cloud) e o token do `forge auth youtube login`. O vídeo sobe
+    # sempre privado ou agendado; liberar é do dono do canal.
+    youtube_client_secrets: Path = Field(
+        default_factory=lambda: Path.home() / ".forge" / "youtube" / "client_secret.json")
+    # Um token por canal (o Google fixa o canal na tela de login) e
+    # `canais.json` com nome, foto e o canal padrão.
+    youtube_canais_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".forge" / "youtube" / "canais")
+    youtube_categoria: str = "27"  # Educação
+    # Voz e imagens são geradas: declarar é a escolha conservadora.
+    youtube_sintetico: bool = True
+    # Assinatura Claude: só pelo `claude -p` oficial. O token OAuth do login
+    # não pode ser usado fora das ferramentas da Anthropic — ver
+    # services/claude_cli.py.
+    claude_bin: str = "claude"
+    claude_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Fora do repositório: o CLI sobe de diretório procurando CLAUDE.md e
+    # `.claude/`, e o CLAUDE.md daqui manda responder em estilo telegráfico.
+    # `--safe-mode` já desliga isso; o diretório fora é a segunda trava.
+    claude_runs_dir: Path = Field(
+        default_factory=lambda: Path(tempfile.gettempdir()) / "forge-claude"
+    )
 
     # Serviço externo de pesquisa. Substitui a busca web por completo — ver
     # services/acervo.py.
@@ -103,12 +161,16 @@ class Settings(BaseSettings):
     tts_binary: Path | None = None
     tts_model: Path | None = None
     tts_voice_reference: Path | None = None
+    tts_reference_text: str = (
+        "A vida moderna é um exercício de divisão que não começamos deliberadamente."
+    )
     tts_seed: int = 42
     tts_batch_size: int = Field(default=3, ge=1, le=8)
     tts_item_timeout: float = Field(default=900, gt=0)
     tts_batch_timeout: float = Field(default=3600, gt=0)
     tts_sample_rate: int = Field(default=24000, gt=0)
     comfy_url: str = "http://127.0.0.1:8188"
+    image_provider: Literal["comfyui", "codex"] = "comfyui"
     # Preset de imagem: Cosmos Interior
     image_width: int = 1024
     image_height: int = 576
@@ -144,6 +206,17 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=4000, gt=0)
     llm_max_tokens_ceiling: int = Field(default=16000, gt=0)
     lm_studio_ttl_seconds: int = Field(default=3600, gt=0)
+
+    @model_validator(mode="after")
+    def revisor_nao_pode_ser_local(self) -> "Settings":
+        # Modelo local revisando exigiria carregar e liberar a VRAM no meio da
+        # etapa; broker e LM Studio só tratam o provider principal.
+        if self.review_provider == "lm-studio" and self.provider != "lm-studio":
+            raise ValueError(
+                "review_provider='lm-studio' não é suportado: o revisor precisa ser "
+                "um provider que não ocupa a GPU"
+            )
+        return self
 
     @model_validator(mode="after")
     def heartbeat_must_precede_lease(self) -> "Settings":
@@ -189,6 +262,8 @@ class Settings(BaseSettings):
         cruzar as duas manda credencial de um provider para o endpoint de
         outro, que chega como 401 opaco em vez de erro de configuração.
         """
+        if self.provider in ("codex", "claude"):
+            return None
         if self.provider == "lm-studio":
             return CHAVE_LOCAL
         if self.api_key:

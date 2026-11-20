@@ -11,6 +11,8 @@ from forge.api.routes import runs
 from forge.api.routes import events
 from forge.api.routes import artifacts
 from forge.api.routes import system
+from forge.api.routes import publication
+from forge.api.routes import youtube
 from forge.services.maquina_estados import TransicaoInvalida
 from forge.repositories.comandos import IdempotencyConflict
 from forge.repositories.connection import Database
@@ -27,6 +29,10 @@ class ApiServices:
     health: Any
     git_commit: str
     workflow_version: int = 1
+    # Publicação no YouTube; `None` cria o padrão a partir de `settings`.
+    publicador: Any = None
+    # Canais do YouTube e login pelo painel; `None` cria o padrão.
+    youtube: Any = None
 
 
 def build_api_services(settings: Any) -> ApiServices:
@@ -103,4 +109,6 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
     app.include_router(events.events_router, prefix="/api")
     app.include_router(artifacts.artifacts_router, prefix="/api")
     app.include_router(system.system_router, prefix="/api")
+    app.include_router(publication.publication_router, prefix="/api")
+    app.include_router(youtube.youtube_router, prefix="/api")
     return app

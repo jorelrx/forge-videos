@@ -66,6 +66,40 @@ describe("useDashboard", () => {
     expect(api.getRun).toHaveBeenCalledWith("run-1");
   });
 
+  it("mantém run selecionada mesmo quando outra execução fica ativa", async () => {
+    const another = {
+      ...run,
+      run: { ...run.run, id: "run-2", status: "completed" },
+      video: { ...run.video, id: "video-2", tema: "Execução escolhida" },
+    } as any;
+    const newer = {
+      ...run,
+      run: { ...run.run, id: "run-3", status: "running" },
+      video: { ...run.video, id: "video-3", tema: "Outra execução" },
+    } as any;
+    const api = makeApi();
+    (api.getRun as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => ({
+      ...(id === "run-2" ? another : id === "run-3" ? newer : run), stages: {}, artifacts: [],
+    }));
+    const { result } = renderHook(() =>
+      useDashboard(api, { EventSource: FakeEventSource as unknown as typeof EventSource }),
+    );
+    await waitFor(() => expect(result.current.focusRun?.run.id).toBe("run-1"));
+
+    await act(async () => { await result.current.selectRun("run-2"); });
+    expect(result.current.focusRun?.run.status).toBe("completed");
+    (api.getRuns as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [newer], total: 2, limit: 50, offset: 0,
+    });
+    act(() => FakeEventSource.current?.emit({
+      id: 11, run_id: "run-3", kind: "stage.progress", level: "info",
+      message: "Nova run", payload: {}, created_at: "2026-09-14T00:00:02Z",
+    }));
+
+    await waitFor(() => expect((api.getRun as ReturnType<typeof vi.fn>).mock.calls.slice(-1)[0]?.[0]).toBe("run-2"));
+    expect(result.current.focusRun?.run.id).toBe("run-2");
+  });
+
   it("consolida burst SSE em um refresh", async () => {
     const api = makeApi();
     const { result } = renderHook(() =>

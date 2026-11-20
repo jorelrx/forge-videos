@@ -303,3 +303,10 @@ def test_multiplicador_de_prazo_recusa_valor_nao_positivo():
 
     with pytest.raises(pydantic.ValidationError):
         Settings(_env_file=None, local_stage_timeout_multiplier=0)
+
+
+def test_aviso_ia_ligado_por_padrao(monkeypatch):
+    """Transparência sobre narração e imagem geradas por IA é o padrão do canal."""
+    assert Settings(_env_file=None).aviso_ia is True
+    monkeypatch.setenv("FORGE_AVISO_IA", "false")
+    assert Settings(_env_file=None).aviso_ia is False

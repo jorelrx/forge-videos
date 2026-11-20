@@ -19,6 +19,7 @@ Regras do prompt de imagem:
 - sem texto na imagem, sem rosto de pessoa real, sem logotipo;
 - nada abstrato demais para desenhar — "a ideia de liberdade" não é imagem,
   "a bird leaving an open cage against a grey sky" é;
-- vertical, pensado para tela de celular.
+- horizontal 16:9 (widescreen): o vídeo é paisagem, e imagem vertical perde
+  metade do quadro no corte. Assunto principal longe das bordas.
 
 Use apenas ids que aparecem na lista acima. Não repita o mesmo bloco duas vezes.

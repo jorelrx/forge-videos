@@ -301,3 +301,59 @@ export interface StudioEvent {
   payload: JsonObject;
   created_at: string;
 }
+
+export type PublicacaoEtapa = "enviando" | "thumbnail" | "legenda" | "concluida" | "falhou";
+export type PublicacaoParte = "pendente" | "ok" | "recusada";
+
+export interface PublicacaoEstado {
+  etapa: PublicacaoEtapa;
+  titulo: string;
+  publicar_em: string | null;
+  upload_uri: string | null;
+  bytes_enviados: number;
+  total_bytes: number;
+  video_id: string | null;
+  thumbnail: PublicacaoParte;
+  legenda: PublicacaoParte;
+  avisos: string[];
+  erro: string | null;
+  erro_codigo: string | null;
+  atualizado_em: string;
+  url: string | null;
+  canal_id?: string | null;
+  canal_titulo?: string | null;
+}
+
+export interface PublicacaoView {
+  estado: PublicacaoEstado | null;
+  em_andamento: boolean;
+  conectado: boolean;
+}
+
+export interface PublicacaoRequest {
+  titulo: string;
+  publicar_em: string | null;
+  canal_id: string | null;
+}
+
+export interface YouTubeCanal {
+  id: string;
+  titulo: string;
+  thumbnail: string | null;
+  padrao: boolean;
+}
+
+export type YouTubeLoginStatus = "inativo" | "aguardando" | "concluido" | "falhou";
+
+export interface YouTubeLogin {
+  status: YouTubeLoginStatus;
+  url: string | null;
+  erro: string | null;
+  canal_id: string | null;
+}
+
+export interface YouTubeView {
+  cliente_configurado: boolean;
+  canais: YouTubeCanal[];
+  login: YouTubeLogin;
+}

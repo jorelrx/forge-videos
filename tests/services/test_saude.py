@@ -146,3 +146,61 @@ def test_default_probes_report_structured_health_when_services_are_offline():
     # Esperado parcial: alguns disponíveis, a maioria UNAVAILABLE sem endpoints ativos.
     for name in result:
         assert isinstance(result[name], ServiceHealth)
+def test_codex_health_replaces_only_selected_local_backends():
+    from forge.services.saude import HealthProbes, StudioHealthService
+
+    def unused():
+        raise AssertionError('Serviço local não utilizado')
+
+    probes = HealthProbes(
+        research=lambda:True, lm_studio=unused, comfyui=unused,
+        tts=lambda:True, ffmpeg=lambda:True, gpu=lambda:None,
+        codex=lambda:True, codex_llm=True, codex_images=True,
+    )
+    health = StudioHealthService(probes).check_all()
+    assert set(health) == {'research', 'tts', 'ffmpeg', 'gpu', 'codex'}
+    assert health['codex'].state == 'available'
+
+
+def test_claude_health_troca_lm_studio_pelo_login_claude():
+    from forge.services.saude import HealthProbes, StudioHealthService
+
+    def unused():
+        raise AssertionError('Serviço local não utilizado')
+
+    probes = HealthProbes(
+        research=lambda: True, lm_studio=unused, comfyui=lambda: True,
+        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
+        claude=lambda: True, claude_llm=True,
+    )
+    health = StudioHealthService(probes).check_all()
+    assert set(health) == {'research', 'comfyui', 'tts', 'ffmpeg', 'gpu', 'claude'}
+    assert health['claude'].state == 'available'
+
+
+def test_claude_revisor_entra_sem_tirar_o_lm_studio():
+    from forge.services.saude import HealthProbes, StudioHealthService
+
+    probes = HealthProbes(
+        research=lambda: True, lm_studio=lambda: True, comfyui=lambda: True,
+        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
+        claude=lambda: False, claude_review=True,
+    )
+    health = StudioHealthService(probes).check_all()
+    assert 'lm_studio' in health and health['claude'].state == 'unavailable'
+
+
+def test_probe_padrao_do_claude_nao_chama_o_modelo(monkeypatch):
+    """O painel consulta a saúde em laço: uma chamada de modelo por consulta
+    gastaria a cota da assinatura à toa. Só `auth status`."""
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    chamadas = []
+    monkeypatch.setattr('forge.services.claude_cli.ClaudeCLI.check_auth', lambda self: chamadas.append('status'))
+    monkeypatch.setattr('forge.services.claude_cli.ClaudeCLI.sondar',
+                        lambda self: (_ for _ in ()).throw(AssertionError('modelo chamado')))
+    probes = saude._default_probes(Settings(_env_file=None, provider='claude'))
+    assert probes.claude() is True
+    assert probes.claude_llm is True
+    assert chamadas == ['status']

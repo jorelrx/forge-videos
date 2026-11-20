@@ -4,13 +4,14 @@ from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import MARCADOR_LISTA
 from forge.prompts.loader import load_prompt
 from forge.domain.models import ReviewResult, Roteiro
+from forge.agents.research import PassageEvidence
 from forge.llms.model import invoke_structured
-from forge.skills.loader import load_skills
+from forge.skills.loader import carregar_eixo, load_skills
 
 logger = get_logger(__name__)
 
-SKILLS = ["story", "retention", "fact_check"]
-LE = ["roteiro", "rounds", "run_dir"]
+SKILLS = ["story", "retention", "fact_check", "canal"]
+LE = ["roteiro", "rounds", "run_dir", "research_notes", "research_passages", "eixo"]
 
 # Palavras que o modelo emite como resposta de checklist. Um item que é só isso
 # nunca foi uma alegação.
@@ -97,10 +98,20 @@ def alegacoes_reais(itens: list[str]) -> list[str]:
     return mantidas
 
 
-def revisar(model, roteiro: Roteiro, *, run_dir=None) -> ReviewResult:
+def revisar(
+    model, roteiro: Roteiro, *, run_dir=None,
+    research_notes: str = "", research_passages: list[PassageEvidence] | None = None,
+    eixo: str | None = None,
+) -> ReviewResult:
     logger.debug("Starting review phase", tema=roteiro.tema[:50] + "..." if len(roteiro.tema) > 50 else roteiro.tema)
     prompt = load_prompt("review").format(
-        roteiro=_render(roteiro), skills=load_skills(SKILLS, "review")
+        roteiro=_render(roteiro), skills=load_skills(SKILLS, "review"),
+        research_notes=research_notes or "Síntese não fornecida.",
+        eixo_referencia=carregar_eixo(eixo),
+        research_passages="\n\n".join(
+            f"### {p.path} — {p.title} ({', '.join(p.authors)})\n{p.text}"
+            for p in (research_passages or [])
+        ) or "Passagens não fornecidas.",
     )
     result = invoke_structured(
         model, ReviewResult, [HumanMessage(content=prompt)],
@@ -122,4 +133,8 @@ def _render(roteiro: Roteiro) -> str:
     partes = [f"Tese: {roteiro.tese}", ""]
     for s in roteiro.secoes:
         partes.append(f"## {s.nome}\n{s.conteudo}\n")
+        if s.blocos:
+            for bloco in s.blocos:
+                refs = ", ".join(bloco.referencias) or "sem referências estruturadas"
+                partes.append(f"[Bloco de fala; referências: {refs}]\n{bloco.texto}\n")
     return "\n".join(partes)

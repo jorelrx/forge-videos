@@ -18,6 +18,8 @@ ALLOWED_MIME = {
     "video/mp4", "video/quicktime", "video/x-msvideo",
     "application/json", "text/markdown",
     "image/png", "image/jpeg", "image/webp",
+    # Legenda da montagem: sem isto o projetor recusa o artefato e a etapa cai.
+    "application/x-subrip",
 }
 
 PREVIEW_MIME = frozenset({
@@ -106,7 +108,7 @@ class CatalogoArtefatos:
         self, *, run_id: str, stage: StageName, item_key: str, input_hash: str,
         current_stage_run_id: str | None = None,
     ) -> Artifact | None:
-        """Return only a prior succeeded item with an intact current file."""
+        """Return a prior succeeded item when its on-disk output still matches its hash."""
         with self._connection() as conn:
             repo = OperacaoRepository(conn)
             query = """
@@ -114,7 +116,6 @@ class CatalogoArtefatos:
                 JOIN work_items ON work_items.id = artifacts.work_item_id
                 JOIN stage_runs ON stage_runs.id = work_items.stage_run_id
                 WHERE artifacts.run_id = ?
-                  AND artifacts.is_current = 1
                   AND work_items.item_key = ?
                   AND work_items.input_hash = ?
                   AND work_items.status = ?
@@ -316,14 +317,16 @@ class ChildEventProjector:
 
     def _project_artifact_created(self, payload: dict) -> None:
         item_key = payload.get("item_key")
+        if item_key is None or item_key == "":
+            item_key = ""
+        elif not isinstance(item_key, str) or not item_key.strip():
+            raise ChildProtocolError("item_key must be a non-empty string when provided")
         mime_type = payload.get("mime_type", "")
         if mime_type not in ALLOWED_MIME:
             raise ValueError(f"MIME não permitido: {mime_type}")
         path = _resolved_run_file(self._run_dir, payload.get("relative_path", ""))
         if path is None:
             raise ChildProtocolError("path outside run_dir or not a regular file")
-        if item_key is None:
-            raise ChildProtocolError("unknown item_key")
         stage_row = self.conn.execute(
             "SELECT run_id FROM stage_runs WHERE id = ?", (self._stage_run_id,)
         ).fetchone()

@@ -2,7 +2,9 @@
 
 **CreatorBrain** — gerador de roteiros de vídeo em português, construído sobre [LangGraph](https://langchain-ai.github.io/langgraph/).
 
-A partir de um tema (ou nenhum — ele inventa um), o pipeline pesquisa na web, planeja uma tese, escreve o roteiro em 9 seções e itera com um agente revisor até aprovar. O resultado é um arquivo Markdown com frontmatter.
+A partir de um tema (ou nenhum — ele inventa um), o pipeline pesquisa no acervo local, planeja uma tese, escreve o roteiro em 9 seções e itera com um agente revisor até aprovar. O resultado é um arquivo Markdown com frontmatter.
+
+**Providers:** assinatura Codex com `gpt-6.1-sol` e imagens nativas, ou LM Studio + ComfyUI locais. A integração Codex é independente do Hermes e não exige CLI em execução. Veja [configuração e login OAuth próprios](docs/codex-native.md).
 
 ---
 
@@ -33,7 +35,10 @@ uv run forge-api
 # Dev web (Next.js)
 npm run dev --prefix web
 
-# Tema gerado pelo LLM
+# Sugere temas que o acervo sustenta, do mais atraente para o menos
+uv run forge temas --n 5
+
+# Tema escolhido pelo seletor (o primeiro da lista acima)
 uv run forge roteiro
 
 # Tema definido por você
@@ -68,13 +73,95 @@ tema ──► research ──► plan ──► write ──► review ──�
 
 | Node | Módulo | O que faz |
 |---|---|---|
-| `tema` | `agents/tema.py` | Usa o tema recebido, ou pede um ao LLM |
+| `tema` | `agents/tema.py` | Usa o tema recebido, ou escolhe um que o acervo sustenta (falha se não houver) |
 | `research` | `agents/research.py` | Pesquisa no acervo (`FORGE_ACERVO_URL`) — sem fallback web |
-| `plan` | `agents/plan.py` | Produz `tese` + `esboco` |
-| `write` | `agents/write.py` | Escreve 9 seções (Gancho → Fecho) com gate objetivo |
+| `plan` | `agents/plan.py` | Produz `tese` + `esboco` + `eixo` do canal |
+| `write` | `agents/write.py` | Escreve 9 seções (Gancho → Fecho), uma chamada por seção; na revisão reescreve só as seções apontadas |
 | `review` | `agents/review.py` | Devolve `aprovado` + `notas` + `findings` (métricas objetivas) |
 
 O loop volta para `write` enquanto o review reprovar, até o teto de `FORGE_MAX_REVIEW_ROUNDS` (padrão: 8). O estado compartilhado está em `domain/execucao.py` (RunSnapshot, StagePlan, GateResult) e `repositories/operacao.py` (SQLite transacional: work_items, artifacts, videos). O Marco 3 adiciona executores isolados por subprocesso (`executors/`), catálogo de artefatos com SHA-256 (`services/catalogo.py`), reconciliação (`services/reconciliacao.py`) e gate final (`executors/validacao.py`).
+
+### Canal Conquistas Cósmicas
+
+O pipeline produz para um canal específico: filosofia reflexiva em PT-BR, vídeos
+narrados de 11 a 16 minutos (1.600–2.450 palavras), em segunda pessoa e tom
+calmo. A identidade está em `skills/canal.md`; os quatro eixos editoriais
+(`estoicismo`, `autoconhecimento`, `niilismo-absurdo`, `etica-digital-ia`) têm
+referência em `skills/conquistas-cosmicas/references/`. Nada é afirmado sem
+passagem do acervo.
+
+Além do roteiro, uma run aprovada entrega:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `video/citacoes.json` | Cada citação do roteiro: autor, obra, caminho canônico, tipo (`literal`, `traducao`, `parafrase`). Derivado por código. |
+| `embalagem.md` | Pronto para colar no YouTube Studio: três títulos, texto e prompt da thumbnail, descrição com capítulos e fontes, tags, comentário fixado. |
+| `video/embalagem.json` | O mesmo, estruturado. |
+| `video/legendas.srt` | Legenda em português com os tempos reais do áudio, para subir no YouTube. |
+| `video/thumbnail.jpg` | Capa 1280×720 com o texto da embalagem já desenhado. |
+
+O vídeo final sai com crossfade entre as imagens, a fonte citada na tela e, se
+houver faixas em `library/trilhas/`, trilha abaixada sob a voz. Coloque ali
+músicas que você tem licença para monetizar (uma subpasta com o nome do eixo
+tem preferência); um `<faixa>.txt` ao lado vira o crédito na descrição. Pasta
+vazia: o vídeo sai só com a narração. A aba **Publicação** do painel reúne
+títulos, descrição, tags e comentário com botão de copiar, e os arquivos para
+baixar.
+
+### Publicar no YouTube
+
+Assistiu e gostou? A aba **Publicação** tem o botão *Enviar ao YouTube*:
+escolha um dos títulos, privado ou agendado, e o Forge sobe vídeo, descrição,
+tags, categoria, idioma, "não é para crianças", a marca de conteúdo sintético,
+thumbnail e legenda. Pela linha de comando:
+
+```bash
+uv run forge publicar output/runs/<id> --titulo 2
+uv run forge publicar output/runs/<id> --titulo 1 --agendar 2026-11-21T18:00-03:00
+```
+
+O vídeo sobe sempre **privado** (ou agendado). Cair no meio não sobe outro
+vídeo: o estado fica em `video/publicacao.json` e publicar de novo continua a
+mesma sessão de upload. Thumbnail ou legenda recusada vira aviso, sem desfazer
+o upload. O comentário fixado continua manual: a API do YouTube não fixa.
+
+Configuração, uma vez:
+
+1. No [Google Cloud Console](https://console.cloud.google.com/), crie um
+   projeto e ative a **YouTube Data API v3** (APIs e serviços › Biblioteca).
+2. Configure a tela de consentimento OAuth (público **Externo**) e adicione a
+   conta Google dona do canal como usuária de teste.
+3. Crie um cliente OAuth do tipo **App para computador** e baixe o JSON.
+4. Na aba **Publicação**, bloco *Conta do YouTube*: envie esse JSON e clique
+   em **Conectar conta Google**. Na tela do Google, escolha o canal — conta com
+   mais de um canal mostra a lista ali. *Adicionar canal* conecta outro; o
+   canal marcado é o padrão das próximas publicações. Pelo terminal, o mesmo é
+   `uv run forge auth youtube login` (com o JSON salvo em
+   `%USERPROFILE%\.forge\youtube\client_secret.json`), `uv run forge auth
+   youtube status` lista os canais e `uv run forge publicar ... --canal UC...`
+   escolhe um. Os tokens ficam em `%USERPROFILE%\.forge\youtube\canais\`, um
+   por canal, fora do repositório.
+5. Verifique o canal por telefone (youtube.com/verify) para a thumbnail
+   personalizada ser aceita.
+
+Limites do Google que valem para qualquer cliente da API:
+
+- **Auditoria.** Enquanto o projeto do Google Cloud não passar pela auditoria
+  da API do YouTube (formulário *YouTube API Services – Audit and Quota
+  Extension*), todo vídeo enviado pela API fica **travado em privado** — nem
+  o dono do canal consegue torná-lo público, e o agendamento não dispara.
+  Até lá, o envio serve para conferir o pacote; publicar exige a auditoria.
+- **Login de 7 dias.** Com o app em modo *Teste*, o Google invalida o login
+  depois de 7 dias; rode `uv run forge auth youtube login` de novo, ou mude o
+  status do app para *Em produção* (o login passa a mostrar o aviso de app não
+  verificado — *Avançado › continuar*).
+- **Cota.** 10.000 unidades por dia; cada vídeo gasta até ~2.000 (upload,
+  thumbnail e legenda). Esgotou, o painel diz e a retomada no dia seguinte faz
+  só o que faltou.
+
+Os tempos dos capítulos são estimados pela contagem de palavras; confira com o
+vídeo final. `FORGE_AVISO_IA=false` tira da descrição a linha que declara
+narração e imagens geradas por IA.
 
 ### Pesquisa web
 

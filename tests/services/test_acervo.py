@@ -103,3 +103,30 @@ def test_resposta_200_nao_json_levanta():
         _acervo(handler).buscar("x")
 
     assert _acervo(handler).saude() is False
+
+
+def test_livros_lista_o_catalogo():
+    def handler(request):
+        assert request.url.path == "/books"
+        return httpx.Response(200, json={"total": 2, "books": [
+            {"id": 1998, "title": "Thus Spake Zarathustra", "authors": [],
+             "languages": ["en"], "subjects": ["Philosophy, German"],
+             "fragments": None, "stage": "completed", "dense": "ok"},
+            {"id": 7205, "title": "Also sprach Zarathustra", "languages": ["de"]},
+        ]})
+
+    livros = _acervo(handler).livros()
+
+    assert [(livro.id, livro.title, livro.languages) for livro in livros] == [
+        (1998, "Thus Spake Zarathustra", ["en"]),
+        (7205, "Also sprach Zarathustra", ["de"]),
+    ]
+    assert livros[1].authors == [] and livros[1].subjects == []
+
+
+def test_livros_com_acervo_fora_do_ar_levanta():
+    def handler(request):
+        return httpx.Response(503)
+
+    with pytest.raises(AcervoIndisponivel):
+        _acervo(handler).livros()

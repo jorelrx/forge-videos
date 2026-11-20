@@ -5,7 +5,7 @@ from langgraph.graph import END
 from forge.infrastructure.config import Settings
 from forge.orchestration.graph import rotear, build_graph
 from forge.domain.models import (
-    ReviewResult, Nota, Plano, RoteiroDraft, Secao,
+    BlocoRoteiro, ReviewResult, Nota, Plano, SecaoDraft,
 )
 
 # --- rotear (puro) ---
@@ -55,8 +55,15 @@ def test_rotear_reprovado_volta_para_write():
 
 # --- grafo completo com model roteirizado ---
 
-def _draft():
-    return RoteiroDraft(secoes=[Secao(nome="Hook", conteudo="c")])
+CAMINHO = "4363/ch2/p7"
+
+
+def _pedindo_pesquisa(pedido):
+    """Rascunho do Gancho em que o escritor declara que falta material."""
+    return SecaoDraft(
+        conteudo="Gancho fala.", blocos=[BlocoRoteiro(texto="Gancho fala.")],
+        falta_pesquisa=pedido,
+    )
 
 def _passagem():
     from forge.services.acervo import Passagem
@@ -80,68 +87,93 @@ def grafo_com_acervo(monkeypatch, acervo_fake):
     monkeypatch.setattr(graph_mod, "Acervo", lambda *a, **k: fake)
     return fake
 
-def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo):
-    # invoke_texts: tema, queries(research), brief(research)
-    # structured:   plano, draft(v1), review(reprovado), draft(v2), review(aprovado)
+def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo, secoes_draft):
+    # invoke_texts: queries(research), brief(research)
+    # structured:   plano, nove seções (v1), review(reprovado na Prova),
+    #               só a Prova (v2), review(aprovado)
+    prova_v2 = SecaoDraft(
+        conteudo="Prova refeita.",
+        blocos=[BlocoRoteiro(texto="Prova refeita.", referencias=[CAMINHO])],
+    )
     model = scripted(
-        invoke_texts=["tema gerado", "busca sobre o tema", "notas de pesquisa"],
+        invoke_texts=["busca sobre o tema", "notas de pesquisa"],
         structured=[
-            Plano(tese="tese", esboco="esboço"),
-            _draft(),
-            ReviewResult(aprovado=False, notas=[Nota(dimensao="clareza", problema="p", sugestao="s")]),
-            _draft(),
+            Plano(tese="tese", esboco="esboço", eixo="niilismo-absurdo"),
+            *secoes_draft(referencia=CAMINHO),
+            ReviewResult(aprovado=False, notas=[
+                Nota(dimensao="clareza", problema="p", sugestao="s", secao="Prova"),
+            ]),
+            prova_v2,
             ReviewResult(aprovado=True),
         ],
     )
     settings = Settings(_env_file=None, max_review_rounds=8, juiz_relevancia=False)
     graph = build_graph(model, settings)
-    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
     assert final["review"].aprovado is True
     assert final["rounds"] == 2
-    assert final["roteiro"].secoes[0].nome == "Hook"
+    assert final["roteiro"].secoes[0].nome == "Gancho"
+    assert final["roteiro"].secoes[0].conteudo == "Gancho fala."
+    assert final["roteiro"].secoes[5].conteudo == "Prova refeita."
+    assert final["eixo"] == "niilismo-absurdo"
     assert final["fontes"][0].path == "4363/ch2/p7"
+    assert model.structured == []
 
 
-def test_grafo_handoff_de_write_vai_so_para_research(scripted, tmp_path, grafo_com_acervo):
+def test_grafo_usa_o_revisor_so_no_review(scripted, tmp_path, grafo_com_acervo, secoes_draft):
+    escritor = scripted(
+        invoke_texts=["busca sobre o tema", "notas de pesquisa"],
+        structured=[Plano(tese="tese", esboco="esboço"), *secoes_draft(referencia=CAMINHO)],
+    )
+    revisor = scripted(structured=[ReviewResult(aprovado=True)])
+    settings = Settings(_env_file=None, juiz_relevancia=False)
+    graph = build_graph(escritor, settings, revisor=revisor)
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    assert final["review"].aprovado is True
+    assert escritor.structured == []
+    assert revisor.structured == []
+
+
+def test_grafo_handoff_de_write_vai_so_para_research(scripted, tmp_path, grafo_com_acervo, secoes_draft):
     """Pedido de pesquisa do escritor não pode executar review em paralelo."""
     model = scripted(
-        invoke_texts=["tema", "busca", "notas", "busca dirigida", "notas dirigidas"],
+        invoke_texts=["busca", "notas", "busca dirigida", "notas dirigidas"],
         structured=[
             Plano(tese="t1", esboco="e1"),
-            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação."),
+            *secoes_draft(referencia=CAMINHO, Gancho=_pedindo_pesquisa("Confirmar a afirmação.")),
             Plano(tese="t2", esboco="e2"),
-            _draft(),
+            *secoes_draft(referencia=CAMINHO),
             ReviewResult(aprovado=True),
         ],
     )
     settings = Settings(_env_file=None, juiz_relevancia=False)
     graph = build_graph(model, settings)
 
-    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
 
     assert final["review"].aprovado is True
 
-def test_grafo_para_no_teto(scripted, tmp_path, grafo_com_acervo):
+def test_grafo_para_no_teto(scripted, tmp_path, grafo_com_acervo, secoes_draft):
     model = scripted(
-        invoke_texts=["tema", "busca", "notas"],
+        invoke_texts=["busca", "notas"],
         structured=[
             Plano(tese="t", esboco="e"),
-            _draft(), ReviewResult(aprovado=False),
-            _draft(), ReviewResult(aprovado=False),
+            *secoes_draft(referencia=CAMINHO), ReviewResult(aprovado=False),
+            *secoes_draft(referencia=CAMINHO), ReviewResult(aprovado=False),
         ],
     )
     settings = Settings(_env_file=None, max_review_rounds=2, juiz_relevancia=False)
     graph = build_graph(model, settings)
-    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
     assert final["rounds"] == 2
     assert final["review"].aprovado is False
 
-def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acervo):
+def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acervo, secoes_draft):
     """Model que sempre pede verificação não pode rodar para sempre.
 
     O handoff `review -> research` faz `node_research` rodar a cada volta, e
     cada volta consome dois `invoke_texts` (queries e brief) mais um `Plano`,
-    um `RoteiroDraft` e um `ReviewResult` da fila estruturada. As filas abaixo
+    nove `SecaoDraft` e um `ReviewResult` da fila estruturada. As filas abaixo
     repetem esse ciclo muito além do necessário: quem tem de encerrar o grafo é
     `max_passos`, não uma fila esgotada.
 
@@ -151,13 +183,13 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
     handoff para research, o que descaracterizaria o teste.
     """
     n_ciclos = 40  # bem mais que o necessário para estourar max_passos=12
-    textos = ["tema"]
+    textos = []
     estruturados = []
     for _ in range(n_ciclos):
         textos += ["busca", "notas"]
         estruturados += [
             Plano(tese="t", esboco="e"),
-            _draft(),
+            *secoes_draft(referencia=CAMINHO),
             ReviewResult(aprovado=False, verificar=["Confirmar a data citada no texto."]),
         ]
 
@@ -165,11 +197,11 @@ def test_grafo_termina_com_modelo_patologico(scripted, tmp_path, grafo_com_acerv
     settings = Settings(_env_file=None, max_review_rounds=100, max_passos=12, juiz_relevancia=False)
     graph = build_graph(model, settings)
 
-    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
 
     assert 12 <= final["passos"] <= 13, f"orçamento furou: {final['passos']} passos"
 
-def test_orcamento_encerra_handoff_de_write(scripted, tmp_path, grafo_com_acervo):
+def test_orcamento_encerra_handoff_de_write(scripted, tmp_path, grafo_com_acervo, secoes_draft):
     """Modelo que só sabe pedir pesquisa não pode furar o teto de passos.
 
     O caminho `write -> research` (`falta_pesquisa`) não passa por `rotear` —
@@ -187,17 +219,23 @@ def test_orcamento_encerra_handoff_de_write(scripted, tmp_path, grafo_com_acervo
     for _ in range(n_ciclos):
         estruturados += [
             Plano(tese="t", esboco="e"),
-            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação citada no texto."),
+            *secoes_draft(
+                referencia=CAMINHO,
+                Gancho=_pedindo_pesquisa("Confirmar a afirmação citada no texto."),
+            ),
         ]
     estruturados += [ReviewResult(aprovado=False)]
     for _ in range(5):  # o modelo patológico nunca pararia de pedir pesquisa
         estruturados += [
             Plano(tese="t", esboco="e"),
-            RoteiroDraft(secoes=[], falta_pesquisa="Confirmar a afirmação citada no texto."),
+            *secoes_draft(
+                referencia=CAMINHO,
+                Gancho=_pedindo_pesquisa("Confirmar a afirmação citada no texto."),
+            ),
         ]
 
     model = scripted(
-        invoke_texts=["tema"] + ["busca", "notas"] * 12,
+        invoke_texts=["busca", "notas"] * 12,
         structured=estruturados,
     )
     settings = Settings(
@@ -205,10 +243,47 @@ def test_orcamento_encerra_handoff_de_write(scripted, tmp_path, grafo_com_acervo
     )
     graph = build_graph(model, settings)
 
-    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+    final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
 
     assert final["passos"] >= 6, f"encerrou antes do orçamento: {final['passos']}"
     assert final["passos"] <= 12, f"orçamento furou: {final['passos']} passos"
+
+
+def test_grafo_sem_tema_usa_o_seletor(scripted, tmp_path, grafo_com_acervo, secoes_draft):
+    """Sem tema informado, o grafo pergunta ao acervo o que ele sustenta."""
+    from forge.agents.tema import TemaCandidato, TemasPropostos, VeredictoTema, VeredictoTemas
+    from forge.services.acervo import Passagem
+
+    grafo_com_acervo.por_query["busca do candidato"] = [
+        Passagem(path=f"4363/ch2/p{n}", book_id=4363, book_title="Obra",
+                 authors=["Autor"], text=f"trecho {n}")
+        for n in range(7, 10)
+    ]
+    model = scripted(
+        invoke_texts=["busca", "notas"],
+        structured=[
+            TemasPropostos(candidatos=[TemaCandidato(
+                tema="Tema do seletor", eixo="niilismo-absurdo", dor="d", promessa="p",
+                buscas=["busca do candidato"],
+            )]),
+            VeredictoTemas(veredictos=[
+                VeredictoTema(indice=0, sustentado=True, apelo=4, motivo="m"),
+            ]),
+            Plano(tese="t", esboco="e"),
+            *secoes_draft(referencia=CAMINHO),
+            ReviewResult(aprovado=True),
+        ],
+    )
+    settings = Settings(
+        _env_file=None, juiz_relevancia=False, output_dir=tmp_path / "roteiros",
+        studio_runs_dir=tmp_path / "studio",
+    )
+    graph = build_graph(model, settings)
+
+    final = graph.invoke({"tema": None, "rounds": 0, "run_dir": tmp_path, "passos": 0})
+
+    assert final["tema"] == "Tema do seletor"
+    assert final["review"].aprovado is True
 
 
 def test_research_nao_chama_a_camada_de_conhecimento():

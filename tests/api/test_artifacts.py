@@ -183,3 +183,42 @@ def test_artifact_content_range_request(client: TestClient, settings: Settings) 
     assert resp.status_code == 206
     assert resp.headers["Content-Range"] == "bytes 2-5/10"
     assert resp.content == b"2345"
+
+
+def test_artifact_content_serve_legenda_srt(client: TestClient, settings: Settings) -> None:
+    db = Database(str(settings.studio_db_path))
+    conteudo = "1\n00:00:00,000 --> 00:00:02,000\nOlá.\n".encode("utf-8")
+    _, artifact_id = _create_run_with_artifact(
+        client,
+        artifact_name="legendas.srt",
+        mime_type="application/x-subrip",
+        content=conteudo,
+        settings=settings,
+        db=db,
+    )
+    resp = client.get(f"/api/artifacts/{artifact_id}/content")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-subrip")
+    assert resp.content == conteudo
+
+
+def test_download_pede_ao_navegador_que_salve_o_arquivo(client: TestClient, settings: Settings) -> None:
+    """O painel e a API ficam em portas diferentes: entre origens o navegador
+    ignora o atributo `download` do link e abriria o vídeo em vez de salvar."""
+    db = Database(str(settings.studio_db_path))
+    _, artifact_id = _create_run_with_artifact(
+        client,
+        artifact_name="legendas.srt",
+        mime_type="application/x-subrip",
+        content=b"1\n",
+        settings=settings,
+        db=db,
+    )
+
+    baixar = client.get(f"/api/artifacts/{artifact_id}/content?download=1")
+    ver = client.get(f"/api/artifacts/{artifact_id}/content")
+
+    assert baixar.status_code == 200
+    assert baixar.headers["content-disposition"].startswith("attachment")
+    assert "legendas.srt" in baixar.headers["content-disposition"]
+    assert "attachment" not in ver.headers.get("content-disposition", "")

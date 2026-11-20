@@ -194,7 +194,11 @@ class SubprocessExecutor:
         *,
         stderr_limit: int = 4096,
         timeout_seconds: float = 300.0,
-        stdout_line_limit: int = 64 * 1024,
+        # O `stage.result` leva todos os artefatos da etapa numa linha só: 57
+        # imagens com prompt e caminhos no metadata somaram ~76 KB e, com o
+        # limite antigo de 64 KiB, a etapa caía depois de todo o trabalho feito.
+        # 4 MiB ainda barra uma linha sem fim e folga vídeos longos.
+        stdout_line_limit: int = 4 * 1024 * 1024,
         terminate_grace_seconds: float = 0.5,
     ) -> None:
         if isinstance(argv, (str, bytes)) or not argv:
@@ -436,21 +440,18 @@ class SubprocessExecutor:
 
     def _spawn_process(
         self,
+        **popen_options: Any,
     ) -> tuple[
         subprocess.Popen,
         int | None,
         _WindowsJobObject | None,
     ]:
-        process = subprocess.Popen(
-            self.argv,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **self._popen_kwargs(),
+        options = dict(
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace", **self._popen_kwargs(),
         )
+        options.update(popen_options)
+        process = subprocess.Popen(self.argv, shell=False, **options)
         process_group_id = self._capture_process_group(process)
         try:
             windows_job = _WindowsJobObject.try_create(process)

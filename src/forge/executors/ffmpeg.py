@@ -201,20 +201,37 @@ def ken_burns_motion(index: int, frames: int, ceiling: float = 1.22) -> str:
 
 
 def build_ken_burns_filter(
-    seconds: float, index: int, portrait: bool = False, *, fade: float = FADE_PADRAO
+    seconds: float,
+    index: int,
+    portrait: bool = False,
+    *,
+    fade: float = FADE_PADRAO,
+    fade_in: float | None = None,
+    fade_out: float | None = None,
 ) -> str:
-    """Cadeia completa de um clipe: overscan, escala, zoompan, fades, yuv420p."""
+    """Cadeia completa de um clipe: overscan, escala, zoompan, fades, yuv420p.
+
+    `fade_in`/`fade_out` em None mantêm o comportamento antigo (os dois valem
+    `fade`). Com crossfade, só o primeiro clipe abre do preto e só o último
+    fecha nele; os do meio passam 0, senão cada transição atravessaria o preto.
+    """
+    entrada = fade if fade_in is None else fade_in
+    saida = fade if fade_out is None else fade_out
     frames = max(1, int(round(seconds * FPS)))
     over = OVERSCAN_RETRATO if portrait else OVERSCAN
     movimento = ken_burns_motion(index, frames, ceiling=1.10 if portrait else 1.22)
+    fades = ""
+    if entrada > 0:
+        fades += f"fade=t=in:st=0:d={entrada},"
+    if saida > 0:
+        fades += f"fade=t=out:st={max(0.0, seconds - saida):.2f}:d={saida},"
     return (
         f"crop=in_w*{over}:in_h*{over},"
         f"scale={FONTE_LARGA}:{FONTE_LARGA * 9 // 16}"
         f":force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={FONTE_LARGA}:{FONTE_LARGA * 9 // 16},"
         f"zoompan={movimento}:d={frames}:s={LARGURA}x{ALTURA}:fps={FPS},"
-        f"fade=t=in:st=0:d={fade},"
-        f"fade=t=out:st={max(0.0, seconds - fade):.2f}:d={fade},"
+        f"{fades}"
         f"format=yuv420p"
     )
 
@@ -226,6 +243,8 @@ def clip_from_image(
     seconds: float,
     index: int,
     portrait: bool,
+    fade_in: float | None = None,
+    fade_out: float | None = None,
     runner=run_ffmpeg,
 ) -> None:
     """Um clipe Ken Burns de `seconds`, 16:9, sem bordas."""
@@ -234,7 +253,9 @@ def clip_from_image(
         [
             "ffmpeg", "-y", "-loglevel", "error",
             "-loop", "1", "-i", str(imagem),
-            "-vf", build_ken_burns_filter(seconds, index, portrait),
+            "-vf", build_ken_burns_filter(
+                seconds, index, portrait, fade_in=fade_in, fade_out=fade_out
+            ),
             "-t", f"{seconds:.3f}",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-r", str(FPS),
@@ -259,6 +280,212 @@ def concat_videos(clipes: list[Path], saida: Path, lista: Path, *, runner=run_ff
     )
     if code != 0:
         raise RuntimeError(f"ffmpeg falhou ao concatenar vídeo ({code}): {stderr[-600:]}")
+
+
+# Passe final codifica ~15 min de 1080p em libx264 medium numa máquina modesta.
+TIMEOUT_PASSE_FINAL = 4 * 3600
+
+
+def _escapar_valor_filtro(valor: str) -> str:
+    """Escapa um valor de opção para dentro de um filtergraph.
+
+    São dois níveis: o parser de opções do filtro (`\\`, `'`, `:`) e, por fora,
+    o do grafo (`\\`, `'`, `[`, `]`, `,`, `;`). Nome comum como `cartoes.ass`
+    passa intacto; o escape existe para nome com espaço/apóstrofo não quebrar.
+    """
+    opcao = "".join("\\" + c if c in "\\':" else c for c in valor)
+    return "".join("\\" + c if c in "\\'[],;" else c for c in opcao)
+
+
+def _juncoes_com_transicao(duracoes: list[float], crossfade: float) -> list[bool]:
+    """Para cada junção i (entre clipe i e i+1): True = xfade, False = corte seco.
+
+    Clipe nominal menor que 2*crossfade não comporta a transição de entrada e a
+    de saída sem que elas se encostem; ali o corte seco é mais limpo.
+    """
+    if crossfade <= 0:
+        return [False] * (len(duracoes) - 1)
+    minimo = 2 * crossfade
+    return [
+        duracoes[i] >= minimo and duracoes[i + 1] >= minimo
+        for i in range(len(duracoes) - 1)
+    ]
+
+
+def _grafo_crossfade(
+    duracoes: list[float], crossfade: float, legendas_nome: str | None
+) -> str:
+    """Monta o filtergraph de N entradas com xfade/concat encadeados.
+
+    Cada entrada é normalizada (escala, SAR, fps, pixel e base de tempo) porque
+    xfade e concat recusam entradas que difiram em qualquer um desses. Depois é
+    cortada no comprimento que a junção seguinte consome: nominal + crossfade
+    quando há transição, só o nominal quando é corte seco (o acréscimo que o
+    clipe trouxe é descartado ali). Assim o acumulado após a junção i mede
+    sempre soma(duracoes[:i+1]) (+ crossfade se a próxima junção for xfade), o
+    offset da transição i é exatamente soma(duracoes[:i+1]) e a saída termina
+    em soma(duracoes) — a duração da narração.
+    """
+    transicoes = _juncoes_com_transicao(duracoes, crossfade)
+    linhas: list[str] = []
+    for i, nominal in enumerate(duracoes):
+        comprimento = nominal + (crossfade if i < len(transicoes) and transicoes[i] else 0.0)
+        linhas.append(
+            f"[{i}:v]scale={LARGURA}:{ALTURA},setsar=1,fps={FPS},format=yuv420p,"
+            f"trim=duration={comprimento:.3f},setpts=PTS-STARTPTS,settb=AVTB[c{i}];"
+        )
+    atual = "c0"
+    acumulado = duracoes[0]
+    for i, transicao in enumerate(transicoes):
+        proximo = f"c{i + 1}"
+        saida = f"j{i}"
+        if transicao:
+            linhas.append(
+                f"[{atual}][{proximo}]xfade=transition=fade:duration={crossfade:.3f}"
+                f":offset={acumulado:.3f}[{saida}];"
+            )
+        else:
+            # `trim=duration` arredonda cada clipe para cima no grid de 24 fps
+            # (0,8 s vira 20 quadros); em cortes secos seguidos o erro somaria.
+            # O corte absoluto no acumulado nominal mantém o desvio abaixo de
+            # um quadro, como o offset absoluto já faz no xfade.
+            linhas.append(
+                f"[{atual}]trim=end={acumulado:.3f}[t{i}];"
+                f"[t{i}][{proximo}]concat=n=2:v=1:a=0,settb=AVTB[{saida}];"
+            )
+        atual = saida
+        acumulado += duracoes[i + 1]
+    final = f"[{atual}]format=yuv420p"
+    if legendas_nome is not None:
+        final += f",ass=filename={_escapar_valor_filtro(legendas_nome)}"
+    linhas.append(final + "[vout]")
+    return "\n".join(linhas) + "\n"
+
+
+def crossfade_videos(
+    clipes: list[Path],
+    duracoes: list[float],
+    saida: Path,
+    *,
+    crossfade: float,
+    legendas_ass: Path | None = None,
+    runner=run_ffmpeg,
+) -> None:
+    """Encadeia os clipes com crossfade num único passe, queimando o .ass junto.
+
+    `duracoes` são as durações NOMINAIS; o arquivo de cada clipe, menos o
+    último, traz `crossfade` segundos a mais para alimentar a transição. A
+    linha do tempo de saída fica igual à soma das nominais, então capítulos e
+    legenda calculados pela narração continuam valendo.
+
+    O grafo vai num arquivo ao lado da saída (`-/filter_complex`): com ~60
+    clipes ele, somado aos caminhos de entrada, chegaria perto do limite de
+    ~32 mil caracteres da linha de comando no Windows. Com legenda, o comando
+    roda com cwd na pasta do .ass e o filtro recebe só o nome do arquivo —
+    escapar `C:\\...` dentro do filtergraph é frágil; por isso entradas e
+    saída vão em caminho absoluto.
+    """
+    if len(clipes) != len(duracoes):
+        raise ValueError("clipes e duracoes precisam ter o mesmo tamanho")
+    if not clipes:
+        raise ValueError("crossfade_videos precisa de ao menos um clipe")
+    saida = Path(saida).resolve()
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    cwd = None
+    legendas_nome = None
+    if legendas_ass is not None:
+        legendas_ass = Path(legendas_ass).resolve()
+        cwd = legendas_ass.parent
+        legendas_nome = legendas_ass.name
+    script = saida.with_name(saida.stem + ".filtergraph.txt")
+    script.write_text(_grafo_crossfade(duracoes, crossfade, legendas_nome), encoding="utf-8")
+
+    argv = ["ffmpeg", "-y", "-loglevel", "error"]
+    for clipe in clipes:
+        argv += ["-i", str(Path(clipe).resolve())]
+    argv += [
+        "-/filter_complex", str(script),
+        "-map", "[vout]",
+        "-an",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-r", str(FPS),
+        "-t", f"{sum(duracoes):.3f}",
+        str(saida),
+    ]
+    code, stderr, _ = runner(argv, cwd=cwd, timeout=TIMEOUT_PASSE_FINAL)
+    if code != 0:
+        raise RuntimeError(f"ffmpeg falhou no crossfade ({code}): {stderr[-600:]}")
+
+
+# Ducking da trilha. A narração normalizada a -14 LUFS tem fala por volta de
+# -20 a -10 dBFS; threshold 0.03 (~-30 dBFS) dispara com qualquer voz e ignora
+# o silêncio entre frases. ratio 6 derruba a trilha ~10-15 dB sob a voz sem
+# sumir com ela. attack 20 ms pega a primeira sílaba; release 600 ms devolve a
+# trilha nas pausas sem o "bombear" audível de um release curto.
+DUCK_THRESHOLD = 0.03
+DUCK_RATIO = 6
+DUCK_ATTACK_MS = 20
+DUCK_RELEASE_MS = 600
+TRILHA_FADE_IN = 2.0
+TRILHA_FADE_OUT = 4.0
+LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+
+
+def mix_audio(
+    narracao: Path,
+    trilha: Path | None,
+    saida: Path,
+    *,
+    duracao: float,
+    volume_db: float,
+    runner=run_ffmpeg,
+) -> None:
+    """Narração normalizada a -14 LUFS, com a trilha em loop abaixada sob a voz.
+
+    A trilha entra com `-stream_loop -1` (mais curta que o vídeo, repete) e é
+    cortada em `duracao` com fade de saída terminando ali (mais longa, não
+    acaba seca). A narração passa por `apad` até `duracao` para servir de
+    chave do sidechain até o fim — sem isso o compressor pararia quando a voz
+    acabasse. `amix` com `normalize=0`: o padrão divide cada entrada pelo
+    número de entradas e jogaria a narração 6 dB abaixo do loudnorm.
+    Sem trilha, sai só a narração normalizada. WAV pcm_s16le 48 kHz estéreo.
+    """
+    saida = Path(saida)
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    d = f"{duracao:.3f}"
+    voz = (
+        f"[0:a]aformat=channel_layouts=stereo,{LOUDNORM},"
+        f"aresample=48000,apad=whole_dur={d},atrim=duration={d}"
+    )
+    argv = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(narracao)]
+    if trilha is None:
+        grafo = f"{voz}[aout]"
+    else:
+        argv += ["-stream_loop", "-1", "-i", str(trilha)]
+        inicio_fade_out = max(0.0, duracao - TRILHA_FADE_OUT)
+        grafo = (
+            f"{voz},asplit=2[voz][chave];"
+            f"[1:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"atrim=duration={d},volume={float(volume_db):.1f}dB,"
+            f"afade=t=in:st=0:d={TRILHA_FADE_IN:g},"
+            f"afade=t=out:st={inicio_fade_out:.3f}:d={TRILHA_FADE_OUT:g}[musica];"
+            f"[musica][chave]sidechaincompress=threshold={DUCK_THRESHOLD}"
+            f":ratio={DUCK_RATIO}:attack={DUCK_ATTACK_MS}:release={DUCK_RELEASE_MS}"
+            f"[abaixada];"
+            f"[voz][abaixada]amix=inputs=2:duration=first:dropout_transition=0"
+            f":normalize=0[aout]"
+        )
+    argv += [
+        "-filter_complex", grafo,
+        "-map", "[aout]",
+        "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
+        "-t", d,
+        str(saida),
+    ]
+    code, stderr, _ = runner(argv, timeout=1800)
+    if code != 0:
+        raise RuntimeError(f"ffmpeg falhou ao mixar áudio ({code}): {stderr[-600:]}")
 
 
 def concat_wavs(wavs: list[Path], saida: Path, lista: Path, *, runner=run_ffmpeg) -> None:
@@ -304,8 +531,10 @@ __all__ = [
     "concat_files",
     "concat_videos",
     "concat_wavs",
+    "crossfade_videos",
     "image_aspect",
     "ken_burns_motion",
+    "mix_audio",
     "mux_audio",
     "probe_duration",
     "probe_media",

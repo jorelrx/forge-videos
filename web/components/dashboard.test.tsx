@@ -249,21 +249,25 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(screen.getByText("Falha na API externa")).not.toBeNull();
   });
 
-  it("renderiza artefato com URL e tipo", () => {
+  it("renderiza player da saída selecionada, sem miniatura fictícia", async () => {
+    const user = userEvent.setup();
+    const focusRun = makeRun("completed", 1.0, null) as any;
     const state = fullState({
       focusRun: {
-        ...makeRun("completed", 1.0, null),
+        ...focusRun,
         artifacts: [{
-          id: "artifact-1",
-          kind: "video",
-          relative_path: "output.mp4",
-          mime_type: "video/mp4",
+          id: "artifact-1", run_id: focusRun.run.id, stage_run_id: "stage-1",
+          work_item_id: null, kind: "video/final.mp4", relative_path: "video/final.mp4",
+          mime_type: "video/mp4", size_bytes: 1024, sha256: "a".repeat(64),
+          metadata: {}, is_current: true, created_at: "2026-10-01T00:00:00Z",
         }],
       } as any,
     });
-    render(<DashboardView state={state} />);
-    expect(screen.getByText("output.mp4")).not.toBeNull();
-    expect(screen.getByText("video/mp4")).not.toBeNull();
+    const { container } = render(<DashboardView state={state} />);
+    await user.click(screen.getByRole("tab", { name: /Vídeo/ }));
+    expect(container.querySelector("video")?.getAttribute("src")).toContain("artifact-1");
+    expect(screen.getByText(/^final\.mp4 · 0 MB\./)).not.toBeNull();
+    expect(screen.queryByLabelText("Artefato mais recente")).toBeNull();
   });
 
   it("renderiza fila de vídeos aguardando", () => {
@@ -451,5 +455,37 @@ describe("dashboard — comportamento completo (REAL)", () => {
 
     expect(screen.getByRole("button", { name: "▶ Retomar" })).not.toBeNull();
     expect(screen.getByLabelText("Repetir etapa")).not.toBeNull();
+  });
+
+  it("navega para a aba Publicação com a run concluída mais recente e volta", async () => {
+    const done = makeRun("completed", 1, null);
+    done.run.finished_at = "2026-11-02T10:00:00Z";
+    const loadArtifacts = vi.fn().mockResolvedValue([]);
+    const state = fullState({ runs: [done] });
+    const user = userEvent.setup();
+    render(<DashboardView state={state} loadArtifacts={loadArtifacts} />);
+
+    const nav = screen.getByRole("button", { name: /Publicação/ });
+    await user.click(nav);
+
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Publicação");
+    expect(nav.getAttribute("aria-current")).toBe("page");
+    expect(await screen.findByText("Embalagem ausente")).not.toBeNull();
+    expect(loadArtifacts).toHaveBeenCalledWith(done.run.id);
+
+    await user.click(screen.getByRole("button", { name: /Dashboard/ }));
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");
+  });
+
+  it("'＋ Novo vídeo' na aba Publicação volta à produção e foca o formulário", async () => {
+    const state = fullState({ runs: [] });
+    const user = userEvent.setup();
+    const { container } = render(<DashboardView state={state} loadArtifacts={async () => []} />);
+
+    await user.click(screen.getByRole("button", { name: /Publicação/ }));
+    await user.click(container.querySelector('[data-choice="new-run"]') as HTMLButtonElement);
+
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");
+    expect(document.activeElement).toBe(screen.getByLabelText("Tema"));
   });
 });

@@ -347,3 +347,200 @@ def test_plano_de_midia_nao_sai_de_roteiro_reprovado(monkeypatch, tmp_path):
     assert chamadas == []
     runs = list((tmp_path / "runs").iterdir())
     assert not (runs[0] / "video" / "midia.json").exists()
+
+
+def _settings_temas(tmp_path):
+    return Settings(_env_file=None, output_dir=tmp_path / "roteiros",
+                    studio_runs_dir=tmp_path / "runs", anthropic_api_key="sk-test")
+
+
+def test_cli_temas_imprime_lista_e_eixos_sem_cobertura(monkeypatch, tmp_path, capsys):
+    from forge.agents import tema as tema_mod
+    from forge.agents.tema import Sugestoes, TemaSugerido
+
+    monkeypatch.setattr(cli, "get_settings", lambda: _settings_temas(tmp_path))
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+    pedido = {}
+
+    def _sugerir(model, acervo, settings, *, n):
+        pedido["n"] = n
+        return Sugestoes(
+            temas=[TemaSugerido(
+                tema="Por que você teme escolher", eixo="niilismo-absurdo", dor="d",
+                promessa="p", livros=["Zarathustra", "Beyond Good and Evil"], apelo=4,
+                motivo="m",
+            )],
+            eixos_sem_cobertura=["estoicismo", "etica-digital-ia"],
+        )
+
+    monkeypatch.setattr(tema_mod, "sugerir_temas", _sugerir)
+
+    rc = cli.main(["temas", "--n", "3"])
+
+    saida = capsys.readouterr()
+    assert rc == 0 and pedido["n"] == 3
+    assert (
+        "1. Por que você teme escolher [niilismo-absurdo] apelo 4/5 — "
+        "Zarathustra; Beyond Good and Evil"
+    ) in saida.out
+    assert "Eixos sem cobertura no acervo: estoicismo, etica-digital-ia" in saida.err
+
+
+def test_cli_temas_sem_sustentacao_sai_1(monkeypatch, tmp_path, capsys):
+    from forge.agents import tema as tema_mod
+    from forge.agents.tema import Sugestoes
+
+    monkeypatch.setattr(cli, "get_settings", lambda: _settings_temas(tmp_path))
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+    monkeypatch.setattr(
+        tema_mod, "sugerir_temas",
+        lambda *a, **k: Sugestoes(temas=[], eixos_sem_cobertura=["estoicismo"]),
+    )
+
+    rc = cli.main(["temas"])
+
+    saida = capsys.readouterr()
+    assert rc == 1
+    assert "Nenhum tema sustentado pelo acervo" in saida.err
+
+
+def test_roteiro_entrega_o_revisor_ao_grafo(monkeypatch, tmp_path):
+    _monta_run(monkeypatch, tmp_path, aprovado=False)
+    revisor = object()
+    recebido = {}
+    monkeypatch.setattr(cli, "build_review_model", lambda s: revisor)
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": Roteiro(tema="t", tese="t", secoes=[Secao(nome="Hook", conteudo="c")])}}
+
+    def build(model, s, inicio="tema", **kwargs):
+        recebido.update(kwargs)
+        return FakeGraph()
+
+    monkeypatch.setattr(cli, "build_graph", build)
+    cli.main(["roteiro", "--tema", "meu tema"])
+    assert recebido["revisor"] is revisor
+
+
+def test_cli_aceita_provider_claude(monkeypatch, tmp_path):
+    from forge.agents import tema as tema_mod
+    from forge.agents.tema import Sugestoes
+
+    monkeypatch.setattr(cli, "get_settings", lambda: _settings_temas(tmp_path))
+    usado = {}
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: usado.setdefault("provider", s.provider))
+    monkeypatch.setattr(
+        tema_mod, "sugerir_temas",
+        lambda *a, **k: Sugestoes(temas=[], eixos_sem_cobertura=[]),
+    )
+    cli.main(["temas", "--provider", "claude"])
+    assert usado["provider"] == "claude"
+
+
+def test_cli_temas_com_acervo_fora_do_ar_sai_1(monkeypatch, tmp_path, capsys):
+    from forge.agents import tema as tema_mod
+    from forge.services.acervo import AcervoIndisponivel
+
+    monkeypatch.setattr(cli, "get_settings", lambda: _settings_temas(tmp_path))
+    monkeypatch.setattr(cli, "build_chat_model", lambda s: object())
+
+    def _fora(*a, **k):
+        raise AcervoIndisponivel("acervo não respondeu em /books")
+
+    monkeypatch.setattr(tema_mod, "sugerir_temas", _fora)
+
+    rc = cli.main(["temas"])
+
+    assert rc == 1
+    assert "acervo não respondeu" in capsys.readouterr().err
+
+
+def _embalagem_valida():
+    from forge.domain.embalagem import (
+        Capitulo, Embalagem, ThumbnailProposta, TituloProposto,
+    )
+
+    return Embalagem(
+        titulos=[TituloProposto(texto=f"Título {n}") for n in (1, 2, 3)],
+        thumbnail=ThumbnailProposta(texto="Texto", prompt="p"),
+        descricao="Abertura.",
+        capitulos=[
+            Capitulo(secao=f"S{n}", titulo=f"Parte {n}", inicio_segundos=n * 30)
+            for n in range(3)
+        ],
+        comentario_fixado="E você?",
+        fontes=["Obra"],
+    )
+
+
+def _sem_plano_de_midia(monkeypatch):
+    from forge.agents import midia as midia_mod
+    from forge.domain.midia import BlocoNarracao, PlanoMidia
+
+    plano = PlanoMidia(blocos=[BlocoNarracao(id="b001", secao="Hook", texto="c")], beats=[])
+    monkeypatch.setattr(midia_mod, "planejar_midia", lambda *a, **k: plano)
+
+
+def test_roteiro_aprovado_grava_citacoes_e_embalagem(monkeypatch, tmp_path):
+    from forge.agents import embalagem as embalagem_mod
+
+    settings = _monta_run(monkeypatch, tmp_path, aprovado=True)
+    _sem_plano_de_midia(monkeypatch)
+    recebido = {}
+
+    def _embalar(model, roteiro, citacoes, *, aviso_ia, run_dir):
+        recebido.update(roteiro=roteiro, citacoes=citacoes, aviso_ia=aviso_ia)
+        return _embalagem_valida()
+
+    monkeypatch.setattr(embalagem_mod, "embalar", _embalar)
+
+    assert cli.main(["roteiro", "--tema", "meu tema"]) == 0
+
+    run = next((tmp_path / "runs").iterdir())
+    assert (run / "video" / "citacoes.json").is_file()
+    assert (run / "video" / "embalagem.json").is_file()
+    assert "## Títulos" in (run / "embalagem.md").read_text(encoding="utf-8")
+    assert recebido["roteiro"].tema == "tema"
+    assert recebido["citacoes"] == []
+    assert recebido["aviso_ia"] is settings.aviso_ia
+
+
+def test_embalagem_reprovada_nao_derruba_o_roteiro(monkeypatch, tmp_path, capsys):
+    """O roteiro aprovado é o entregável; a embalagem pode ser refeita depois."""
+    from forge.agents import embalagem as embalagem_mod
+    from forge.agents.embalagem import EmbalagemReprovada
+    from forge.services.qualidade_embalagem import conferir_embalagem
+
+    _monta_run(monkeypatch, tmp_path, aprovado=True)
+    _sem_plano_de_midia(monkeypatch)
+    reprovada = conferir_embalagem(_embalagem_valida().model_copy(update={"fontes": []}))
+
+    def _embalar(*a, **k):
+        raise EmbalagemReprovada(reprovada)
+
+    monkeypatch.setattr(embalagem_mod, "embalar", _embalar)
+
+    assert cli.main(["roteiro", "--tema", "meu tema"]) == 0
+
+    run = next((tmp_path / "runs").iterdir())
+    assert not (run / "embalagem.md").exists()
+    saida = capsys.readouterr().out.strip().splitlines()[-1].strip()
+    assert Path(saida).exists()
+
+
+def test_roteiro_reprovado_nao_gera_embalagem(monkeypatch, tmp_path):
+    from forge.agents import embalagem as embalagem_mod
+
+    _monta_run(monkeypatch, tmp_path, aprovado=False)
+    chamadas = []
+    monkeypatch.setattr(
+        embalagem_mod, "embalar",
+        lambda *a, **k: chamadas.append(1) or _embalagem_valida(),
+    )
+
+    assert cli.main(["roteiro", "--tema", "meu tema"]) == 0
+
+    assert chamadas == []
+    run = next((tmp_path / "runs").iterdir())
+    assert not (run / "embalagem.md").exists()

@@ -13,6 +13,7 @@ class RoteiroState(TypedDict, total=False):
     research_passages: list[PassageEvidence]
     tese: str
     esboco: str
+    eixo: str | None
     roteiro: Roteiro | None
     review: ReviewResult | None
     # --- controle: orquestração, nunca vai para artefato ---

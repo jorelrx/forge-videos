@@ -171,6 +171,53 @@ class TestExecute:
         assert result.current_items == 1
 
 
+def test_item_failure_does_not_stop_other_images(tmp_path):
+    client = FakeComfy(fail_on={"limiar cosmico"})
+    snapshot = _snapshot(tmp_path)
+    executor = _executor(tmp_path, client)
+    result = executor.run(snapshot, lambda **event: None)
+    assert len(client.calls) == 2
+    assert [artifact.item_key for artifact in result.artifacts] == ["i002"]
+    assert result.failure.code == "image_generation_failed"
+    assert result.failure.retriable is True
+
+
+def test_codex_quota_stops_batch_and_preserves_completed_images(tmp_path):
+    from forge.services.codex import CodexUsageLimitError
+
+    class QuotaClient(FakeComfy):
+        def generate(self, prompt, seed=42, *, dest):
+            if prompt == "sala vazia":
+                self.calls.append((prompt, seed, Path(dest)))
+                raise CodexUsageLimitError("Cota Codex esgotada; logs: teste")
+            return super().generate(prompt, seed, dest=dest)
+
+    client = QuotaClient()
+    snapshot = _snapshot(tmp_path, beats=[
+        Beat(id="i001", bloco_id="b001", prompt="limiar cosmico"),
+        Beat(id="i002", bloco_id="b002", prompt="sala vazia"),
+        Beat(id="i003", bloco_id="b003", prompt="nao tentar"),
+    ])
+    settings = _settings(tmp_path).model_copy(update={"image_provider": "codex"})
+    executor = ImageExecutor(client=client, settings=settings)
+    events = []
+    result = executor.run(snapshot, lambda **event: events.append(event))
+
+    assert len(client.calls) == 2
+    assert result.current_items == 1
+    assert result.total_items == 3
+    assert [artifact.item_key for artifact in result.artifacts] == ["i001"]
+    assert (snapshot.run_dir / "video/images/i001.png").is_file()
+    assert result.failure.code == "codex_usage_limit"
+    assert result.failure.failure_class.value == "capacity"
+    assert result.failure.retriable is False
+    assert "cota" in result.failure.recommended_action.lower()
+    assert not result.gate.approved
+    failed = [event for event in events if event["kind"] == "item.failed"]
+    assert failed[0]["payload"]["failure_code"] == "codex_usage_limit"
+    assert not any(event["kind"] == "item.started" and event["payload"]["item_key"] == "i003" for event in events)
+
+
 class TestValidate:
     def test_approves_when_every_beat_has_an_image_at_the_expected_size(self, tmp_path):
         snapshot = _snapshot(tmp_path)
@@ -216,3 +263,123 @@ class TestValidate:
 
         assert gate.approved is False
         assert "image_unreadable" in {finding.code for finding in gate.findings}
+
+
+def test_codex_images_do_not_claim_local_gpu(tmp_path):
+    class ForbiddenBroker:
+        def exclusivo(self, resource):
+            raise AssertionError('Backend remoto não pode tomar GPU')
+
+    settings = _settings(tmp_path).model_copy(update={'image_provider': 'codex'})
+    executor = ImageExecutor(client=FakeComfy(), settings=settings, broker=ForbiddenBroker())
+    result = executor.run(_snapshot(tmp_path), lambda **event: None)
+    assert result.gate.approved
+    assert all(a.metadata['image_provider'] == 'codex' for a in result.artifacts)
+
+
+def test_default_client_follows_selected_backend(tmp_path):
+    from forge.executors.codex_images import CodexImageClient
+    from forge.executors.comfy import ComfyClient
+
+    assert isinstance(ImageExecutor(settings=_settings(tmp_path)).client, ComfyClient)
+    from forge.executors.codex_native_images import NativeCodexImageClient
+    assert isinstance(ImageExecutor(settings=_settings(tmp_path).model_copy(update={'image_provider':'codex'})).client, NativeCodexImageClient)
+    assert isinstance(ImageExecutor(settings=_settings(tmp_path).model_copy(update={'image_provider':'codex', 'codex_transport':'cli'})).client, CodexImageClient)
+
+
+# --- thumbnail: acabamento, nunca motivo para a etapa falhar ---
+
+def _com_embalagem(snapshot: RunSnapshot, *, texto: str = "O aplauso mente") -> None:
+    from forge.domain.embalagem import Embalagem, ThumbnailProposta
+
+    gravar_modelo(
+        snapshot.run_dir / "video" / "embalagem.json",
+        Embalagem(
+            thumbnail=ThumbnailProposta(texto=texto, prompt="lone figure on a stage"),
+            descricao="Abertura.",
+        ),
+    )
+
+
+def _rodar(tmp_path, client, snapshot):
+    executor = _executor(tmp_path, client)
+    plan = executor.prepare(snapshot)
+    result = executor.execute(snapshot, plan, lambda **event: None)
+    return executor, plan, result
+
+
+def test_thumbnail_sai_em_1280x720_quando_ha_embalagem(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _com_embalagem(snapshot)
+
+    executor, plan, result = _rodar(tmp_path, FakeComfy(), snapshot)
+
+    thumbs = [a for a in result.artifacts if a.kind == "thumbnail.jpg"]
+    assert [(a.relative_path, a.mime_type, a.item_key) for a in thumbs] == [
+        ("video/thumbnail.jpg", "image/jpeg", None)
+    ]
+    with Image.open(snapshot.run_dir / "video" / "thumbnail.jpg") as imagem:
+        assert imagem.size == (1280, 720)
+    # A thumbnail não é um beat: não entra na contagem nem no gate de 1024x576.
+    assert result.current_items == 2 and result.total_items == 2
+    gate = executor.validate(snapshot, plan, result)
+    assert gate.approved and gate.findings == []
+
+
+def test_sem_embalagem_nao_ha_thumbnail(tmp_path):
+    client = FakeComfy()
+    snapshot = _snapshot(tmp_path)
+
+    _, _, result = _rodar(tmp_path, client, snapshot)
+
+    assert all(not a.kind.startswith("thumbnail") for a in result.artifacts)
+    assert len(client.calls) == 2
+
+
+def test_falha_na_thumbnail_nao_falha_a_etapa(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _com_embalagem(snapshot)
+    client = FakeComfy(fail_on={"lone figure on a stage"})
+
+    executor, plan, result = _rodar(tmp_path, client, snapshot)
+
+    assert result.failure is None
+    gate = executor.validate(snapshot, plan, result)
+    assert gate.approved
+    assert [f.code for f in gate.findings] == ["thumbnail_ausente"]
+
+
+def test_beat_falho_nao_gasta_geracao_com_thumbnail(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _com_embalagem(snapshot)
+    client = FakeComfy(fail_on={"sala vazia"})
+
+    _, _, result = _rodar(tmp_path, client, snapshot)
+
+    assert result.failure is not None
+    assert "lone figure on a stage" not in [prompt for prompt, _, _ in client.calls]
+
+
+def test_base_da_thumbnail_e_reaproveitada_entre_tentativas(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _com_embalagem(snapshot)
+    client = FakeComfy()
+
+    _rodar(tmp_path, client, snapshot)
+    _rodar(tmp_path, client, snapshot)
+
+    geracoes = [prompt for prompt, _, _ in client.calls if prompt == "lone figure on a stage"]
+    assert len(geracoes) == 1
+
+
+def test_texto_da_thumbnail_entra_no_hash_da_etapa(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    executor = _executor(tmp_path, FakeComfy())
+    sem = executor.prepare(snapshot).input_hash
+    _com_embalagem(snapshot, texto="O aplauso mente")
+    um = executor.prepare(snapshot).input_hash
+    _com_embalagem(snapshot, texto="Outra frase")
+    outro = executor.prepare(snapshot).input_hash
+
+    assert len({sem, um, outro}) == 3
+    assert [item.item_key for item in executor.prepare(snapshot).items] == ["i001", "i002"]

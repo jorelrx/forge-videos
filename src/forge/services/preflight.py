@@ -219,19 +219,64 @@ def check_preflight(
             "Inicie research em C:\\dev\\research",
         )
     )
-    checks.append(
-        _check_service(
-            "lm_studio",
-            f"{settings.lm_studio_base_url}/models",
-            "Inicie LM Studio e carregue um modelo",
+    if settings.provider not in ("codex", "claude"):
+        checks.append(
+            _check_service(
+                "lm_studio",
+                f"{settings.lm_studio_base_url}/models",
+                "Inicie LM Studio e carregue um modelo",
+            )
         )
-    )
-    checks.append(
-        _check_service(
-            "comfyui",
-            f"{settings.comfy_url}/system_stats",
-            "Inicie ComfyUI",
+    if settings.image_provider != "codex":
+        checks.append(
+            _check_service(
+                "comfyui",
+                f"{settings.comfy_url}/system_stats",
+                "Inicie ComfyUI",
+            )
         )
-    )
 
+    if "codex" in (settings.provider, settings.review_provider) or settings.image_provider == "codex":
+        if settings.codex_transport == "native":
+            from forge.services.codex_auth import OAuthCredentials, CodexAuthError
+            try:
+                OAuthCredentials(settings.codex_auth_file).access_token()
+                authenticated = True
+            except CodexAuthError:
+                authenticated = False
+            message = "Credencial OAuth ChatGPT disponível (modelo ainda não consultado)"
+            action = "Execute uv run forge auth codex login"
+        else:
+            try:
+                result = runner(
+                    [settings.codex_bin, "login", "status"], capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", timeout=15,
+                )
+                authenticated = result.returncode == 0 and "logged in using chatgpt" in (result.stdout + result.stderr).lower()
+            except (OSError, subprocess.TimeoutExpired):
+                authenticated = False
+            message = "Sessão ChatGPT via CLI disponível"
+            action = "Execute codex login e entre com sua assinatura ChatGPT"
+        checks.append(PreflightCheck(
+            name="codex", state=PASS if authenticated else FAIL,
+            message=message if authenticated else "Sessão ChatGPT indisponível",
+            action="" if authenticated else action,
+        ))
+    if "claude" in (settings.provider, settings.review_provider):
+        checks.append(_check_claude(settings, runner=runner))
     return PreflightReport(checks=checks)
+
+
+def _check_claude(settings: Settings, *, runner) -> PreflightCheck:
+    """Uma chamada mínima de verdade: `auth status` diz `loggedIn` mesmo com a
+    renovação da sessão já morta (medido nesta máquina)."""
+    from forge.services.claude_cli import ACAO_LOGIN, ClaudeAuthError, ClaudeCLI, ClaudeError
+
+    try:
+        ClaudeCLI(settings, runner=runner).sondar()
+    except ClaudeAuthError as erro:
+        return PreflightCheck(name="claude", state=FAIL, message=str(erro)[:300], action=ACAO_LOGIN)
+    except ClaudeError as erro:
+        return PreflightCheck(name="claude", state=FAIL, message=str(erro)[:300],
+                              action="Confira a instalação do Claude Code e a cota da assinatura")
+    return PreflightCheck(name="claude", state=PASS, message="Sessão Claude respondeu", action="")

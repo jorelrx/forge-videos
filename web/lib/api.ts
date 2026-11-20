@@ -1,4 +1,5 @@
 import type {
+  Artifact,
   CreateVideoRequest,
   CreateVideoResponse,
   RunPage,
@@ -8,6 +9,9 @@ import type {
   ServiceHealth,
   EventPage,
   StageName,
+  PublicacaoRequest,
+  PublicacaoView,
+  YouTubeView,
 } from "./contracts";
 
 const DEFAULT_API_BASE =
@@ -169,6 +173,65 @@ export function createStudioApi(baseUrl = DEFAULT_API_BASE): StudioApi {
 
 export function artifactContentUrl(id: string, baseUrl = DEFAULT_API_BASE): string {
   return endpoint(baseUrl, `/api/artifacts/${encodeURIComponent(id)}/content`);
+}
+
+/**
+ * URL que faz o navegador salvar o arquivo. O painel e a API ficam em portas
+ * diferentes, e entre origens o atributo `download` do link é ignorado: quem
+ * manda salvar é o `Content-Disposition` que a API devolve com `download=1`.
+ */
+export function artifactDownloadUrl(id: string, baseUrl = DEFAULT_API_BASE): string {
+  return `${artifactContentUrl(id, baseUrl)}?download=1`;
+}
+
+/** Artefatos correntes de uma run (`GET /api/runs/{run_id}/artifacts`). */
+export function listRunArtifacts(runId: string, baseUrl = DEFAULT_API_BASE): Promise<Artifact[]> {
+  return request<Artifact[]>(baseUrl, `/api/runs/${encodeURIComponent(runId)}/artifacts`);
+}
+
+/** Estado da publicação no YouTube (`GET /api/runs/{run_id}/publication`). */
+export function getPublication(runId: string, baseUrl = DEFAULT_API_BASE): Promise<PublicacaoView> {
+  return request<PublicacaoView>(baseUrl, `/api/runs/${encodeURIComponent(runId)}/publication`);
+}
+
+/** Inicia ou retoma o envio ao YouTube (`POST /api/runs/{run_id}/publication`, 202). */
+export function publishRun(
+  runId: string,
+  body: PublicacaoRequest,
+  baseUrl = DEFAULT_API_BASE,
+): Promise<PublicacaoView> {
+  return request<PublicacaoView>(baseUrl, `/api/runs/${encodeURIComponent(runId)}/publication`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Contas e canais do YouTube (`GET /api/youtube`). */
+export function getYouTube(baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
+  return request<YouTubeView>(baseUrl, "/api/youtube");
+}
+
+/** Envia o conteúdo do client_secret.json (`POST /api/youtube/client`). */
+export function uploadYouTubeClient(conteudo: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
+  return request<YouTubeView>(baseUrl, "/api/youtube/client", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conteudo }),
+  });
+}
+
+/** Inicia o login do Google (`POST /api/youtube/login`, 202). */
+export function startYouTubeLogin(baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
+  return request<YouTubeView>(baseUrl, "/api/youtube/login", { method: "POST" });
+}
+
+export function setDefaultChannel(id: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
+  return request<YouTubeView>(baseUrl, `/api/youtube/channels/${encodeURIComponent(id)}/default`, { method: "POST" });
+}
+
+export function disconnectChannel(id: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
+  return request<YouTubeView>(baseUrl, `/api/youtube/channels/${encodeURIComponent(id)}/disconnect`, { method: "POST" });
 }
 
 export function studioEventsUrl(runId: string | null, baseUrl = DEFAULT_API_BASE): string {

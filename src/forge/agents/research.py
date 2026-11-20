@@ -17,7 +17,7 @@ from forge.infrastructure.logging import get_logger
 from forge.llms.parsing import MARCADOR_LISTA, _texto
 from forge.llms.model import invoke_structured
 from forge.prompts.loader import load_prompt
-from forge.services.acervo import Acervo, Candidato, Passagem
+from forge.services.acervo import AcervoIndisponivel, Acervo, Candidato, Passagem, fmt_catalogo
 from forge.services.lacunas import registrar_lacuna
 from forge.services.progresso import ProgressoLogger
 from forge.skills.loader import load_skills
@@ -59,6 +59,9 @@ class PassageEvidence(BaseModel):
     title: str
     authors: list[str] = Field(default_factory=list)
     text: str
+    # Endereço público da obra (Project Gutenberg), quando o acervo informa.
+    # Vai para a seção de fontes da descrição do vídeo.
+    url: str = ""
 
 
 class ResearchBundle(BaseModel):
@@ -95,10 +98,13 @@ def pesquisar(
 ) -> ResearchBundle:
     progresso = ProgressoLogger(run_dir) if run_dir else None
 
-    queries = formular_queries(model, tema, pedido)
+    catalogo = _catalogo(acervo)
+    queries = formular_queries(model, tema, pedido, catalogo)
     if progresso:
         progresso.log("research", "queries_formuladas",
-                      prompt=load_prompt("queries").format(tema=tema, pedido=_fmt_pedido(pedido)),
+                      prompt=load_prompt("queries").format(
+                          tema=tema, pedido=_fmt_pedido(pedido), catalogo=catalogo,
+                      ),
                       resultado="\n".join(queries),
                       metadados={"num_queries": len(queries)})
 
@@ -297,8 +303,34 @@ def _fundir(por_query: dict[str, list[Passagem]]) -> list[Passagem]:
     return sorted(por_path.values(), key=lambda p: p.score, reverse=True)
 
 
-def formular_queries(model, tema: str, pedido: str | None = None) -> list[str]:
-    prompt = load_prompt("queries").format(tema=tema, pedido=_fmt_pedido(pedido))
+CATALOGO_INDISPONIVEL = "(catálogo indisponível)"
+
+
+def _catalogo(acervo) -> str:
+    """Catálogo para orientar as queries; nunca impede a pesquisa.
+
+    Sem saber que livros existem e em que idioma estão, o modelo escreve as
+    buscas em português contra um acervo em inglês e alemão, e a busca semântica
+    volta com trechos fora do tema. O catálogo é só orientação: se a rota falhar
+    ou o cliente não a tiver, a pesquisa segue como antes.
+    """
+    livros = getattr(acervo, "livros", None)
+    if livros is None:
+        return CATALOGO_INDISPONIVEL
+    try:
+        return fmt_catalogo(livros())
+    except AcervoIndisponivel as erro:
+        logger.warning("Catálogo indisponível para as queries", error=str(erro))
+        return CATALOGO_INDISPONIVEL
+
+
+def formular_queries(
+    model, tema: str, pedido: str | None = None, catalogo: str | None = None,
+) -> list[str]:
+    prompt = load_prompt("queries").format(
+        tema=tema, pedido=_fmt_pedido(pedido),
+        catalogo=catalogo or CATALOGO_INDISPONIVEL,
+    )
     resp = model.invoke([HumanMessage(content=prompt)])
     queries = _parse_queries(_texto(resp))
     logger.debug("Queries formuladas", queries=queries)
@@ -471,6 +503,7 @@ def _bundle(
             title=p.book_title,
             authors=list(p.authors),
             text=p.text,
+            url=p.url,
         )
         for p in passagens
     ]

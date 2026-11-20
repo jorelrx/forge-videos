@@ -7,6 +7,7 @@ from forge.domain.models import SECOES_NOMES, Fonte, Roteiro, Secao
 from forge.infrastructure.config import Settings
 from forge.infrastructure.logging import get_logger
 from forge.services.storage import _slug
+from forge.services.persistencia import gravar_modelo
 
 logger = get_logger(__name__)
 
@@ -70,8 +71,12 @@ def _render(agente: str, resultado: dict) -> str:
         )
 
     if agente == "plan":
+        # O eixo vai no frontmatter, não como bloco `## Eixo`: um parser antigo
+        # que só conhece Tese e Esboço engoliria o bloco novo dentro do Esboço.
+        eixo = resultado.get("eixo")
+        linha_eixo = f"eixo: {eixo}\n" if eixo else ""
         return (
-            f"---\nagente: plan\n---\n\n## Tese\n\n{resultado['tese']}\n\n"
+            f"---\nagente: plan\n{linha_eixo}---\n\n## Tese\n\n{resultado['tese']}\n\n"
             f"## Esboço\n\n{resultado['esboco']}\n"
         )
 
@@ -102,8 +107,41 @@ def _render(agente: str, resultado: dict) -> str:
 def gravar_artefato(run_dir: Path, agente: str, resultado: dict) -> Path:
     path = run_dir / _nome_arquivo(run_dir, agente)
     path.write_text(_render(agente, resultado), encoding="utf-8")
+    if agente == "write":
+        roteiro = resultado.get("roteiro")
+        if isinstance(roteiro, Roteiro):
+            gravar_modelo(path.with_suffix(".json"), roteiro)
+    if agente == "research" and resultado.get("research_passages") is not None:
+        # As passagens acumuladas, texto incluso. `fontes` não basta para o
+        # --retomar: perde o texto e junta autores por vírgula ("Steiner,
+        # Rudolf"). Sem elas o write da retomada escreve sem acervo.
+        _passagens_path(path).write_text(json.dumps(
+            [_dump(p) for p in resultado["research_passages"]],
+            ensure_ascii=False, indent=2,
+        ), encoding="utf-8")
     logger.debug("Artifact written", agente=agente, path=str(path))
     return path
+
+
+def _passagens_path(research: Path) -> Path:
+    return research.with_suffix(".passages.json")
+
+
+def _dump(passagem) -> dict:
+    return passagem.model_dump() if hasattr(passagem, "model_dump") else dict(passagem)
+
+
+def _ler_passagens(research: Path) -> list | None:
+    origem = _passagens_path(research)
+    if not origem.is_file():
+        return None
+    # Import tardio: o agente de pesquisa depende dos serviços, não o contrário.
+    from forge.agents.research import PassageEvidence
+
+    return [
+        PassageEvidence.model_validate(item)
+        for item in json.loads(origem.read_text(encoding="utf-8"))
+    ]
 
 
 def gravar_bruto(run_dir: Path, agente: str, bruto: str) -> Path:
@@ -141,6 +179,17 @@ def _ler_fontes(texto: str) -> list[Fonte]:
     return []
 
 
+def ler_eixo(texto: str) -> str | None:
+    """Eixo gravado no frontmatter do plano; `None` em runs anteriores ao eixo."""
+    partes = texto.split("---", 2)
+    if len(partes) < 3:
+        return None
+    for linha in partes[1].splitlines():
+        if linha.startswith("eixo:"):
+            return linha.removeprefix("eixo:").strip() or None
+    return None
+
+
 def _ultimo(run_dir: Path, agente: str) -> Path | None:
     """Última passagem do agente, por número de rodada — não por ordem alfabética.
 
@@ -175,18 +224,30 @@ def carregar_run(run_dir: Path) -> tuple[dict, str]:
         elif agente == "research":
             conteudo["research_notes"] = _corpo(texto).removeprefix("## Brief").strip()
             conteudo["fontes"] = _ler_fontes(texto)
+            passagens = _ler_passagens(path)
+            if passagens is not None:
+                conteudo["research_passages"] = passagens
         elif agente == "plan":
             secoes = _parse_blocos(_corpo(texto), {"Tese", "Esboço"})
             conteudo["tese"] = secoes.get("Tese", "")
             conteudo["esboco"] = secoes.get("Esboço", "")
+            conteudo["eixo"] = ler_eixo(texto)
         elif agente == "write":
-            secoes = _parse_blocos(_corpo(texto), set(SECOES_NOMES))
-            conteudo["roteiro"] = Roteiro(
-                tema=conteudo.get("tema", ""),
-                tese=conteudo.get("tese", ""),
-                secoes=[Secao(nome=k, conteudo=v) for k, v in secoes.items()],
-                fontes=conteudo.get("fontes", []),
-            )
+            estruturado = path.with_suffix(".json")
+            if estruturado.is_file():
+                salvo = Roteiro.model_validate_json(estruturado.read_text(encoding="utf-8"))
+                conteudo["roteiro"] = salvo.model_copy(update={
+                    "tema": conteudo.get("tema", salvo.tema),
+                    "tese": conteudo.get("tese", salvo.tese),
+                })
+            else:
+                secoes = _parse_blocos(_corpo(texto), set(SECOES_NOMES))
+                conteudo["roteiro"] = Roteiro(
+                    tema=conteudo.get("tema", ""),
+                    tese=conteudo.get("tese", ""),
+                    secoes=[Secao(nome=k, conteudo=v) for k, v in secoes.items()],
+                    fontes=conteudo.get("fontes", []),
+                )
     return conteudo, "review"
 
 

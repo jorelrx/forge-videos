@@ -5,12 +5,11 @@ import { NewVideoForm } from "./new-video-form";
 import { ActiveRun } from "./active-run";
 import { Queue } from "./queue";
 import { History } from "./history";
-import { LiveLog } from "./live-log";
-import { ArtifactPreview } from "./artifact-preview";
-import { FailureDrawer } from "./failure-drawer";
+import { RunOutputs } from "./run-outputs";
+import { Publication } from "./publication";
 import { useDashboard, type DashboardState } from "../hooks/use-dashboard";
 import { createStudioApi, type StudioApi } from "../lib/api";
-import type { StudioEvent, RunSummary, StageName } from "../lib/contracts";
+import type { Artifact, StudioEvent, StageName } from "../lib/contracts";
 import { serviceStatusLabel, stageStatus } from "../lib/stage-map";
 
 export interface DashboardProps {
@@ -20,7 +19,11 @@ export interface DashboardProps {
 
 export interface DashboardViewProps {
   state: DashboardState;
+  /** Injetável para teste; padrão é `GET /api/runs/{id}/artifacts`. */
+  loadArtifacts?: (runId: string) => Promise<Artifact[]>;
 }
+
+type DashboardScreen = "dashboard" | "publicacao";
 
 const defaultApi = createStudioApi();
 
@@ -28,6 +31,7 @@ const SIDEBAR_NAV = [
   { id: "nav-dashboard", label: "Dashboard", ico: "◫", default: true },
   { id: "nav-queue", label: "Fila", ico: "≡" },
   { id: "nav-runs", label: "Runs", ico: "◷" },
+  { id: "nav-publicacao", label: "Publicação", ico: "⇪" },
   { id: "nav-services", label: "Serviços", ico: "⌁" },
   { id: "nav-config", label: "Configuração", ico: "⚙" },
 ] as const;
@@ -144,12 +148,22 @@ function ServiceStripItem({
   );
 }
 
+/** Itens da navegação que trocam de tela; os demais ainda são só rótulo. */
+const NAV_SCREENS: Partial<Record<string, DashboardScreen>> = {
+  "nav-dashboard": "dashboard",
+  "nav-publicacao": "publicacao",
+};
+
 function Sidebar({
   queueCount,
   onNewRun,
+  screen,
+  onNavigate,
 }: {
   queueCount: number;
   onNewRun: () => void;
+  screen: DashboardScreen;
+  onNavigate: (screen: DashboardScreen) => void;
 }) {
   return (
     <aside className="sidebar" aria-label="Navegação">
@@ -169,7 +183,9 @@ function Sidebar({
 
       <div className="section-label">Operação</div>
       {SIDEBAR_NAV.map((item) => {
-        const isActive = item.id === "nav-dashboard";
+        const target = NAV_SCREENS[item.id];
+        const isActive = target === screen;
+        const navigate = () => { if (target) onNavigate(target); };
         return (
           <div
             key={item.id}
@@ -177,6 +193,13 @@ function Sidebar({
             role="button"
             tabIndex={0}
             aria-current={isActive ? "page" : undefined}
+            onClick={navigate}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                navigate();
+              }
+            }}
           >
             <span className="nav-ico">{item.ico}</span>
             {item.label}
@@ -204,9 +227,8 @@ function Sidebar({
   );
 }
 
-function Dock({ events, artifact, error }: {
+function Dock({ events, error }: {
   events: StudioEvent[];
-  artifact?: { relative_path: string; mime_type: string } | null;
   error?: Error | null;
 }) {
   const hasFailures = error != null;
@@ -234,26 +256,6 @@ function Dock({ events, artifact, error }: {
         )}
       </div>
 
-      <div className="artifact-card" aria-label="Artefato mais recente">
-        <h3>Artefato mais recente</h3>
-        {artifact ? (
-          <>
-            <div className="preview-box" aria-hidden="true">
-              <div className="preview-person" />
-              <div className="preview-caption">
-                {artifact.relative_path.split("/").pop()?.replace(/\.[^.]+$/, "") || "Artefato"}
-              </div>
-            </div>
-            <div className="artifact-meta">
-              <span>{artifact.relative_path}</span>
-              <span>{artifact.mime_type}</span>
-            </div>
-          </>
-        ) : (
-          <div className="empty-state">Nenhum artefato ainda</div>
-        )}
-      </div>
-
       {hasFailures && (
         <div className="failure-box" role="alert" aria-label="Falhas recentes">
           <b>{error!.message || "Falha desconhecida"}</b>
@@ -269,9 +271,11 @@ function Dock({ events, artifact, error }: {
   );
 }
 
-export function DashboardView({ state }: DashboardViewProps) {
+export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
   const focusRun = state.focusRun;
   const formRef = React.useRef<HTMLFormElement>(null);
+  const [screen, setScreen] = React.useState<DashboardScreen>("dashboard");
+  const [focusFormPending, setFocusFormPending] = React.useState(false);
   const services = state.services ?? {};
   const events = state.events ?? [];
   const queue = state.queue ?? [];
@@ -334,8 +338,33 @@ export function DashboardView({ state }: DashboardViewProps) {
   }));
 
   const sidebar = (
-    <Sidebar queueCount={queueItemCount} onNewRun={focusNewVideoForm} />
+    <Sidebar
+      queueCount={queueItemCount}
+      onNewRun={requestNewVideo}
+      screen={screen}
+      onNavigate={setScreen}
+    />
   );
+
+  // O formulário só existe na tela de produção: vindo de outra tela, troca
+  // primeiro e foca depois que ele montar.
+  React.useEffect(() => {
+    if (!focusFormPending || screen !== "dashboard") return;
+    setFocusFormPending(false);
+    const field = formRef.current?.querySelector<HTMLInputElement>("#tema")
+      ?? document.getElementById("tema");
+    field?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    field?.focus();
+  }, [focusFormPending, screen]);
+
+  function requestNewVideo() {
+    if (screen === "dashboard") {
+      focusNewVideoForm();
+      return;
+    }
+    setScreen("dashboard");
+    setFocusFormPending(true);
+  }
 
   function focusNewVideoForm() {
     const form = formRef.current;
@@ -419,6 +448,8 @@ export function DashboardView({ state }: DashboardViewProps) {
             ))}
           </div>
 
+          <RunOutputs key={focusRun.run.id} run={focusRun} />
+
           <div className="run-actions">
             {focusStatus === "pausing" && (
               <span className="safe-note">Pausa aplicada após o bloco atual · zero artefato parcial</span>
@@ -466,7 +497,9 @@ export function DashboardView({ state }: DashboardViewProps) {
           </div>
         </section>
       ) : (
-        <p className="empty-state">Nenhuma run ativa.</p>
+        <p className="empty-state">{state.selectedRunId
+          ? error ? "A execução selecionada não pôde ser carregada." : "Abrindo execução selecionada…"
+          : "Nenhuma run ativa."}</p>
       )}
 
       <div className="columns">
@@ -483,7 +516,7 @@ export function DashboardView({ state }: DashboardViewProps) {
             <h3>Runs recentes</h3>
             <span>Ver todos →</span>
           </div>
-          <History runs={runs} />
+          <History runs={runs} selectedRunId={state.selectedRunId} onSelectRun={state.selectRun} />
         </section>
       </div>
     </main>
@@ -492,7 +525,6 @@ export function DashboardView({ state }: DashboardViewProps) {
   const dockContent = (
     <Dock
       events={events}
-      artifact={focusRun?.artifacts?.[0] ?? null}
       error={error}
     />
   );
@@ -500,7 +532,9 @@ export function DashboardView({ state }: DashboardViewProps) {
   return (
     <div className="app">
       {sidebar}
-      {mainContent}
+      {screen === "publicacao"
+        ? <Publication runs={runs} loadArtifacts={loadArtifacts} />
+        : mainContent}
       {dockContent}
     </div>
   );

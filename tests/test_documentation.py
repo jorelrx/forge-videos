@@ -19,6 +19,8 @@ COMANDOS = (
     "uv run forge-import-runs",
     "FORGE_RUN_INTEGRATION=1",
     "FORGE_RUN_STUDIO_E2E=1",
+    "uv run forge auth youtube login",
+    "uv run forge publicar",
 )
 
 CAMINHOS = (
@@ -59,6 +61,8 @@ def test_exemplo_de_env_cobre_as_variaveis_do_studio() -> None:
         "FORGE_STUDIO_WORKER_POLL_SECONDS",
         "FORGE_TTS_BINARY",
         "FORGE_COMFY_DIR",
+        "FORGE_YOUTUBE_CLIENT_SECRETS",
+        "FORGE_YOUTUBE_CANAIS_DIR",
     ):
         assert variavel in exemplo, f"variável ausente em .env.example: {variavel}"
 

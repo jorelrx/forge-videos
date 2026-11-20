@@ -41,6 +41,32 @@ class Passagem(BaseModel):
     score: float = 0.0
 
 
+class Livro(BaseModel):
+    """Um livro do catálogo (`GET /books`). Campos extras são ignorados."""
+
+    id: int
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    subjects: list[str] = Field(default_factory=list)
+
+
+def fmt_catalogo(livros: list[Livro]) -> str:
+    """Uma linha por livro: `título — autores [idiomas]`.
+
+    O idioma vai junto porque a busca é semântica: quem escreve a query precisa
+    saber em que língua o livro está.
+    """
+    if not livros:
+        return "(catálogo vazio)"
+    return "\n".join(
+        f"- {livro.title}"
+        + (f" — {', '.join(livro.authors)}" if livro.authors else "")
+        + (f" [{', '.join(livro.languages)}]" if livro.languages else "")
+        for livro in livros
+    )
+
+
 class Candidato(BaseModel):
     """Espelha `CandidateOut` do `/discover`: obra sugerida, ainda não ingerida."""
 
@@ -102,6 +128,11 @@ class Acervo:
         passagens = [Passagem(**p) for p in dados.get("passages", [])]
         logger.info("Acervo search", query=q, passagens=len(passagens))
         return passagens
+
+    def livros(self) -> list[Livro]:
+        """O catálogo inteiro: o que o canal tem de fonte para escolher tema."""
+        dados = self._get("/books", {})
+        return [Livro(**livro) for livro in dados.get("books", [])]
 
     def descobrir(self, q: str, *, limite: int = 5) -> list[Candidato]:
         """Obras que o acervo *poderia* ter mas não tem.

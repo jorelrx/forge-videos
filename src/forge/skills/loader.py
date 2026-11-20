@@ -10,6 +10,15 @@ logger = get_logger(__name__)
 _FRONTMATTER = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n(.*)\Z", re.DOTALL)
 _SECAO = re.compile(r"^#{2,}\s*(.+?)\s*$", re.MULTILINE)
 
+# Os quatro eixos editoriais do canal Conquistas Cósmicas. Cada um tem um
+# arquivo de referência com filósofos, conceitos e — o que mais importa para o
+# revisor — as atribuições falsas comuns daquele território.
+EIXOS: tuple[str, ...] = (
+    "estoicismo", "autoconhecimento", "niilismo-absurdo", "etica-digital-ia",
+)
+SEM_EIXO = "(sem referência de eixo)"
+_FOCO = "Foco do canal neste eixo:"
+
 SECAO_EXCLUSIVA = "procedimento"
 SECOES_VALIDAS = {"criterios", "anti-padroes", "procedimento"}
 
@@ -67,6 +76,37 @@ def carregar(nome: str) -> Skill:
         dominio=meta.get("dominio", "false").lower() == "true",
         secoes=_parse_secoes(m.group(2)),
     )
+
+
+def _referencia(eixo: str) -> str:
+    recurso = files("forge.skills") / "conquistas-cosmicas" / "references" / f"{eixo}.md"
+    return recurso.read_text(encoding="utf-8")
+
+
+def carregar_eixo(eixo: str | None) -> str:
+    """Referência do eixo, ou um marcador quando não há eixo.
+
+    A referência orienta a escrita e alerta sobre atribuições falsas; não é
+    evidência — evidência é só a passagem do acervo. Eixo desconhecido cai no
+    marcador em vez de levantar: o eixo vem do modelo, e um valor torto não
+    pode derrubar um roteiro que segue válido sem a referência.
+    """
+    if eixo not in EIXOS:
+        return SEM_EIXO
+    return _referencia(eixo)
+
+
+def resumo_eixos() -> str:
+    """Uma linha por eixo com o foco declarado na referência."""
+    linhas = []
+    for eixo in EIXOS:
+        foco = next(
+            (linha.removeprefix(_FOCO).strip()
+             for linha in _referencia(eixo).splitlines() if linha.startswith(_FOCO)),
+            "",
+        )
+        linhas.append(f"- {eixo}: {foco}")
+    return "\n".join(linhas)
 
 
 def load_skills(nomes: list[str], agente: str) -> str:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from forge.domain.execucao import RunSnapshot
 from forge.domain.midia import Beat, BeatProposto, BeatsDaSecao, PlanoMidia
 from forge.domain.models import Roteiro, Secao
@@ -9,6 +11,33 @@ from forge.domain.operacao import StageName
 from forge.executors.plano_midia import MediaPlanExecutor, hash_json
 from forge.infrastructure.config import Settings
 from forge.services.persistencia import carregar_modelo, gravar_modelo
+
+
+@pytest.fixture(autouse=True)
+def embalagem_pronta(monkeypatch):
+    """Estes testes são do plano de mídia; a embalagem tem arquivo próprio.
+
+    A etapa embala antes de planejar a mídia. Sem esta troca, cada teste daqui
+    teria de roteirizar também a proposta de embalagem e as citações.
+    """
+    from forge.domain.embalagem import (
+        Capitulo, Embalagem, ThumbnailProposta, TituloProposto,
+    )
+
+    pronta = Embalagem(
+        titulos=[TituloProposto(texto=f"Título {n}") for n in (1, 2, 3)],
+        thumbnail=ThumbnailProposta(texto="Texto", prompt="p"),
+        descricao="Abertura.",
+        capitulos=[
+            Capitulo(secao=f"S{n}", titulo=f"Parte {n}", inicio_segundos=n * 30)
+            for n in range(3)
+        ],
+        comentario_fixado="E você?",
+        fontes=["Obra"],
+    )
+    monkeypatch.setattr(
+        "forge.executors.plano_midia.embalar", lambda *args, **kwargs: pronta,
+    )
 
 
 def _snapshot(tmp_path: Path) -> RunSnapshot:

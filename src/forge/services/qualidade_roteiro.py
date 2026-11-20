@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
-from statistics import median
 from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,6 +51,29 @@ _ROBOT_LABEL = re.compile(
     r"(?im)(?:^\s*(?:narra[cç][aã]o|cena|imagem|visual|voz|b[- ]?roll|sfx)\s*:\s*|\[(?:narra[cç][aã]o|cena|imagem|visual|voz)\])"
 )
 _SENTENCE = re.compile(r"[^.!?]+[.!?]?(?=\s|$)", re.UNICODE)
+
+# Um vídeo abaixo de ~10 minutos não sustenta o formato do canal nem o anúncio
+# no meio; acima de ~19 a retenção média cai. O piso é grave porque a soma dos
+# pisos por seção (60% de cada mínimo) deixaria passar um roteiro de 960 palavras.
+PALAVRAS_TOTAL_MINIMO = 1500
+PALAVRAS_TOTAL_AVISO = 2800
+
+# Os primeiros segundos decidem a retenção: saudação e anúncio do tema são o
+# ponto em que o espectador sai. Só olha a abertura — "hoje" no meio do Gancho
+# é narração normal.
+_PREAMBULO = re.compile(
+    r"^\W*(?:ol[áa]\b|oi\b|bem[- ]vind|sejam? bem|neste v[íi]deo|"
+    r"hoje (?:vamos|eu vou|a gente vai|n[óo]s vamos)|antes de come[çc]ar|"
+    r"fala,? (?:galera|pessoal))",
+    re.IGNORECASE,
+)
+# Pedido de inscrição no meio do vídeo quebra o tom do canal. No Fecho um
+# convite é aceito; fora dele vira aviso para o revisor.
+_CTA_AGRESSIVO = re.compile(
+    r"inscreva-se|se inscrev|deixe (?:o |seu )?like|ative o sininho|"
+    r"curta (?:o|este) v[íi]deo|compartilhe (?:o|este) v[íi]deo",
+    re.IGNORECASE,
+)
 
 
 def _termina_com_pergunta(texto: str) -> bool:
@@ -170,15 +192,50 @@ def conferir_secao(
                 ))
         if nome != "Gancho":
             sources = list(passages or [])
-            anchors = []
-            for source in sources:
-                title, authors = _source_fields(source)
-                anchors.extend([title, *authors])
-            lowered = texto.casefold()
-            if not anchors or not any(anchor.strip().casefold() in lowered for anchor in anchors if anchor.strip()):
-                findings.append(_finding(
-                    "sem_citacao", "Seção factual sem âncora de autor ou título", section=nome,
-                ))
+            if isinstance(secao, Secao) and secao.blocos:
+                caminhos = {
+                    source.get("path") if isinstance(source, Mapping) else getattr(source, "path", None)
+                    for source in sources
+                }
+                citados = {path for bloco in secao.blocos for path in bloco.referencias}
+                if not citados.intersection(caminhos):
+                    findings.append(_finding(
+                        "sem_referencia_estruturada",
+                        "Seção factual sem referência estruturada a uma passagem do acervo",
+                        section=nome,
+                    ))
+            else:
+                # Legacy scripts keep their original author/title anchor rule;
+                # inline path markers are not promoted into trusted metadata.
+                anchors = []
+                for source in sources:
+                    title, authors = _source_fields(source)
+                    anchors.extend([title, *authors])
+                    path = source.get("path") if isinstance(source, Mapping) else getattr(source, "path", None)
+                    for author in authors:
+                        parts = [part.strip() for part in author.split(",")]
+                        if len(parts) == 2 and all(parts):
+                            anchors.append(f"{parts[1]} {parts[0]}")
+                            if path and f"[{path}]" in texto and re.search(
+                                rf"(?<!\w){re.escape(parts[0])}(?!\w)", texto, re.IGNORECASE,
+                            ):
+                                anchors.append(parts[0])
+                lowered = texto.casefold()
+                if not anchors or not any(anchor.strip().casefold() in lowered for anchor in anchors if anchor.strip()):
+                    findings.append(_finding(
+                        "sem_citacao", "Seção factual sem âncora de autor ou título", section=nome,
+                    ))
+        if nome == "Gancho" and _PREAMBULO.search(texto):
+            findings.append(_finding(
+                "gancho_com_preambulo",
+                "Gancho abre com saudação ou anúncio do tema em vez de tensão",
+                section=nome,
+            ))
+        if nome != "Fecho" and _CTA_AGRESSIVO.search(texto):
+            findings.append(_finding(
+                "cta_agressivo", "Pedido de inscrição ou like fora do Fecho",
+                section=nome, severity="aviso",
+            ))
         if nome == "Espelho" and not _termina_com_pergunta(texto):
             findings.append(_finding(
                 "espelho_sem_pergunta", "Espelho precisa terminar abrindo uma pergunta ao público",
@@ -223,28 +280,24 @@ def avaliar_roteiro(
         result = conferir_secao(section.nome, section, _section_sources(section, sources))
         findings.extend(result.findings)
         metrics["robot_labels"] += result.metrics.get("robot_labels", 0)
-    lengths = [_words(section.conteudo) for section in model.secoes if section.nome in valid_names]
-    counts = [len(words) for words in lengths if words]
-    if len(counts) >= 3:
-        typical = float(median(counts))
-        if typical:
-            for section, words in zip(
-                (item for item in model.secoes if item.nome in valid_names), lengths
-            ):
-                deviation = abs(len(words) - typical) / typical
-                # One section can already have a more actionable grave defect
-                # (e.g. a 40-word sentence).  Keep the report focused and do
-                # not count the same outlier twice; isolated size drift still
-                # gets its own blocking finding.
-                has_grave = any(
-                    item.serious and item.section == section.nome
-                    for item in findings
-                )
-                if deviation > 0.45 and not has_grave:
-                    findings.append(_finding(
-                        "tamanho_desviante", "Tamanho da seção destoa do conjunto narrativo",
-                        section=section.nome, desvio=round(deviation, 3),
-                    ))
+    total = sum(
+        len(_words(section.conteudo)) for section in model.secoes
+        if section.nome in valid_names
+    )
+    metrics["palavras_total"] = total
+    # Só com as nove seções presentes: sem elas o achado de estrutura já diz
+    # tudo, e "roteiro curto" em cima seria ruído.
+    if names == expected:
+        if total < PALAVRAS_TOTAL_MINIMO:
+            findings.append(_finding(
+                "roteiro_curto", "Roteiro abaixo da duração mínima do canal",
+                palavras=total, minimo=PALAVRAS_TOTAL_MINIMO,
+            ))
+        elif total > PALAVRAS_TOTAL_AVISO:
+            findings.append(_finding(
+                "roteiro_longo", "Roteiro acima da duração recomendada",
+                severity="aviso", palavras=total, maximo=PALAVRAS_TOTAL_AVISO,
+            ))
     labels = sum(len(_ROBOT_LABEL.findall(section.conteudo)) for section in model.secoes)
     metrics["robot_labels"] = labels
     openings = [(section.nome, _opening(section.conteudo)) for section in model.secoes if _opening(section.conteudo)]

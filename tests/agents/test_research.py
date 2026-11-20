@@ -504,3 +504,73 @@ def test_pool_pequeno_reprovado_inteiro_continua_sendo_lacuna(scripted, acervo_f
     assert fontes == []
     assert "Lacuna no acervo" in brief
     assert s.gaps_file.read_text(encoding="utf-8").splitlines() == ["q"]
+
+
+# --- as queries sabem o que há no acervo ---
+#
+# Na primeira run real do canal as queries saíram em português contra livros em
+# inglês: o juiz reprovou as 39 passagens como fora do tema, e o livro que o
+# seletor de tema tinha achado (Dao De Jing) nunca voltou da busca.
+
+class _Gravador:
+    """Modelo que guarda o prompt recebido e devolve uma query fixa."""
+
+    def __init__(self, resposta="uma busca"):
+        self.prompts = []
+        self.resposta = resposta
+
+    def invoke(self, messages):
+        from langchain_core.messages import AIMessage
+
+        self.prompts.append(messages[0].content)
+        return AIMessage(content=self.resposta)
+
+
+def test_queries_recebem_o_catalogo_do_acervo(acervo_fake):
+    from forge.services.acervo import Livro
+
+    acervo = acervo_fake(livros=[
+        Livro(id=49965, title="Dao De Jing", authors=["Laozi"], languages=["en", "zh"]),
+        Livro(id=7205, title="Also sprach Zarathustra", languages=["de"]),
+    ])
+    model = _Gravador()
+
+    pesquisar(model, "controle e cansaço", acervo)
+
+    assert "Dao De Jing — Laozi [en, zh]" in model.prompts[0]
+    assert "Also sprach Zarathustra [de]" in model.prompts[0]
+    assert "idioma" in model.prompts[0].casefold()
+
+
+def test_catalogo_indisponivel_nao_impede_a_pesquisa(acervo_fake):
+    """O catálogo só melhora as queries; sem ele a pesquisa segue como antes."""
+    from forge.services.acervo import AcervoIndisponivel
+
+    acervo = acervo_fake(por_query={"uma busca": [_passagem("p1", 0.5)]})
+
+    def _fora():
+        raise AcervoIndisponivel("acervo não respondeu em /books")
+
+    acervo.livros = _fora
+    model = _Gravador()
+
+    bundle = pesquisar(model, "controle e cansaço", acervo)
+
+    assert acervo.chamadas == ["uma busca"]
+    assert "(catálogo indisponível)" in model.prompts[0]
+    assert bundle.passage_count == 1
+
+
+def test_acervo_sem_catalogo_nao_impede_a_pesquisa():
+    """Dublês antigos de acervo só têm `buscar` e `descobrir`."""
+
+    class SoBusca:
+        def buscar(self, q, **kwargs):
+            return [_passagem("p1", 0.5)]
+
+        def descobrir(self, q, **kwargs):
+            return []
+
+    bundle = pesquisar(_Gravador(), "tema", SoBusca())
+
+    assert bundle.passage_count == 1

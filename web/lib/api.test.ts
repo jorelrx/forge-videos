@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createStudioApi } from "./api";
+import { createStudioApi, listRunArtifacts } from "./api";
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -48,6 +48,19 @@ describe("createStudioApi", () => {
           "Idempotency-Key": "pause-run-1-click-1",
         }),
       }),
+    );
+  });
+
+  it("lista os artefatos correntes de uma run pela rota existente", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ id: "a-1", kind: "embalagem" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listRunArtifacts("run 1", "http://127.0.0.1:8765/")).resolves.toEqual([
+      { id: "a-1", kind: "embalagem" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/api/runs/run%201/artifacts",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 });

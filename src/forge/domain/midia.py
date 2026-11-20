@@ -5,6 +5,7 @@ execução — nenhuma chamada de modelo acontece na fase de GPU.
 """
 
 from pydantic import BaseModel, Field
+from forge.domain.models import CitacaoLiteral
 
 
 class BlocoNarracao(BaseModel):
@@ -13,6 +14,9 @@ class BlocoNarracao(BaseModel):
     id: str
     secao: str
     texto: str
+    referencias: list[str] = Field(default_factory=list)
+    citacoes_literais: list[CitacaoLiteral] = Field(default_factory=list)
+    referencias_legadas: list[str] = Field(default_factory=list)
 
 
 class Beat(BaseModel):

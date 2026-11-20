@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -117,7 +119,8 @@ def _missing_output(item_key: str, detail: str) -> AudioOutcome:
 
 
 def _map_manifest_outputs(
-    items: Sequence[AudioRequest], output_dir: Path, manifest_path: Path
+    items: Sequence[AudioRequest], output_dir: Path, manifest_path: Path,
+    destination_dir: Path,
 ) -> list[AudioOutcome]:
     """Traduz o manifesto do batch em resultados por item.
 
@@ -144,14 +147,58 @@ def _map_manifest_outputs(
             continue
         nome = str((entradas[index] or {}).get("id") or "")
         caminho = output_dir / f"{nome}.wav"
-        if not nome or not caminho.is_file():
+        if not re.fullmatch(r"line_[0-9]+", nome) or not caminho.is_file():
             outcomes.append(
                 _missing_output(
                     item.item_key, f"arquivo declarado no manifesto ausente: {nome!r}"
                 )
             )
             continue
-        outcomes.append(AudioOutcome.succeeded(item.item_key, caminho))
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", item.item_key):
+            outcomes.append(_missing_output(item.item_key, "identificador de bloco inválido"))
+            continue
+        destination = destination_dir / f"{item.item_key}.wav"
+        shutil.copyfile(caminho, destination)
+        outcomes.append(AudioOutcome.succeeded(item.item_key, destination))
+    return outcomes
+
+
+def _map_partial_outputs(
+    items: Sequence[AudioRequest], output_dir: Path, destination_dir: Path,
+    *, stderr: str, exit_code: int,
+) -> list[AudioOutcome]:
+    """Keep complete line WAVs from a failed batch; leave only unfinished items failed."""
+    outcomes: list[AudioOutcome] = []
+    for index, item in enumerate(items, start=1):
+        source = output_dir / f"line_{index}.wav"
+        # A failed singleton is the failing item itself, so never promote its
+        # possible partial output. In a failed multi-item batch, valid WAVs
+        # already written for earlier lines remain reusable.
+        complete = False
+        try:
+            with wave.open(str(source), "rb") as wav_file:
+                frames = wav_file.getnframes()
+                expected_bytes = frames * wav_file.getnchannels() * wav_file.getsampwidth()
+                complete = (
+                    len(items) > 1
+                    and frames > 0
+                    and len(wav_file.readframes(frames)) == expected_bytes
+                )
+        except (OSError, EOFError, wave.Error):
+            complete = False
+
+        if complete and re.fullmatch(r"[A-Za-z0-9_-]+", item.item_key):
+            destination = destination_dir / f"{item.item_key}.wav"
+            shutil.copyfile(source, destination)
+            outcomes.append(AudioOutcome.succeeded(item.item_key, destination))
+            continue
+
+        failure = classify_audio_failure(
+            stderr, exit_code=exit_code, item_key=item.item_key,
+        )
+        outcomes.append(AudioOutcome(
+            item_key=item.item_key, failure=failure, stderr=_stderr_tail(stderr),
+        ))
     return outcomes
 
 
@@ -172,6 +219,7 @@ class AudioGenerateClient:
         *,
         seed: int | None = None,
         manifest_path: Path | None = None,
+        backend: str | None = None,
     ) -> list[str]:
         # Contrato real do audiocpp_cli: `--task` e `--family` são obrigatórios,
         # a referência de voz é `--voice-ref` e a saída é `--out-dir`. As formas
@@ -182,8 +230,9 @@ class AudioGenerateClient:
             "--task", "tts",
             "--family", self.settings.tts_family,
             "--model", str(self.settings.resolved_tts_model),
-            "--backend", self.settings.tts_backend,
+            "--backend", backend or self.settings.tts_backend,
             "--voice-ref", str(self.settings.resolved_tts_voice_reference),
+            "--reference-text", self.settings.tts_reference_text,
             "--batch-text-file", str(batch_text_file),
             "--out-dir", str(output_dir),
             "--seed", str(self.settings.tts_seed if seed is None else seed),
@@ -197,25 +246,29 @@ class AudioGenerateClient:
         return _EMOTION_TAG.sub("", value).strip()
 
     def synthesize_batch(
-        self, items: Sequence[AudioRequest], output_dir: Path
+        self, items: Sequence[AudioRequest], output_dir: Path, *,
+        backend: str | None = None,
     ) -> list[AudioOutcome]:
         if not items:
             return []
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".jsonl", prefix="tts-batch-",
+            mode="w", encoding="utf-8", suffix=".txt", prefix="tts-batch-",
             dir=output_dir, delete=False,
         ) as source:
             for item in items:
-                source.write(json.dumps(
-                    {"id": item.item_key, "text": self._clean_text(item.text)},
-                    ensure_ascii=False,
-                ) + "\n")
+                # O CLI trata cada linha como fala, não como JSON.
+                source.write(self._clean_text(item.text).replace("\r", " ").replace("\n", " ") + "\n")
             batch_text_file = Path(source.name)
         manifest_path = batch_text_file.with_suffix(".manifest.json")
+        # O CLI reinicia os nomes line_1, line_2 em cada chamada. Saídas cruas
+        # ficam isoladas; só os WAVs canônicos b001, b002 vão para a run.
+        raw_dir = output_dir / ".batches" / batch_text_file.stem
+        raw_dir.mkdir(parents=True, exist_ok=True)
         argv = self.build_argv(
-            batch_text_file, output_dir, seed=items[0].seed, manifest_path=manifest_path
+            batch_text_file, raw_dir, seed=items[0].seed, manifest_path=manifest_path,
+            backend=backend,
         )
         timeout = min(
             self.settings.tts_batch_timeout,
@@ -233,9 +286,14 @@ class AudioGenerateClient:
                 timeout=timeout,
             )
             stderr = _stderr_tail(getattr(completed, "stderr", ""))
+            batch_text_file.with_suffix(".stderr.log").write_text(stderr, encoding="utf-8")
             exit_code = int(getattr(completed, "returncode", 1))
             if exit_code == 0:
-                return _map_manifest_outputs(items, output_dir, manifest_path)
+                return _map_manifest_outputs(items, raw_dir, manifest_path, output_dir)
+            if "reached max_tokens before EOC" in stderr:
+                return _map_partial_outputs(
+                    items, raw_dir, output_dir, stderr=stderr, exit_code=exit_code,
+                )
         except (OSError, subprocess.SubprocessError) as error:
             stderr = _stderr_tail(error)
         return [

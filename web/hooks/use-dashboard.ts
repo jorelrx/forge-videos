@@ -14,6 +14,8 @@ export interface DashboardState {
   queue: RunSummary[];
   runs: RunSummary[];
   focusRun: RunView | null;
+  selectedRunId: string | null;
+  selectRun(id: string): Promise<void>;
   services: Record<string, ServiceHealth>;
   events: StudioEvent[];
   connection: StudioEventsState["connection"];
@@ -34,6 +36,8 @@ export function useDashboard(
   const [queue, setQueue] = useState<RunSummary[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [focusRun, setFocusRun] = useState<RunView | null>(null);
+  const [selectedRunIdState, setSelectedRunIdState] = useState<string | null>(null);
+  const selectedRunId = useRef<string | null>(null);
   const [services, setServices] = useState<Record<string, ServiceHealth>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -87,21 +91,27 @@ export function useDashboard(
         if (runsResult.status === "fulfilled") {
           const page = runsResult.value;
           setRuns(page.items);
-          const focus =
-            page.items.find((item) =>
-              ["preparing", "running", "pausing", "validating"].includes(item.run.status),
-            ) ??
-            page.items.find((item) =>
-              ["paused", "failed", "interrupted"].includes(item.run.status),
-            ) ??
-            null;
+          const focus = selectedRunId.current
+            ? { run: { id: selectedRunId.current } }
+            : page.items.find((item) =>
+                ["preparing", "running", "pausing", "validating"].includes(item.run.status),
+              ) ??
+              page.items.find((item) =>
+                ["paused", "failed", "interrupted"].includes(item.run.status),
+              ) ??
+              page.items[0] ??
+              null;
           if (focus) {
             try {
-              setFocusRun(await api.getRun(focus.run.id));
+              const detail = await api.getRun(focus.run.id);
+              selectedRunId.current = detail.run.id;
+              setSelectedRunIdState(detail.run.id);
+              setFocusRun(detail);
             } catch (reason) {
+              if (!selectedRunId.current) setFocusRun(null);
               failure ??= reason;
             }
-          } else {
+          } else if (!selectedRunId.current) {
             setFocusRun(null);
           }
         } else {
@@ -121,6 +131,19 @@ export function useDashboard(
   );
 
   const refresh = useCallback(() => load(false), [load]);
+
+  const selectRun = useCallback(async (id: string) => {
+    selectedRunId.current = id;
+    setSelectedRunIdState(id);
+    setFocusRun(null);
+    setError(null);
+    try {
+      const detail = await api.getRun(id);
+      setFocusRun(detail);
+    } catch (reason) {
+      captureFailure(reason);
+    }
+  }, [api, captureFailure]);
 
   useEffect(() => {
     void refresh();
@@ -157,6 +180,8 @@ export function useDashboard(
     queue,
     runs,
     focusRun,
+    selectedRunId: selectedRunIdState,
+    selectRun,
     services,
     events,
     connection,

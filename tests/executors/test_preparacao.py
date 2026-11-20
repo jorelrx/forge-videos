@@ -3,6 +3,11 @@ from pathlib import Path
 from forge.domain.execucao import RunSnapshot
 from forge.domain.operacao import StageName
 from forge.executors.preparacao import PreparationExecutor
+from forge.repositories.connection import Database
+from forge.repositories.eventos import EventosRepository
+from forge.repositories.operacao import OperacaoRepository
+from forge.repositories.schema import init_db
+from forge.services.worker import StageContext, StudioWorker
 
 
 def _snapshot(tmp_path: Path, **changes) -> RunSnapshot:
@@ -71,3 +76,46 @@ def test_preparation_gate_rejects_missing_persisted_snapshot(tmp_path):
 
     assert not gate.approved
     assert gate.code == "preparation_snapshot_invalid"
+
+
+def test_preparation_event_registers_input_in_catalog_without_work_item(tmp_path):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = repo.create_video_and_run(
+            tema="A consciência", tese="A consciência organiza a experiência.",
+            priority=50, config_snapshot={"preset": "local-recomendado-v1"},
+            workflow_version=1, git_commit="abc123",
+        )
+        stage = next(item for item in repo.current_stages(run.id) if item.stage is StageName.PREPARACAO)
+        video = repo.get_video(run.video_id)
+
+    run_dir = tmp_path / "runs" / run.id
+    snapshot = _snapshot(
+        tmp_path,
+        run_id=run.id,
+        video_id=run.video_id,
+        tema=video.tema,
+        tese=video.tese,
+        output_root=run_dir.parent,
+        run_dir=run_dir,
+        config_snapshot=run.config_snapshot,
+    )
+    worker = StudioWorker(db, worker_id="worker-test", lease_seconds=60, executors={})
+    event_sink = worker._event_sink(
+        StageContext(run=run, stage_run=stage, video=video, run_dir=run_dir)
+    )
+
+    result = PreparationExecutor().run(snapshot, event_sink)
+
+    with db.connection() as conn:
+        artifacts = OperacaoRepository(conn).list_artifacts(run.id)
+        events = EventosRepository(conn).after(0, run_id=run.id)
+    assert result.gate.approved
+    assert (run_dir / "video" / "input.json").is_file()
+    assert len(artifacts) == 1
+    assert artifacts[0].stage_run_id == stage.id
+    assert artifacts[0].work_item_id is None
+    assert artifacts[0].relative_path == "video/input.json"
+    assert [event.kind for event in events] == ["artifact.created"]

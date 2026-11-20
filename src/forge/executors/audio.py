@@ -32,7 +32,17 @@ from forge.executors.base import StageImplementation
 from forge.executors.plano_midia import hash_json
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
+from forge.infrastructure.logging import get_logger
 from forge.services.worker import EventSink
+
+logger = get_logger(__name__)
+
+
+# −35 dB em amplitude: o mesmo piso do `silencedetect` da validação final.
+SILENCIO_PISO = 10 ** (-35 / 20)
+# Abaixo dos 2 s da validação final: a cauda de um bloco soma com o começo do
+# seguinte depois da concatenação.
+SILENCIO_MAXIMO_SEGUNDOS = 1.5
 
 
 def validate_wav(
@@ -94,16 +104,17 @@ class AudioExecutor(StageImplementation):
             WorkItemPlan(
                 item_key=block.id,
                 input=block.model_dump(mode="json"),
-                input_hash=hash_json(block),
+                # Provenance is carried through the plan, but never enters
+                # TTS or invalidates an unchanged audio file.
+                input_hash=hash_json({
+                    "id": block.id, "secao": block.secao, "texto": block.texto,
+                }),
             )
             for block in media.blocos
         ]
         return StagePlan(
             stage=StageName.AUDIO,
-            input_hash=hash_json({
-                "media": hash_json(media),
-                "items": [item.model_dump(mode="json") for item in items],
-            }),
+            input_hash=hash_json([{"item_key": item.item_key, "input_hash": item.input_hash} for item in items]),
             items=items,
         )
 
@@ -116,9 +127,65 @@ class AudioExecutor(StageImplementation):
         values = np.asarray(samples, dtype=np.float32)
         if values.ndim != 1 or not len(values) or not np.any(np.abs(values) > 1e-5):
             return 0.0
-        values = values - float(np.mean(values))
-        crossings = int(np.count_nonzero(np.diff(np.signbit(values))))
-        return round(crossings * rate / (2 * len(values)), 3)
+        # Zero crossings track spectral brightness, not fundamental pitch:
+        # consonants alone could make the same narrator look like another voice.
+        # Estimate periodicity in voiced frames using normalized autocorrelation.
+        size = min(2048, len(values))
+        low, high = max(2, rate // 500), min(rate // 60, size // 2)
+        if high <= low:
+            return 0.0
+        length = size - high
+        fft_size = 1 << (2 * size - 1).bit_length()
+        pitches = []
+        for start in range(0, len(values) - size + 1, max(1, rate // 10)):
+            frame = values[start:start + size].astype(np.float64)
+            frame -= frame.mean()
+            reference = frame[:length]
+            energy = float(np.dot(reference, reference))
+            if energy / length < 1e-6:
+                continue
+            correlation = np.fft.irfft(
+                np.fft.rfft(frame, fft_size) * np.conj(np.fft.rfft(reference, fft_size)),
+                fft_size,
+            )[:high + 1]
+            cumulative = np.concatenate(([0.0], np.cumsum(frame * frame)))
+            shifted_energy = cumulative[length:length + high + 1] - cumulative[:high + 1]
+            coefficients = correlation / np.sqrt(np.maximum(energy * shifted_energy, 1e-20))
+            peaks = [lag for lag in range(low, high)
+                     if coefficients[lag] >= coefficients[lag - 1]
+                     and coefficients[lag] > coefficients[lag + 1]]
+            if not peaks:
+                continue
+            best = max(coefficients[lag] for lag in peaks)
+            if best < 0.6:
+                continue
+            lag = next(lag for lag in peaks if coefficients[lag] >= best - 0.01)
+            left, center, right = coefficients[lag - 1:lag + 2]
+            denominator = left - 2 * center + right
+            offset = 0.5 * (left - right) / denominator if denominator else 0.0
+            pitches.append(rate / (lag + float(np.clip(offset, -0.5, 0.5))))
+        return round(float(median(pitches)), 3) if pitches else 0.0
+
+    @staticmethod
+    def _silencio_max(path: Path) -> float:
+        """Maior trecho mudo do bloco, em segundos.
+
+        O TTS às vezes trava calado no meio da frase e o WAV continua válido.
+        Mesmo piso do `silencedetect` da validação final (−35 dB), em janelas
+        de 20 ms, para os dois gates enxergarem o mesmo silêncio.
+        """
+        samples, rate = sf.read(path, dtype="float32", always_2d=False)
+        values = np.abs(np.asarray(samples, dtype=np.float32))
+        janela = max(1, rate // 50)
+        total = len(values) // janela
+        if values.ndim != 1 or total == 0:
+            return 0.0
+        picos = values[: total * janela].reshape(total, janela).max(axis=1)
+        maior = atual = 0
+        for mudo in picos < SILENCIO_PISO:
+            atual = atual + 1 if mudo else 0
+            maior = max(maior, atual)
+        return round(maior * janela / rate, 3)
 
     def _wav_metadata(
         self, path: Path, *, seed: int
@@ -136,6 +203,7 @@ class AudioExecutor(StageImplementation):
             "channels": info.channels,
             "duration": info.frames / info.samplerate,
             "F0": self._f0(path, info.samplerate),
+            "silencio_max": self._silencio_max(path),
             "seed": seed,
         }, []
 
@@ -272,7 +340,52 @@ class AudioExecutor(StageImplementation):
         f0_by_key = {key: float(output.metadata["F0"]) for key, output in artifacts.items()}
         baseline = median(f0_by_key.values())
         mad = median(abs(value - baseline) for value in f0_by_key.values())
-        return [key for key, value in f0_by_key.items() if abs(value - baseline) > 3.5 * mad]
+        # A stable narrator still changes pitch with intonation. Near-zero MAD
+        # must not turn a small prosodic change into a different-voice verdict.
+        tolerance = max(3.5 * mad, 0.20 * baseline)
+        return [key for key, value in f0_by_key.items() if abs(value - baseline) > tolerance]
+
+    @staticmethod
+    def _silence_keys(artifacts: dict[str, ArtifactOutput]) -> list[str]:
+        return [
+            key for key, output in artifacts.items()
+            if float(output.metadata.get("silencio_max", 0.0)) > SILENCIO_MAXIMO_SEGUNDOS
+        ]
+
+    def _retry_long_silences(
+        self,
+        context: RunSnapshot,
+        plan: StagePlan,
+        paths: dict[str, Path],
+        artifacts: dict[str, ArtifactOutput],
+        output_dir: Path,
+        emit: EventSink,
+    ) -> None:
+        """Regenera, com outra semente, o bloco que saiu com um buraco mudo.
+
+        Sem isto o defeito só aparecia na validação final, depois de imagens e
+        montagem prontas, e repetir a etapa reaproveitava o mesmo arquivo.
+        """
+        by_key = {item.item_key: item for item in plan.items}
+        for key in self._silence_keys(artifacts):
+            for seed in self.alternate_seeds:
+                outcomes = self.client.synthesize_batch(
+                    [self._request(by_key[key], seed=seed)], output_dir
+                )
+                outcome = outcomes[0] if outcomes else None
+                if outcome is None or not outcome.ok or outcome.path is None:
+                    continue
+                output, findings = self._artifact_for(context, key, outcome.path, seed=seed)
+                if output is None or findings:
+                    continue
+                paths[key] = outcome.path
+                artifacts[key] = output
+                emit(
+                    kind="artifact.created", level="info", message="Áudio regenerado",
+                    payload=output.model_dump(mode="json"),
+                )
+                if key not in self._silence_keys(artifacts):
+                    break
 
     def _retry_voice_outliers(
         self,
@@ -350,10 +463,33 @@ class AudioExecutor(StageImplementation):
 
         with self._broker().exclusivo("tts"):
             retry: list[WorkItemPlan] = []
+
+            def accept(
+                item: WorkItemPlan, outcome: AudioOutcome | None, elapsed: int, backend: str,
+                seed: int | None = None,
+            ) -> bool:
+                if outcome is None or not outcome.ok or outcome.path is None:
+                    return False
+                output, findings = self._artifact_for(
+                    context, item.item_key, outcome.path,
+                    seed=self.settings.tts_seed if seed is None else seed,
+                )
+                if output is None or findings:
+                    return False
+                paths[item.item_key], artifacts[item.item_key] = outcome.path, output
+                emit(kind="artifact.created", level="info", message="Áudio criado", payload=output.model_dump(mode="json"))
+                emit(kind="item.succeeded", level="info", message="Narração concluída", payload={
+                    "item_key": item.item_key, "duration_ms": elapsed, "backend": backend,
+                })
+                return True
+
             for offset in range(0, len(pending), self.settings.tts_batch_size):
                 batch = pending[offset : offset + self.settings.tts_batch_size]
                 for item in batch:
-                    emit(kind="item.started", level="info", message="Narração iniciada", payload={"item_key": item.item_key, "duration_ms": 0})
+                    emit(kind="item.started", level="info", message="Narração iniciada", payload={
+                        "item_key": item.item_key, "duration_ms": 0,
+                        "backend": self.settings.tts_backend,
+                    })
                 started = monotonic()
                 outcomes = {
                     outcome.item_key: outcome
@@ -364,17 +500,140 @@ class AudioExecutor(StageImplementation):
                 elapsed = round((monotonic() - started) * 1000)
                 for item in batch:
                     outcome = outcomes.get(item.item_key)
-                    output, findings = (
-                        self._artifact_for(context, item.item_key, outcome.path, seed=self.settings.tts_seed)
-                        if outcome is not None and outcome.ok and outcome.path is not None
-                        else (None, [])
-                    )
-                    if output is None:
-                        retry.append(item)
+                    if accept(item, outcome, elapsed, self.settings.tts_backend):
                         continue
-                    paths[item.item_key], artifacts[item.item_key] = outcome.path, output
-                    emit(kind="artifact.created", level="info", message="Áudio criado", payload=output.model_dump(mode="json"))
-                    emit(kind="item.succeeded", level="info", message="Narração concluída", payload={"item_key": item.item_key, "duration_ms": elapsed})
+                    failure = outcome.failure if outcome is not None else None
+                    if (
+                        failure is not None
+                        and failure.code == "tts_max_tokens_before_eoc"
+                        and self.settings.tts_backend == "vulkan"
+                    ):
+                        original_failure = failure
+                        if len(batch) > 1:
+                            logger.warning(
+                                "tts_max_tokens_batch_item_isolation_started",
+                                item_key=item.item_key, batch_item_keys=[x.item_key for x in batch],
+                                backend="vulkan", failure_code=failure.code,
+                            )
+                            isolated_started = monotonic()
+                            isolated = self.client.synthesize_batch(
+                                [self._request(item)], output_dir
+                            )
+                            isolated_elapsed = round((monotonic() - isolated_started) * 1000)
+                            outcome = isolated[0] if isolated else None
+                            if accept(item, outcome, isolated_elapsed, "vulkan"):
+                                continue
+                            failure = outcome.failure if outcome is not None else None
+                            if failure is None or failure.code != "tts_max_tokens_before_eoc":
+                                if failure is not None and failure.retriable:
+                                    retry.append(item)
+                                else:
+                                    detail = failure or self._failure_from_findings(item.item_key, [])
+                                    emit(kind="item.failed", level="error", message=detail.message, payload={
+                                        "item_key": item.item_key, "failure_code": detail.code,
+                                        "failure_message": detail.message, "backend": "vulkan",
+                                    })
+                                continue
+                            original_failure = failure
+
+                        logger.warning(
+                            "tts_max_tokens_cpu_fallback_started", item_key=item.item_key,
+                            original_backend="vulkan", fallback_backend="cpu",
+                            original_failure_code=original_failure.code,
+                            original_failure_message=original_failure.message,
+                            original_failure_services=original_failure.services,
+                        )
+                        emit(
+                            kind="audio.recovery.started", level="warning",
+                            message="Tentando somente este trecho na CPU após falha max_tokens na GPU",
+                            payload={
+                                "item_key": item.item_key, "backend": "cpu",
+                                "fallback_from": "vulkan", "attempt": 1,
+                                "original_failure_code": original_failure.code,
+                                "original_failure_message": original_failure.message,
+                                "original_failure_stderr": original_failure.services.get("stderr_tail", ""),
+                            },
+                        )
+                        # A CPU é determinística: com a mesma semente, o trecho que
+                        # não fecha (EOC) não fecha nunca, e repetir a etapa cai no
+                        # mesmo lugar. Só outra semente muda a geração.
+                        recovered = False
+                        cpu_outcome = None
+                        for cpu_seed in (None, *self.alternate_seeds):
+                            cpu_started = monotonic()
+                            cpu_outcomes = self.client.synthesize_batch(
+                                [self._request(item, seed=cpu_seed)], output_dir, backend="cpu"
+                            )
+                            cpu_elapsed = round((monotonic() - cpu_started) * 1000)
+                            cpu_outcome = cpu_outcomes[0] if cpu_outcomes else None
+                            if accept(item, cpu_outcome, cpu_elapsed, "cpu", seed=cpu_seed):
+                                recovered = True
+                                break
+                            cpu_code = (
+                                cpu_outcome.failure.code
+                                if cpu_outcome is not None and cpu_outcome.failure is not None
+                                else None
+                            )
+                            if cpu_code != "tts_max_tokens_before_eoc":
+                                break
+                        if recovered:
+                            logger.info(
+                                "tts_max_tokens_cpu_fallback_succeeded", item_key=item.item_key,
+                                original_backend="vulkan", fallback_backend="cpu",
+                                original_failure_code=original_failure.code,
+                            )
+                            emit(
+                                kind="audio.recovery.completed", level="info",
+                                message="Trecho recuperado na CPU; próximos trechos seguem na GPU",
+                                payload={
+                                    "item_key": item.item_key, "backend": "cpu",
+                                    "fallback_from": "vulkan", "status": "succeeded",
+                                    "original_failure_code": original_failure.code,
+                                },
+                            )
+                            continue
+                        cpu_failure = (
+                            cpu_outcome.failure
+                            if cpu_outcome is not None and cpu_outcome.failure is not None
+                            else self._failure_from_findings(item.item_key, [])
+                        )
+                        logger.error(
+                            "tts_max_tokens_cpu_fallback_failed", item_key=item.item_key,
+                            original_backend="vulkan", fallback_backend="cpu",
+                            original_failure_code=original_failure.code,
+                            cpu_failure_code=cpu_failure.code,
+                            cpu_failure_message=cpu_failure.message,
+                        )
+                        emit(
+                            kind="audio.recovery.completed", level="error",
+                            message="Trecho também falhou na CPU",
+                            payload={
+                                "item_key": item.item_key, "backend": "cpu",
+                                "fallback_from": "vulkan", "status": "failed",
+                                "original_failure_code": original_failure.code,
+                                "cpu_failure_code": cpu_failure.code,
+                                "cpu_failure_message": cpu_failure.message,
+                                "cpu_failure_stderr": cpu_failure.services.get("stderr_tail", ""),
+                            },
+                        )
+                        emit(kind="item.failed", level="error", message=cpu_failure.message, payload={
+                            "item_key": item.item_key, "failure_code": cpu_failure.code,
+                            "failure_message": cpu_failure.message, "backend": "cpu",
+                            "original_backend": "vulkan",
+                            "original_failure_code": original_failure.code,
+                            "original_failure_stderr": original_failure.services.get("stderr_tail", ""),
+                            "fallback_backend": "cpu",
+                            "fallback_failure_stderr": cpu_failure.services.get("stderr_tail", ""),
+                        })
+                        continue
+                    if failure is not None and not failure.retriable:
+                        emit(kind="item.failed", level="error", message=failure.message, payload={
+                            "item_key": item.item_key, "failure_code": failure.code,
+                            "failure_message": failure.message,
+                            "backend": self.settings.tts_backend,
+                        })
+                    else:
+                        retry.append(item)
             for item in retry:
                 started = monotonic()
                 outcomes = self.client.synthesize_batch([self._request(item)], output_dir)
@@ -388,10 +647,11 @@ class AudioExecutor(StageImplementation):
                 if output is not None:
                     paths[item.item_key], artifacts[item.item_key] = outcome.path, output
                     emit(kind="artifact.created", level="info", message="Áudio criado", payload=output.model_dump(mode="json"))
-                    emit(kind="item.succeeded", level="info", message="Narração concluída", payload={"item_key": item.item_key, "duration_ms": elapsed})
+                    emit(kind="item.succeeded", level="info", message="Narração concluída", payload={"item_key": item.item_key, "duration_ms": elapsed, "backend": self.settings.tts_backend})
                     continue
                 failure = outcome.failure if outcome is not None and outcome.failure is not None else self._failure_from_findings(item.item_key, findings)
-                emit(kind="item.failed", level="error", message=failure.message, payload={"item_key": item.item_key, "failure_code": failure.code, "failure_message": failure.message})
+                emit(kind="item.failed", level="error", message=failure.message, payload={"item_key": item.item_key, "failure_code": failure.code, "failure_message": failure.message, "backend": self.settings.tts_backend})
+            self._retry_long_silences(context, plan, paths, artifacts, output_dir, emit)
         self._retry_voice_outliers(context, plan, paths, artifacts, output_dir, emit)
         return StageExecutionResult(
             current_items=len(artifacts), total_items=len(plan.items), artifacts=list(artifacts.values())
@@ -418,6 +678,15 @@ class AudioExecutor(StageImplementation):
             )
         if set(artifacts) != expected:
             findings.insert(0, GateFinding(code="audio_incomplete", message="Nem todos os blocos possuem áudio válido"))
+        for key in self._silence_keys(artifacts):
+            findings.append(GateFinding(
+                code="audio_silence", message="Bloco com silêncio longo no meio da fala",
+                item_key=key, details={
+                    "silencio_max": artifacts[key].metadata["silencio_max"],
+                    "limite": SILENCIO_MAXIMO_SEGUNDOS,
+                    "alternate_seeds": list(self.alternate_seeds),
+                },
+            ))
         for key in self._voice_outlier_keys(artifacts):
             output = artifacts[key]
             f0_values = [float(value.metadata["F0"]) for value in artifacts.values()]

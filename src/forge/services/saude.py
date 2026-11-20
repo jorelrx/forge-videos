@@ -37,6 +37,13 @@ class HealthProbes:
     tts: Callable[[], bool]
     ffmpeg: Callable[[], bool]
     gpu: Callable[[], str | None | object]
+    codex: Callable[[], bool] | None = None
+    codex_llm: bool = False
+    codex_images: bool = False
+    claude: Callable[[], bool] | None = None
+    # Provider principal: substitui o LM Studio. Revisor: só acrescenta.
+    claude_llm: bool = False
+    claude_review: bool = False
 
 
 class StudioHealthService:
@@ -46,6 +53,16 @@ class StudioHealthService:
     def check_all(self) -> dict[str, ServiceHealth]:
         result: dict[str, ServiceHealth] = {}
         names = ["research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"]
+        if self.probes.codex_llm:
+            names.remove("lm_studio")
+        if self.probes.codex_images:
+            names.remove("comfyui")
+        if self.probes.codex_llm or self.probes.codex_images:
+            names.append("codex")
+        if self.probes.claude_llm and "lm_studio" in names:
+            names.remove("lm_studio")
+        if self.probes.claude_llm or self.probes.claude_review:
+            names.append("claude")
         for name in names:
             try:
                 probe = getattr(self.probes, name)  # type: ignore[attr-defined]
@@ -88,8 +105,8 @@ class StudioHealthService:
         return result
 
 
-def _default_probes() -> HealthProbes:
-    settings = get_settings()
+def _default_probes(settings=None) -> HealthProbes:
+    settings = settings or get_settings()
 
     def research_probe() -> bool:
         try:
@@ -147,6 +164,30 @@ def _default_probes() -> HealthProbes:
         except Exception:
             return None
 
+    def codex_probe() -> bool:
+        from forge.services.codex import CodexCLI, CodexError
+
+        try:
+            if settings.codex_transport == "native":
+                from forge.services.codex_auth import OAuthCredentials
+                OAuthCredentials(settings.codex_auth_file).access_token()
+            else:
+                CodexCLI(settings).check_auth()
+            return True
+        except CodexError:
+            return False
+
+    def claude_probe() -> bool:
+        # Só o login declarado: o painel consulta em laço, e uma chamada de
+        # modelo por consulta gastaria a cota. A prova real fica no preflight.
+        from forge.services.claude_cli import ClaudeCLI, ClaudeError
+
+        try:
+            ClaudeCLI(settings).check_auth()
+            return True
+        except ClaudeError:
+            return False
+
     return HealthProbes(
         research=research_probe,
         lm_studio=lm_studio_probe,
@@ -154,4 +195,10 @@ def _default_probes() -> HealthProbes:
         tts=tts_probe,
         ffmpeg=ffmpeg_probe,
         gpu=gpu_probe,
+        codex=codex_probe,
+        codex_llm=settings.provider == "codex",
+        codex_images=settings.image_provider == "codex",
+        claude=claude_probe,
+        claude_llm=settings.provider == "claude",
+        claude_review=settings.review_provider == "claude",
     )

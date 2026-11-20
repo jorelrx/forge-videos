@@ -2,23 +2,33 @@ import React from "react";
 import type { RunSummary, ServiceHealth } from "../lib/contracts";
 import { History } from "./history";
 import { IconPlus } from "./icons";
+import { screenIcon } from "./screen-meta";
+import type { Screen } from "../hooks/use-screen";
 import { Queue } from "./queue";
 import { StatusBadge, runTone, serviceStateLabel, serviceTone } from "./status-badge";
 
 export function PageHeader({
+  screen,
   title,
   description,
   actions,
 }: {
+  screen: Screen;
   title: string;
   description: string;
   actions?: React.ReactNode;
 }) {
+  const Icon = screenIcon(screen);
   return (
-    <header className="page-header">
-      <div>
-        <h1>{title}</h1>
-        <p>{description}</p>
+    <header className="page-header" data-screen={screen}>
+      <div className="page-title">
+        <span className="page-icon" aria-hidden="true">
+          <Icon size={20} />
+        </span>
+        <div>
+          <h1>{title}</h1>
+          <p>{description}</p>
+        </div>
       </div>
       {actions && <div className="head-actions">{actions}</div>}
     </header>
@@ -71,6 +81,7 @@ export function QueueScreen({ queue, onNewVideo }: { queue: RunSummary[]; onNewV
   return (
     <main className="main">
       <PageHeader
+        screen="fila"
         title="Fila"
         description="Vídeos esperando o worker, na ordem em que serão produzidos."
       />
@@ -116,6 +127,7 @@ export function RunsScreen({
   return (
     <main className="main">
       <PageHeader
+        screen="runs"
         title="Execuções"
         description="Todos os vídeos que passaram pelo worker. Abra um para ver etapas, saídas e ações."
       />
@@ -156,6 +168,7 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
   return (
     <main className="main">
       <PageHeader
+        screen="servicos"
         title="Serviços"
         description="Dependências locais que o worker usa em cada etapa."
       />

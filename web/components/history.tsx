@@ -85,7 +85,7 @@ export function History({ runs, selectedRunId, onSelectRun }: HistoryProps) {
                 <td>{r.current_stage ? stageStatus(r.current_stage) : "—"}</td>
                 <td className="num">
                   <span className={`meter tone-${runTone(r.run?.status)}`} aria-hidden="true">
-                    <span style={{ transform: `scaleX(${pct / 100})` }} />
+                    <span style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }} />
                   </span>
                   {r.progress ? `${pct}%` : "—"}
                 </td>

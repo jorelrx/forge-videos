@@ -676,6 +676,7 @@ export function Publication({ runs, loadArtifacts = listRunArtifacts }: Publicat
   return (
     <main className="main">
       <PageHeader
+        screen="publicacao"
         title="Publicação"
         description="Pacote de publicação da execução e envio ao YouTube."
         actions={runs.length > 0 && runId ? (

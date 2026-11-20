@@ -1,26 +1,31 @@
 /* =====================================================================
    Forge Studio — design system
    Cena: uma pessoa num estúdio caseiro, à noite, acompanhando execuções
-   longas de GPU num segundo monitor e olhando de relance. Tema escuro de
-   baixo brilho; estado legível de longe; um único acento (ciano da marca)
-   reservado para ação primária, seleção e "em andamento".
+   longas de GPU num segundo monitor e olhando de relance. O canal é
+   Conquistas Cósmicas: a tela é um céu noturno (neutros índigo, aurora no
+   alto) e a cor tem papel, não enfeite:
+   - cada etapa do pipeline tem um matiz próprio, o mesmo no bloco da etapa,
+     na aba de saídas e no trecho da barra de progresso;
+   - cada tela tem um matiz, o mesmo na barra lateral e no cabeçalho;
+   - ciano da marca = ação primária e "em andamento"; verde, âmbar e
+     vermelho = concluído, atenção e falha, sempre acompanhados de texto.
    ===================================================================== */
 
 :root {
   color-scheme: dark;
 
-  /* Neutros com leve matiz azul (245), do fundo para a superfície mais alta */
-  --bg: oklch(0.155 0.010 245);
-  --surface-0: oklch(0.175 0.011 245);
-  --surface: oklch(0.200 0.012 245);
-  --surface-2: oklch(0.235 0.013 245);
-  --surface-3: oklch(0.275 0.014 245);
-  --border: oklch(0.290 0.013 245);
-  --border-strong: oklch(0.370 0.016 245);
+  /* Neutros índigo (céu noturno), do fundo para a superfície mais alta */
+  --bg: oklch(0.155 0.035 278);
+  --surface-0: oklch(0.180 0.040 278);
+  --surface: oklch(0.205 0.042 278);
+  --surface-2: oklch(0.240 0.046 278);
+  --surface-3: oklch(0.285 0.050 278);
+  --border: oklch(0.305 0.048 278);
+  --border-strong: oklch(0.390 0.055 278);
 
-  --text: oklch(0.960 0.004 245);
-  --text-2: oklch(0.850 0.010 245);
-  --muted: oklch(0.715 0.014 245);
+  --text: oklch(0.970 0.010 278);
+  --text-2: oklch(0.870 0.030 278);
+  --muted: oklch(0.740 0.040 278);
 
   /* Acento da marca e estados */
   --accent: oklch(0.830 0.120 200);
@@ -30,6 +35,18 @@
   --warn: oklch(0.840 0.130 80);
   --fail: oklch(0.730 0.165 22);
   --live: var(--accent);
+  --violet: oklch(0.760 0.150 295);
+
+  /* Matiz de cada etapa do pipeline (ordem de execução) */
+  --c-pesquisa: oklch(0.840 0.140 78);
+  --c-roteiro: oklch(0.770 0.150 295);
+  --c-audio: oklch(0.770 0.160 350);
+  --c-imagens: oklch(0.780 0.130 250);
+  --c-montagem: oklch(0.810 0.130 175);
+  --c-validacao: oklch(0.870 0.150 125);
+  --spectrum: linear-gradient(90deg,
+    var(--c-pesquisa) 0%, var(--c-roteiro) 22%, var(--c-audio) 42%,
+    var(--c-imagens) 62%, var(--c-montagem) 82%, var(--c-validacao) 100%);
 
   --tint-accent: color-mix(in oklch, var(--accent) 14%, transparent);
   --tint-ok: color-mix(in oklch, var(--ok) 14%, transparent);
@@ -75,13 +92,24 @@
 
 html, body {
   margin: 0;
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--text-md);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "cv11", "ss01";
+}
+
+/* Aurora no alto da tela: o céu do canal. Fixa, atrás de tudo, sem animação. */
+body {
+  background-image:
+    radial-gradient(64rem 30rem at 78% -8rem, color-mix(in oklch, var(--violet) 34%, transparent), transparent 70%),
+    radial-gradient(48rem 24rem at 25% -10rem, color-mix(in oklch, var(--accent) 22%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 105% 45%, color-mix(in oklch, var(--c-audio) 12%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 0% 100%, color-mix(in oklch, var(--c-imagens) 10%, transparent), transparent 70%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
 }
 
 h1, h2, h3 { text-wrap: balance; }
@@ -136,7 +164,7 @@ a { color: inherit; }
   flex-direction: column;
   gap: var(--s-2);
   padding: var(--s-4) var(--s-3);
-  background: var(--surface-0);
+  background: color-mix(in oklch, var(--surface-0) 88%, transparent);
   border-right: 1px solid var(--border);
 }
 
@@ -156,8 +184,8 @@ a { color: inherit; }
   width: 28px;
   height: 28px;
   flex: none;
-  border-radius: 7px;
-  background: var(--accent-strong);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--violet) 100%);
   color: var(--accent-ink);
 }
 
@@ -193,11 +221,23 @@ a { color: inherit; }
   text-decoration: none;
   transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.nav-item svg { flex: none; color: var(--muted); transition: color var(--dur-fast) var(--ease-out); }
+.nav-item svg { flex: none; color: color-mix(in oklch, var(--screen-hue) 70%, var(--muted)); transition: color var(--dur-fast) var(--ease-out); }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item:hover svg { color: var(--screen-hue); }
 .nav-item:active { background: var(--surface-3); }
-.nav-item.active { background: var(--surface-2); color: var(--text); font-weight: 550; }
-.nav-item.active svg { color: var(--accent); }
+.nav-item.active {
+  background: color-mix(in oklch, var(--screen-hue) 16%, var(--surface-0));
+  color: var(--text);
+  font-weight: 550;
+}
+.nav-item.active svg { color: var(--screen-hue); }
+
+/* Matiz de cada tela: barra lateral e cabeçalho da página */
+[data-screen] { --screen-hue: var(--accent); }
+[data-screen="fila"] { --screen-hue: var(--c-pesquisa); }
+[data-screen="runs"] { --screen-hue: var(--violet); }
+[data-screen="publicacao"] { --screen-hue: var(--c-audio); }
+[data-screen="servicos"] { --screen-hue: var(--c-montagem); }
 
 .nav-count {
   margin-left: auto;
@@ -238,6 +278,18 @@ a { color: inherit; }
   gap: var(--s-4);
   margin-bottom: var(--s-6);
 }
+.page-title { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.page-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border: 1px solid color-mix(in oklch, var(--screen-hue) 40%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--screen-hue) 16%, var(--surface-0));
+  color: var(--screen-hue);
+}
 .page-header h1 {
   margin: 0;
   font-size: var(--text-2xl);
@@ -255,6 +307,7 @@ a { color: inherit; }
 .panel {
   min-width: 0;
   background: var(--surface);
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--text) 5%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
@@ -272,6 +325,16 @@ a { color: inherit; }
   margin: 0;
   font-size: var(--text-md);
   font-weight: 600;
+}
+.titled { display: inline-flex; align-items: center; gap: var(--s-2); }
+.title-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--screen-hue) 18%, var(--surface-0));
+  color: var(--screen-hue);
 }
 .panel-heading > span {
   color: var(--muted);
@@ -431,7 +494,17 @@ a { color: inherit; }
 .active-run-card {
   container-type: inline-size;
   padding: var(--s-5) var(--s-5) var(--s-4);
+  /* O canto da execução leva o matiz da etapa em que ela está (ou parou) */
+  background:
+    radial-gradient(36rem 14rem at 100% 0%, color-mix(in oklch, var(--stage-hue) 16%, transparent), transparent 70%),
+    var(--surface);
 }
+.active-run-card.tone-fail {
+  background:
+    radial-gradient(36rem 14rem at 100% 0%, color-mix(in oklch, var(--fail) 14%, transparent), transparent 70%),
+    var(--surface);
+}
+.active-run-card.tone-live .big-progress strong { color: var(--stage-hue); }
 
 .run-top {
   display: flex;
@@ -479,18 +552,17 @@ a { color: inherit; }
   background: var(--surface-3);
   overflow: hidden;
 }
+.progress-bar { height: 8px; }
 .progress-bar-fill {
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-strong);
-  transform-origin: left center;
-  transition: transform 500ms var(--ease-out);
+  background: var(--spectrum);
+  transition: clip-path 600ms var(--ease-out);
 }
-/* O acento significa em andamento; parada, a barra assume a cor do estado */
-.tone-ok .progress-bar-fill { background: var(--ok); }
-.tone-warn .progress-bar-fill { background: var(--warn); }
-.tone-fail .progress-bar-fill { background: color-mix(in oklch, var(--fail) 70%, var(--surface-3)); }
-.tone-neutral .progress-bar-fill { background: var(--muted); }
+/* Falha troca o espectro pela cor de falha; pausa e espera ficam esmaecidas */
+.tone-fail .progress-bar-fill { background: color-mix(in oklch, var(--fail) 75%, var(--surface-3)); }
+.tone-warn .progress-bar-fill,
+.tone-neutral .progress-bar-fill { opacity: 0.55; }
 
 /* Pipeline: as etapas são uma sequência real, daí os números */
 .pipeline {
@@ -512,18 +584,33 @@ a { color: inherit; }
   transition: border-color var(--dur) var(--ease-out), background-color var(--dur) var(--ease-out);
 }
 .stage-topline { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.stage-num { color: var(--muted); font: 500 var(--text-xs)/1 var(--font-mono); }
+.stage-num { color: var(--stage-hue); font: 600 var(--text-xs)/1 var(--font-mono); }
 .stage b { font-size: var(--text-sm); font-weight: 600; }
 .stage small { color: var(--muted); font-size: var(--text-xs); line-height: 1.35; }
 .statusdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 
-.stage.ok { background: color-mix(in oklch, var(--ok) 6%, var(--surface-0)); }
+.stage, .active-run-card { --stage-hue: var(--muted); }
+[data-stage="pesquisa"] { --stage-hue: var(--c-pesquisa); }
+[data-stage="roteiro"] { --stage-hue: var(--c-roteiro); }
+[data-stage="audio"] { --stage-hue: var(--c-audio); }
+[data-stage="imagens"] { --stage-hue: var(--c-imagens); }
+[data-stage="montagem"] { --stage-hue: var(--c-montagem); }
+[data-stage="validacao"] { --stage-hue: var(--c-validacao); }
+
+.stage.ok {
+  border-color: color-mix(in oklch, var(--stage-hue) 30%, var(--border));
+  background: color-mix(in oklch, var(--stage-hue) 10%, var(--surface-0));
+}
 .stage.ok .statusdot { background: var(--ok); }
-.stage.live { border-color: color-mix(in oklch, var(--accent) 55%, transparent); background: var(--tint-accent); }
+.stage.live {
+  border-color: color-mix(in oklch, var(--stage-hue) 70%, transparent);
+  background: color-mix(in oklch, var(--stage-hue) 20%, var(--surface-0));
+}
 .stage.live .statusdot { background: var(--accent); animation: pulse 1.6s var(--ease-out) infinite; color: var(--accent); }
 .stage.fail { border-color: color-mix(in oklch, var(--fail) 55%, transparent); background: var(--tint-fail); }
 .stage.fail .statusdot { background: var(--fail); }
 .stage.wait { background: transparent; border-style: dashed; }
+.stage.wait .stage-num { color: color-mix(in oklch, var(--stage-hue) 55%, var(--muted)); }
 .stage.wait b { color: var(--text-2); font-weight: 500; }
 .stage.wait .statusdot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
 
@@ -562,7 +649,13 @@ a { color: inherit; }
 .safe-note { margin-right: auto; color: var(--warn); font-size: var(--text-xs); }
 
 /* ----- Vazios ----- */
-.empty-hero { padding: var(--s-8) var(--s-6); }
+.empty-hero {
+  padding: var(--s-8) var(--s-6);
+  background:
+    radial-gradient(28rem 12rem at 100% 0%, color-mix(in oklch, var(--violet) 16%, transparent), transparent 70%),
+    radial-gradient(22rem 10rem at 0% 100%, color-mix(in oklch, var(--accent) 10%, transparent), transparent 70%),
+    var(--surface);
+}
 .empty-hero h2 { margin: 0 0 var(--s-2); font-size: var(--text-lg); font-weight: 600; }
 .empty-hero p { max-width: 60ch; margin: 0; color: var(--muted); }
 .empty-hero b { color: var(--text-2); font-weight: 600; }
@@ -616,7 +709,7 @@ a { color: inherit; }
   padding: 10px var(--s-4);
 }
 .qitem + .qitem { border-top: 1px solid var(--border); }
-.qpos { color: var(--muted); font: 500 var(--text-xs)/1.7 var(--font-mono); }
+.qpos { color: var(--c-pesquisa); font: 600 var(--text-xs)/1.7 var(--font-mono); }
 .qbody { display: grid; gap: 2px; min-width: 0; }
 .qbody b { font-size: var(--text-sm); font-weight: 550; overflow-wrap: anywhere; }
 .qbody small { color: var(--muted); font-size: var(--text-xs); }
@@ -705,11 +798,9 @@ a { color: inherit; }
 .meter > span {
   display: block;
   height: 100%;
-  background: var(--accent-strong);
-  transform-origin: left center;
+  background: var(--spectrum);
 }
-.meter.tone-ok > span { background: var(--ok); }
-.meter.tone-warn > span { background: var(--warn); }
+.meter.tone-warn > span { opacity: 0.55; }
 .meter.tone-fail > span { background: color-mix(in oklch, var(--fail) 70%, var(--surface-3)); }
 .meter.tone-neutral > span { background: var(--muted); }
 
@@ -831,7 +922,7 @@ a { color: inherit; }
   max-width: 18ch;
   margin-right: var(--s-2);
   overflow: hidden;
-  color: var(--text-2);
+  color: var(--violet);
   font-family: var(--font-sans);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -889,7 +980,16 @@ a { color: inherit; }
   transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .output-tabs button:hover { color: var(--text); }
-.output-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.output-tabs button { --tab-hue: var(--accent); }
+.output-tabs button[id="output-tab-roteiro"] { --tab-hue: var(--c-roteiro); }
+.output-tabs button[id="output-tab-audios"] { --tab-hue: var(--c-audio); }
+.output-tabs button[id="output-tab-imagens"] { --tab-hue: var(--c-imagens); }
+.output-tabs button[id="output-tab-video"] { --tab-hue: var(--c-montagem); }
+.output-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--tab-hue); }
+.output-tabs button[aria-selected="true"] span {
+  background: color-mix(in oklch, var(--tab-hue) 22%, var(--surface-2));
+  color: var(--tab-hue);
+}
 .output-tabs button span {
   min-width: 20px;
   padding: 0 6px;
@@ -925,9 +1025,9 @@ a { color: inherit; }
 .script-thesis {
   margin: 0 0 var(--s-2);
   padding: var(--s-3) var(--s-4);
-  border: 1px solid color-mix(in oklch, var(--accent) 28%, transparent);
+  border: 1px solid color-mix(in oklch, var(--c-roteiro) 32%, transparent);
   border-radius: var(--radius-sm);
-  background: color-mix(in oklch, var(--accent) 7%, transparent);
+  background: color-mix(in oklch, var(--c-roteiro) 9%, transparent);
   color: var(--text);
   font-size: var(--text-md);
   line-height: 1.6;
@@ -938,7 +1038,7 @@ a { color: inherit; }
 }
 .script-section:first-of-type { border-top: 0; padding-top: var(--s-1); }
 .script-section header { display: flex; align-items: baseline; gap: 10px; }
-.script-section header > span { color: var(--muted); font: 500 var(--text-xs)/1 var(--font-mono); }
+.script-section header > span { color: var(--c-roteiro); font: 600 var(--text-xs)/1 var(--font-mono); }
 .script-section h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .script-section p { margin: var(--s-2) 0 0; color: var(--text-2); font-size: var(--text-md); line-height: 1.7; white-space: pre-wrap; }
 

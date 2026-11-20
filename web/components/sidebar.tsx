@@ -1,21 +1,9 @@
 import React from "react";
 import { screenHref, type Screen } from "../hooks/use-screen";
-import {
-  IconHistory,
-  IconPlus,
-  IconProduction,
-  IconQueue,
-  IconServer,
-  IconUpload,
-} from "./icons";
+import { IconPlus } from "./icons";
+import { SCREEN_META } from "./screen-meta";
 
-const NAV: { screen: Screen; label: string; Icon: (p: { size?: number }) => React.ReactElement }[] = [
-  { screen: "producao", label: "Produção", Icon: IconProduction },
-  { screen: "fila", label: "Fila", Icon: IconQueue },
-  { screen: "runs", label: "Execuções", Icon: IconHistory },
-  { screen: "publicacao", label: "Publicação", Icon: IconUpload },
-  { screen: "servicos", label: "Serviços", Icon: IconServer },
-];
+const NAV = SCREEN_META;
 
 export function Sidebar({
   screen,
@@ -32,7 +20,7 @@ export function Sidebar({
     <aside className="sidebar" aria-label="Navegação">
       <div className="brand">
         <span className="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 20 20" width="14" height="14">
+          <svg viewBox="0 0 20 20" width="15" height="15">
             <path d="M5 3h11v3H8.5v3H14v3H8.5v5H5z" fill="currentColor" />
           </svg>
         </span>
@@ -52,6 +40,7 @@ export function Sidebar({
               key={target}
               href={screenHref(target)}
               className={`nav-item${active ? " active" : ""}`}
+              data-screen={target}
               aria-current={active ? "page" : undefined}
               onClick={(event) => {
                 event.preventDefault();

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { NewVideoForm } from "./new-video-form";
-import { ActiveRun } from "./active-run";
+import { ActiveRun, lastStageWithData } from "./active-run";
 import { ActivityDock } from "./activity-dock";
 import { Queue } from "./queue";
 import { RecentRuns } from "./history";
@@ -18,7 +18,16 @@ import {
   gpuSlotLabel,
   serviceName,
 } from "./screens";
-import { IconAlert, IconArrowRight, IconPause, IconPlay, IconRefresh } from "./icons";
+import {
+  IconAlert,
+  IconArrowRight,
+  IconHistory,
+  IconPause,
+  IconPlay,
+  IconPlus,
+  IconQueue,
+  IconRefresh,
+} from "./icons";
 import { runTone, serviceTone } from "./status-badge";
 import { useDashboard, type DashboardState } from "../hooks/use-dashboard";
 import { screenHref, useScreen } from "../hooks/use-screen";
@@ -119,7 +128,11 @@ function PipelineStage({
   items?: string;
 }) {
   return (
-    <li className={`stage ${status}`} aria-current={status === "live" ? "step" : undefined}>
+    <li
+      className={`stage ${status}`}
+      data-stage={stage}
+      aria-current={status === "live" ? "step" : undefined}
+    >
       <div className="stage-topline">
         <span className="stage-num">{String(num).padStart(2, "0")}</span>
         <span className="statusdot" aria-hidden="true" />
@@ -264,6 +277,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
   const production = (
     <main className="main">
       <PageHeader
+        screen="producao"
         title="Produção"
         description="Acompanhe a execução em foco e enfileire o próximo vídeo."
       />
@@ -276,6 +290,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
             <>
               <section
                 className={`panel active-run-card tone-${runTone(focusStatus)}`}
+                data-stage={focusRun.current_stage ?? lastStageWithData(focusRun.stages) ?? undefined}
                 aria-label="Execução em foco"
               >
                 <ActiveRun
@@ -292,9 +307,11 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
                   aria-valuemax={100}
                   aria-valuenow={progressPct}
                 >
+                  {/* O preenchimento é o espectro das etapas inteiro, recortado até o
+                      progresso: a cor na ponta diz em que trecho do pipeline a run está. */}
                   <div
                     className="progress-bar-fill"
-                    style={{ transform: `scaleX(${progressPct / 100})` }}
+                    style={{ clipPath: `inset(0 ${100 - progressPct}% 0 0 round 999px)` }}
                   />
                 </div>
 
@@ -399,7 +416,10 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
         <div className="prod-side">
           <section className="panel" aria-labelledby="novo-video-title">
             <div className="panel-heading">
-              <h3 id="novo-video-title">Novo vídeo</h3>
+              <h3 id="novo-video-title" className="titled" data-screen="producao">
+                <span className="title-icon" aria-hidden="true"><IconPlus size={14} /></span>
+                Novo vídeo
+              </h3>
             </div>
             <NewVideoForm
               ref={formRef}
@@ -410,7 +430,10 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
 
           <section className="panel queue-list-panel" aria-label="Fila de vídeos">
             <div className="panel-heading">
-              <h3>Fila</h3>
+              <h3 className="titled" data-screen="fila">
+                <span className="title-icon" aria-hidden="true"><IconQueue size={14} /></span>
+                Fila
+              </h3>
               <span>{queue.length} aguardando</span>
             </div>
             <Queue runs={queue} />
@@ -418,7 +441,10 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
 
           <section className="panel" aria-label="Runs recentes">
             <div className="panel-heading">
-              <h3>Recentes</h3>
+              <h3 className="titled" data-screen="runs">
+                <span className="title-icon" aria-hidden="true"><IconHistory size={14} /></span>
+                Recentes
+              </h3>
               <a
                 className="link"
                 href={screenHref("runs")}

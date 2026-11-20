@@ -448,7 +448,15 @@ class SubprocessExecutor:
     ]:
         options = dict(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", **self._popen_kwargs(),
+            encoding="utf-8", errors="replace",
+            # O pai decodifica UTF-8; o filho Python, com stdout em pipe,
+            # codificaria no locale do sistema (cp1252 no Windows) e "áudio"
+            # chegaria à API como "�udio". Os dois lados do canal precisam
+            # concordar, então o pai fixa o encoding do filho aqui. Quem passa
+            # `env` próprio em popen_options (CLIs que gravam em arquivo)
+            # substitui este default.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **self._popen_kwargs(),
         )
         options.update(popen_options)
         process = subprocess.Popen(self.argv, shell=False, **options)

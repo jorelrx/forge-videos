@@ -190,6 +190,45 @@ def test_valid_jsonl_line_is_emitted_as_event():
     assert result.failed is False
 
 
+def test_accented_failure_message_survives_child_locale_encoding(monkeypatch):
+    # Um filho Python com stdout em pipe codifica no locale do sistema — cp1252
+    # no Windows — e o pai decodifica UTF-8 com `errors="replace"`: "áudio"
+    # chegava à API como "�udio". Fixar PYTHONIOENCODING=cp1252 reproduz o
+    # Windows em qualquer plataforma.
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    message = "Nem todos os blocos possuem áudio válido"
+    events: list[dict] = []
+    executor = SubprocessExecutor(child(
+        json.dumps({
+            "kind": "stage.result", "level": "info", "message": "Etapa concluída",
+            "payload": {
+                "current_items": 0, "total_items": 1, "artifacts": [],
+                "failure": None,
+                "gate": {
+                    "approved": False, "code": "audio_incomplete",
+                    "findings": [{"code": "audio_incomplete", "message": message}],
+                    "metrics": {},
+                },
+            },
+        }, ensure_ascii=False),
+    ))
+
+    result = executor.execute(None, lambda **event: events.append(event))
+
+    assert result.failure_message == message
+    assert events[0]["message"] == "Etapa concluída"
+
+
+def test_accented_stderr_survives_child_locale_encoding(monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    events: list[dict] = []
+    executor = SubprocessExecutor(child(exit_code=1, stderr="falha na geração"))
+
+    executor.execute(None, lambda **event: events.append(event))
+
+    assert events[0]["payload"]["stderr"].strip() == "falha na geração"
+
+
 def test_subprocess_requires_exactly_one_stage_result():
     line = json.dumps({
         "kind": "stage.progress", "level": "info", "message": "progress",

@@ -1,5 +1,4 @@
 import React from "react";
-import type { StudioEventsState } from "../hooks/use-studio-events";
 import { screenHref, type Screen } from "../hooks/use-screen";
 import {
   IconHistory,
@@ -13,30 +12,21 @@ import {
 const NAV: { screen: Screen; label: string; Icon: (p: { size?: number }) => React.ReactElement }[] = [
   { screen: "producao", label: "Produção", Icon: IconProduction },
   { screen: "fila", label: "Fila", Icon: IconQueue },
-  { screen: "runs", label: "Runs", Icon: IconHistory },
+  { screen: "runs", label: "Execuções", Icon: IconHistory },
   { screen: "publicacao", label: "Publicação", Icon: IconUpload },
   { screen: "servicos", label: "Serviços", Icon: IconServer },
 ];
-
-const CONNECTION_LABEL: Record<StudioEventsState["connection"], string> = {
-  connecting: "Conectando aos eventos",
-  live: "Eventos ao vivo",
-  reconnecting: "Reconectando",
-  offline: "Sem eventos ao vivo",
-};
 
 export function Sidebar({
   screen,
   onNavigate,
   onNewRun,
   queueCount,
-  connection,
 }: {
   screen: Screen;
   onNavigate: (screen: Screen) => void;
   onNewRun: () => void;
   queueCount: number;
-  connection: StudioEventsState["connection"];
 }) {
   return (
     <aside className="sidebar" aria-label="Navegação">
@@ -77,11 +67,6 @@ export function Sidebar({
           );
         })}
       </nav>
-
-      <div className={`sidebar-foot conn-${connection}`} role="status">
-        <span className="conn-dot" aria-hidden="true" />
-        <span>{CONNECTION_LABEL[connection]}</span>
-      </div>
     </aside>
   );
 }

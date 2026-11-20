@@ -18,8 +18,8 @@ import {
   gpuSlotLabel,
   serviceName,
 } from "./screens";
-import { IconArrowRight, IconPause, IconPlay } from "./icons";
-import { serviceTone } from "./status-badge";
+import { IconAlert, IconArrowRight, IconPause, IconPlay, IconRefresh } from "./icons";
+import { runTone, serviceTone } from "./status-badge";
 import { useDashboard, type DashboardState } from "../hooks/use-dashboard";
 import { screenHref, useScreen } from "../hooks/use-screen";
 import { createStudioApi, type StudioApi } from "../lib/api";
@@ -246,7 +246,8 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
       formRef.current?.querySelector<HTMLInputElement>("#tema") ??
       document.getElementById("tema");
     if (!field) return;
-    field.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    field.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
     field.focus();
   }
 
@@ -273,7 +274,10 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
         <div className="prod-primary">
           {focusRun ? (
             <>
-              <section className="panel active-run-card" aria-label="Run em foco">
+              <section
+                className={`panel active-run-card tone-${runTone(focusStatus)}`}
+                aria-label="Execução em foco"
+              >
                 <ActiveRun
                   run={focusRun}
                   statusLabel={serviceStatusLabel(focusStatus)}
@@ -372,7 +376,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
               <RunOutputs key={focusRun.run.id} run={focusRun} />
             </>
           ) : (
-            <section className="panel empty-hero" aria-label="Run em foco">
+            <section className="panel empty-hero" aria-label="Execução em foco">
               {state.selectedRunId ? (
                 <p className="empty-state">
                   {error
@@ -440,7 +444,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
       content = <Publication runs={runs} loadArtifacts={loadArtifacts} />;
       break;
     case "fila":
-      content = <QueueScreen queue={queue} />;
+      content = <QueueScreen queue={queue} onNewVideo={requestNewVideo} />;
       break;
     case "runs":
       content = (
@@ -454,6 +458,11 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
       content = production;
   }
 
+  const runLabels: Record<string, string> = {};
+  for (const r of runs) {
+    if (r.run?.id && r.video?.tema) runLabels[r.run.id] = r.video.tema;
+  }
+
   return (
     <div className="app">
       <Sidebar
@@ -461,14 +470,32 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
         onNavigate={navigate}
         onNewRun={requestNewVideo}
         queueCount={queue.length}
-        connection={connection}
       />
-      {content}
+      <div className="main-col">
+        {error != null && (
+          // Fica no topo de toda tela: em larguras menores o painel de
+          // atividade desce para o fim da página e o aviso sumiria de vista.
+          <div className="app-alert" role="alert" aria-label="Falhas recentes">
+            <IconAlert size={16} />
+            <div className="app-alert-body">
+              <b>{error.message || "Falha desconhecida"}</b>
+              <p>Os dados na tela podem estar desatualizados. O que já foi produzido continua salvo.</p>
+            </div>
+            {state.refresh && (
+              <button className="btn btn-sm" data-choice="retry-failed" type="button" onClick={() => void state.refresh()}>
+                <IconRefresh size={14} />
+                Recarregar
+              </button>
+            )}
+          </div>
+        )}
+        {content}
+      </div>
       <ActivityDock
         events={events}
         connection={connection}
-        error={error}
-        onRetry={state.refresh ? () => void state.refresh() : undefined}
+        runLabels={runLabels}
+        focusRunId={focusRun?.run?.id ?? null}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import React from "react";
 import { StageName } from "../lib/contracts";
 import { stageStatus } from "../lib/stage-map";
-import { formatClock, formatDuration, parseInstant, shortId } from "../lib/format";
+import { formatClock, formatDateTime, formatDuration, parseInstant, shortId } from "../lib/format";
 import { StatusBadge, runTone } from "./status-badge";
 
 const STAGE_ORDER: StageName[] = [
@@ -52,6 +52,14 @@ export interface ActiveRunProps {
 /** Estados em que a run ainda corre: só nelas a duração conta até agora. */
 const LIVE_STATUSES = ["preparing", "running", "validating", "pausing"];
 
+/** Estados parados: a etapa mostrada é onde a run parou, não a corrente. */
+const STOPPED_STATUSES = ["failed", "interrupted", "paused", "cancelled"];
+
+function isToday(value: unknown): boolean {
+  const date = parseInstant(value);
+  return date != null && date.toDateString() === new Date().toDateString();
+}
+
 export function runKicker(status: string | undefined | null): string {
   const key = status ?? "";
   return KICKER_BY_STATUS[key] ?? "Run";
@@ -91,7 +99,7 @@ export function ActiveRun({
   const started = meta.started_at;
 
   return (
-    <section aria-label="Run ativa" className="active-run-detail">
+    <div className="active-run-detail">
       <div className="run-top">
         <div className="run-heading">
           <div className="run-kicker">
@@ -101,12 +109,12 @@ export function ActiveRun({
           <h2 className="run-title">{tema}</h2>
           <dl className="run-meta">
             <div>
-              <dt>Etapa atual</dt>
+              <dt>{STOPPED_STATUSES.includes(runStatus ?? "") ? "Parou em" : "Etapa atual"}</dt>
               <dd><b>{currentStage}</b></dd>
             </div>
             <div>
               <dt>Início</dt>
-              <dd>{formatClock(started)}</dd>
+              <dd>{isToday(started) ? formatClock(started) : formatDateTime(started)}</dd>
             </div>
             {parseInstant(started) && (parseInstant(meta.finished_at) || LIVE_STATUSES.includes(runStatus ?? "")) && (
               <div>
@@ -125,6 +133,6 @@ export function ActiveRun({
           <span>concluído</span>
         </div>
       </div>
-    </section>
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 import React from "react";
 import type { RunSummary, ServiceHealth } from "../lib/contracts";
 import { History } from "./history";
+import { IconPlus } from "./icons";
 import { Queue } from "./queue";
 import { StatusBadge, runTone, serviceStateLabel, serviceTone } from "./status-badge";
 
@@ -55,16 +56,18 @@ export function serviceName(key: string): string {
 /** Serviços que disputam a GPU; o broker mantém um residente por vez. */
 export const GPU_SERVICES = ["lm_studio", "comfyui", "tts"];
 
-/** Texto do slot de GPU a partir de `/api/services` ("Residente: tts", "Sem residente"). */
+/**
+ * Texto do slot de GPU a partir de `/api/services`. O backend (saude.py)
+ * responde "Residente: <consumidor>", "Sem residente" ou, com estado
+ * `degraded`, "Estado ilegível"; só o primeiro caso ocupa o slot.
+ */
 export function gpuSlotLabel(services: Record<string, ServiceHealth>): string | null {
   const gpu = services["gpu"];
   if (gpu?.message?.startsWith("Residente")) return gpu.message;
-  const busy = GPU_SERVICES.map((k) => services[k]).find((s) => s?.state === "degraded");
-  if (busy?.message) return busy.message;
   return null;
 }
 
-export function QueueScreen({ queue }: { queue: RunSummary[] }) {
+export function QueueScreen({ queue, onNewVideo }: { queue: RunSummary[]; onNewVideo: () => void }) {
   return (
     <main className="main">
       <PageHeader
@@ -77,6 +80,14 @@ export function QueueScreen({ queue }: { queue: RunSummary[] }) {
           <span>{queue.length} {queue.length === 1 ? "vídeo" : "vídeos"}</span>
         </div>
         <Queue runs={queue} detailed />
+        {queue.length === 0 && (
+          <div className="panel-foot">
+            <button className="btn btn-primary" type="button" onClick={onNewVideo}>
+              <IconPlus size={14} />
+              Novo vídeo
+            </button>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -105,8 +116,8 @@ export function RunsScreen({
   return (
     <main className="main">
       <PageHeader
-        title="Runs"
-        description="Todas as execuções. Abra uma para ver etapas, saídas e ações."
+        title="Execuções"
+        description="Todos os vídeos que passaram pelo worker. Abra um para ver etapas, saídas e ações."
       />
       <section className="panel" aria-label="Histórico de runs">
         <div className="panel-heading">
@@ -126,7 +137,7 @@ export function RunsScreen({
               );
             })}
           </div>
-          <span>{visible.length} de {runs.length}</span>
+          <span className="nowrap">{visible.length} de {runs.length}</span>
         </div>
         <History runs={visible} selectedRunId={selectedRunId} onSelectRun={onOpenRun} />
       </section>
@@ -135,7 +146,10 @@ export function RunsScreen({
 }
 
 export function ServicesScreen({ services }: { services: Record<string, ServiceHealth> }) {
-  const entries = Object.entries(services);
+  // O slot de GPU tem quadro próprio acima; na tabela ficam só os serviços.
+  const entries = Object.entries(services).filter(([key]) => key !== "gpu");
+  const gpuState = services["gpu"];
+  const hasLatency = entries.some(([, s]) => s.latency_ms != null);
   const okCount = entries.filter(([, s]) => serviceTone(s.state) === "ok").length;
   const slot = gpuSlotLabel(services);
 
@@ -146,7 +160,7 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
         description="Dependências locais que o worker usa em cada etapa."
       />
 
-      <section className="gpu-slot" aria-label="Slot de GPU">
+      <section className="panel gpu-slot" aria-label="Slot de GPU">
         <div>
           <h3>GPU</h3>
           <p>
@@ -154,7 +168,9 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
             nunca por item.
           </p>
         </div>
-        <StatusBadge tone={slot ? "live" : "neutral"}>{slot ?? "Livre"}</StatusBadge>
+        <StatusBadge tone={slot ? "live" : gpuState?.state === "degraded" ? "warn" : "neutral"}>
+          {slot ?? (gpuState?.state === "degraded" ? gpuState.message || "Estado ilegível" : "Livre")}
+        </StatusBadge>
       </section>
 
       <section className="panel" aria-label="Estado dos serviços">
@@ -175,7 +191,7 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
                   <th scope="col">Serviço</th>
                   <th scope="col">Estado</th>
                   <th scope="col">Detalhe</th>
-                  <th scope="col" className="num">Latência</th>
+                  {hasLatency && <th scope="col" className="num">Latência</th>}
                 </tr>
               </thead>
               <tbody>
@@ -188,8 +204,10 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
                     <td>
                       <StatusBadge tone={serviceTone(svc.state)}>{serviceStateLabel(svc.state)}</StatusBadge>
                     </td>
-                    <td className="muted">{svc.message || "—"}</td>
-                    <td className="num mono">{svc.latency_ms != null ? `${svc.latency_ms}ms` : "—"}</td>
+                    <td className="muted">{svc.message && svc.message !== "OK" ? svc.message : "—"}</td>
+                    {hasLatency && (
+                      <td className="num mono">{svc.latency_ms != null ? `${svc.latency_ms}ms` : "—"}</td>
+                    )}
                   </tr>
                 ))}
               </tbody>

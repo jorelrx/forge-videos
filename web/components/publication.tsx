@@ -7,6 +7,7 @@ import {
 } from "../lib/api";
 import type { Artifact, PublicacaoView, RunSummary, YouTubeView } from "../lib/contracts";
 import { serviceStatusLabel } from "../lib/stage-map";
+import { PageHeader } from "./screens";
 
 /**
  * Aba Publicação: o que o dono do canal cola e sobe à mão no YouTube, terminada
@@ -607,7 +608,7 @@ function FilesView({ thumbnail, legenda, video }: { thumbnail?: Artifact; legend
 
       <Field title="Vídeo final" headingId="pub-video">
         {video
-          ? <a className="btn btn-primary pub-download" href={artifactDownloadUrl(video.id)} download={fileName(video)}>Baixar vídeo</a>
+          ? <a className="btn pub-download" href={artifactDownloadUrl(video.id)} download={fileName(video)}>Baixar vídeo</a>
           : <Empty title="Vídeo ausente" detail="A montagem ainda não produziu o vídeo final." />}
       </Field>
 
@@ -674,17 +675,15 @@ export function Publication({ runs, loadArtifacts = listRunArtifacts }: Publicat
 
   return (
     <main className="main">
-      <div className="page-header">
-        <div>
-          <h1>Publicação</h1>
-          <p>Tudo o que vai para o upload manual no YouTube</p>
-        </div>
-        {runs.length > 0 && runId && (
+      <PageHeader
+        title="Publicação"
+        description="Pacote de publicação da execução e envio ao YouTube."
+        actions={runs.length > 0 && runId ? (
           <div className="pub-run-picker">
             <label htmlFor="pub-run-select">Execução</label>
             <select
               id="pub-run-select"
-              className="retry-select"
+              className="select"
               value={runId}
               onChange={(event) => setChosenRunId(event.target.value)}
             >
@@ -695,15 +694,15 @@ export function Publication({ runs, loadArtifacts = listRunArtifacts }: Publicat
               ))}
             </select>
           </div>
-        )}
-      </div>
+        ) : undefined}
+      />
 
       {!runId ? (
-        <Empty title="Nenhuma execução concluída" detail="A embalagem aparece aqui quando uma run terminar." />
+        <Empty title="Nenhuma execução concluída" detail="A embalagem aparece aqui quando uma execução terminar." />
       ) : failedRunId === runId ? (
         <Empty title="Arquivos indisponíveis" detail="Os arquivos desta execução não puderam ser carregados." />
       ) : !current ? (
-        <Empty title="Abrindo execução" detail="Buscando os arquivos desta run." />
+        <Empty title="Abrindo execução" detail="Buscando os arquivos desta execução." />
       ) : (
         <div className="pub-layout" key={runId}>
           <PackageView artifact={embalagem} state={embalagemState} />

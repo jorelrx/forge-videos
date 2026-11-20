@@ -1,6 +1,6 @@
 import React from "react";
 import type { StudioEvent, StudioEventsState } from "../hooks/use-studio-events";
-import { IconAlert, IconRefresh } from "./icons";
+import { shortId } from "../lib/format";
 
 const CONNECTION_TEXT: Record<StudioEventsState["connection"], string> = {
   connecting: "Conectando…",
@@ -9,6 +9,8 @@ const CONNECTION_TEXT: Record<StudioEventsState["connection"], string> = {
   offline: "Desconectado",
 };
 
+type Scope = "foco" | "todas";
+
 function levelClass(level: string): string {
   if (level === "error") return "log-err";
   if (level === "warn" || level === "warning") return "log-warn";
@@ -16,37 +18,46 @@ function levelClass(level: string): string {
   return "";
 }
 
-function eventTime(event: StudioEvent): string {
-  // created_at vem em ISO-8601 UTC; o relógio do operador é o local.
+/** Hora local; eventos de outro dia levam a data junto, para não parecerem de agora. */
+function eventTime(event: StudioEvent, today: string): string {
   const date = typeof event.created_at === "string" ? new Date(event.created_at) : null;
   if (!date || Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const time = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  if (date.toDateString() === today) return time;
+  return `${date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${time}`;
 }
 
 /**
- * Painel de atividade: o fluxo SSE do worker e, quando a projeção falha, o
- * aviso com a ação de recarregar. Rola sozinho para o fim enquanto o operador
- * já estiver no fim; se ele subiu para ler, a rolagem fica onde está.
+ * Painel de atividade: o fluxo SSE do worker, de todas as execuções. Cada
+ * linha diz de qual execução veio, e o filtro "Em foco" deixa só a que está
+ * aberta na Produção. Rola sozinho para o fim enquanto o operador já estiver
+ * no fim; se ele subiu para ler, a rolagem fica onde está.
  */
 export function ActivityDock({
   events,
   connection,
-  error,
-  onRetry,
+  runLabels = {},
+  focusRunId = null,
 }: {
   events: StudioEvent[];
   connection: StudioEventsState["connection"];
-  error?: Error | null;
-  onRetry?: () => void;
+  /** run_id → tema, para identificar a origem de cada evento. */
+  runLabels?: Record<string, string>;
+  focusRunId?: string | null;
 }) {
   const logRef = React.useRef<HTMLDivElement>(null);
   const stickToEnd = React.useRef(true);
-  const visible = events.slice(-120);
+  const [scope, setScope] = React.useState<Scope>("todas");
+  const effectiveScope: Scope = focusRunId ? scope : "todas";
+  const filtered =
+    effectiveScope === "foco" ? events.filter((e) => e.run_id === focusRunId) : events;
+  const visible = filtered.slice(-120);
+  const today = new Date().toDateString();
 
   React.useEffect(() => {
     const el = logRef.current;
     if (el && stickToEnd.current) el.scrollTop = el.scrollHeight;
-  }, [events]);
+  }, [visible.length, effectiveScope]);
 
   return (
     <aside className="dock" aria-label="Atividade">
@@ -58,19 +69,14 @@ export function ActivityDock({
         </span>
       </header>
 
-      {error != null && (
-        <div className="dock-alert" role="alert" aria-label="Falhas recentes">
-          <IconAlert size={16} />
-          <div>
-            <b>{error.message || "Falha desconhecida"}</b>
-            <p>Os dados na tela podem estar desatualizados. O que já foi produzido continua salvo.</p>
-            {onRetry && (
-              <button className="btn btn-sm" data-choice="retry-failed" type="button" onClick={onRetry}>
-                <IconRefresh size={14} />
-                Recarregar
-              </button>
-            )}
-          </div>
+      {focusRunId && (
+        <div className="segmented segmented-full" role="group" aria-label="Origem dos eventos">
+          <button type="button" aria-pressed={effectiveScope === "todas"} onClick={() => setScope("todas")}>
+            Todas as execuções
+          </button>
+          <button type="button" aria-pressed={effectiveScope === "foco"} onClick={() => setScope("foco")}>
+            Em foco
+          </button>
         </div>
       )}
 
@@ -89,17 +95,24 @@ export function ActivityDock({
       >
         {visible.length === 0 ? (
           <p className="log-empty">
-            Nenhum evento ainda. O progresso de pesquisa, áudio, imagens e montagem aparece aqui
-            enquanto o worker trabalha.
+            {effectiveScope === "foco"
+              ? "Nenhum evento desta execução desde que o painel abriu."
+              : "Nenhum evento ainda. O progresso de pesquisa, áudio, imagens e montagem aparece aqui enquanto o worker trabalha."}
           </p>
         ) : (
-          visible.map((e) => (
-            <div key={e.id} className={`log-line ${levelClass(e.level)}`}>
-              <time className="log-time">{eventTime(e)}</time>
-              <span className="log-kind">{e.kind}</span>
-              <span className="log-msg">{e.message || "—"}</span>
-            </div>
-          ))
+          visible.map((e) => {
+            const origin = e.run_id ? runLabels[e.run_id] ?? shortId(e.run_id) : null;
+            return (
+              <div key={e.id} className={`log-line ${levelClass(e.level)}`}>
+                <time className="log-time">{eventTime(e, today)}</time>
+                <span className="log-kind">
+                  {effectiveScope === "todas" && origin ? <span className="log-origin">{origin}</span> : null}
+                  {e.kind}
+                </span>
+                <span className="log-msg">{e.message || "—"}</span>
+              </div>
+            );
+          })
         )}
       </div>
     </aside>

@@ -80,7 +80,7 @@ describe("ActiveRun — etapa atual", () => {
         })}
       />,
     );
-    expect(screen.getByText("Etapa atual").parentElement?.textContent).toContain("Roteiro");
+    expect(screen.getByText("Parou em").parentElement?.textContent).toContain("Roteiro");
   });
 
   it("mantém '—' quando não há etapas com dados", () => {
@@ -92,7 +92,7 @@ describe("ActiveRun — etapa atual", () => {
         })}
       />,
     );
-    expect(screen.getByText("Etapa atual").parentElement?.textContent).toContain("—");
+    expect(screen.getByText("Parou em").parentElement?.textContent).toContain("—");
   });
 
   it("lastStageWithData ignora stage_run sem atividade", () => {

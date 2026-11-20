@@ -2,7 +2,7 @@ import React from "react";
 import { RunSummary } from "../lib/contracts";
 import { formatDateTime, formatDuration, shortId } from "../lib/format";
 import { stageStatus } from "../lib/stage-map";
-import { RunStatusBadge } from "./status-badge";
+import { RunStatusBadge, runTone } from "./status-badge";
 
 export interface HistoryProps {
   runs: RunSummary[];
@@ -33,7 +33,7 @@ export function History({ runs, selectedRunId, onSelectRun }: HistoryProps) {
   if (!runs || runs.length === 0) {
     return (
       <div className="empty-inline">
-        <p className="empty-state">Nenhum run recente</p>
+        <p className="empty-state">Nenhuma execução registrada</p>
         <small>Cada vídeo enfileirado vira uma execução e fica registrado aqui.</small>
       </div>
     );
@@ -59,7 +59,16 @@ export function History({ runs, selectedRunId, onSelectRun }: HistoryProps) {
             const pct = progressOf(r);
             const started = r.run?.started_at;
             return (
-              <tr key={id ?? "—"} className={selected ? "history-selected" : ""}>
+              // A linha inteira abre a execução com o mouse; o botão da
+              // primeira coluna é o caminho do teclado e do leitor de tela.
+              <tr
+                key={id ?? "—"}
+                className={`history-row${selected ? " history-selected" : ""}`}
+                onClick={(event) => {
+                  if ((event.target as HTMLElement).closest("button")) return;
+                  if (id) onSelectRun?.(id);
+                }}
+              >
                 <td className="hist-name">
                   <button
                     className="history-select"
@@ -75,7 +84,7 @@ export function History({ runs, selectedRunId, onSelectRun }: HistoryProps) {
                 <td><RunStatusBadge status={r.run?.status} /></td>
                 <td>{r.current_stage ? stageStatus(r.current_stage) : "—"}</td>
                 <td className="num">
-                  <span className="meter" aria-hidden="true">
+                  <span className={`meter tone-${runTone(r.run?.status)}`} aria-hidden="true">
                     <span style={{ transform: `scaleX(${pct / 100})` }} />
                   </span>
                   {r.progress ? `${pct}%` : "—"}
@@ -100,7 +109,11 @@ export function RecentRuns({
 }: HistoryProps & { limit?: number }) {
   const items = (runs ?? []).slice(0, limit);
   if (items.length === 0) {
-    return <p className="empty-state">Nenhum run recente</p>;
+    return (
+      <div className="empty-inline">
+        <p className="empty-state">Nenhuma execução recente</p>
+      </div>
+    );
   }
   return (
     <ul className="recent-list">

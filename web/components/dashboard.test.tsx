@@ -176,9 +176,10 @@ describe("dashboard — comportamento completo (REAL)", () => {
   it("marca GPU pelos nomes reais do backend (underscore)", () => {
     const state = fullState({
       services: {
-        lm_studio: { name: "lm_studio", state: "degraded", message: "ocupado", latency_ms: 900 },
-        comfyui: { name: "comfyui", state: "healthy", message: "", latency_ms: 20 },
-        tts: { name: "tts", state: "healthy", message: "", latency_ms: 30 },
+        lm_studio: { name: "lm_studio", state: "available", message: "OK", latency_ms: 900 },
+        comfyui: { name: "comfyui", state: "available", message: "OK", latency_ms: 20 },
+        tts: { name: "tts", state: "available", message: "OK", latency_ms: 30 },
+        gpu: { name: "gpu", state: "available", message: "Residente: llm", latency_ms: 1 },
       } as any,
     });
     render(<DashboardView state={state} />);
@@ -189,7 +190,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(lmChip?.classList.contains("gpu")).toBe(true);
     expect(comfyChip?.classList.contains("gpu")).toBe(true);
     expect(ttsChip?.classList.contains("gpu")).toBe(true);
-    expect(screen.getByText(/GPU · ocupado/)).not.toBeNull();
+    expect(screen.getByText(/GPU · Residente: llm/)).not.toBeNull();
   });
 
   it("header 'Novo vídeo' foca o formulário e não cria vídeo vazio", async () => {
@@ -240,7 +241,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     // A Produção mostra só a lista curta de recentes.
     expect(screen.queryByRole("table")).toBeNull();
     await user.click(screen.getByRole("link", { name: /Ver todas/ }));
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Runs");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Execuções");
 
     const table = screen.getByRole("table");
     const tbody = table.querySelector("tbody");
@@ -514,5 +515,42 @@ describe("dashboard — comportamento completo (REAL)", () => {
 
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Produção");
     expect(document.activeElement).toBe(screen.getByLabelText("Tema"));
+  });
+
+  it("identifica a execução de cada evento e filtra só a execução em foco", async () => {
+    const user = userEvent.setup();
+    const focus = makeRun("running", 0.3, "audio" as StageName);
+    focus.run.id = "run-foco";
+    const other = { ...makeRun("completed", 1, null), video: { tema: "Outra execução" } } as any;
+    other.run.id = "run-outra";
+    const state = fullState({
+      focusRun: focus,
+      runs: [focus, other],
+      events: [
+        { ...makeEvent(1, "stage.progress", "info", "Bloco 3 narrado"), run_id: "run-foco" },
+        { ...makeEvent(2, "run.completed", "ok", "Run concluída"), run_id: "run-outra" },
+      ],
+    });
+    render(<DashboardView state={state} />);
+
+    const log = screen.getByRole("log");
+    expect(log.textContent).toContain("Outra execução");
+    expect(log.textContent).toContain("Run concluída");
+
+    await user.click(screen.getByRole("button", { name: "Em foco" }));
+    expect(log.textContent).toContain("Bloco 3 narrado");
+    expect(log.textContent).not.toContain("Run concluída");
+  });
+
+  it("mantém o aviso de falha visível fora da Produção", async () => {
+    const user = userEvent.setup();
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const state = fullState({ error: new Error("API fora do ar"), refresh });
+    render(<DashboardView state={state} />);
+
+    await user.click(screen.getByRole("link", { name: /Serviços/ }));
+    expect(screen.getByRole("alert").textContent).toContain("API fora do ar");
+    await user.click(screen.getByRole("button", { name: /Recarregar/ }));
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });

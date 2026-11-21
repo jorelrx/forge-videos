@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 from langgraph.graph import END
+from forge.agents import plan, review, write
+from forge.domain.fluxo_geracao import FLUXOS_INICIAIS
 from forge.infrastructure.config import Settings
+from forge.llms.model import invoke_structured
 from forge.orchestration.graph import rotear, build_graph
 from forge.domain.models import (
     BlocoRoteiro, ReviewResult, Nota, Plano, SecaoDraft,
@@ -120,18 +123,39 @@ def test_grafo_aprova_apos_uma_reprovacao(scripted, tmp_path, grafo_com_acervo, 
     assert model.structured == []
 
 
-def test_grafo_usa_o_revisor_so_no_review(scripted, tmp_path, grafo_com_acervo, secoes_draft):
+@pytest.mark.parametrize("fluxo", [None, *FLUXOS_INICIAIS])
+def test_grafo_envia_o_fluxo_ao_plano_escrita_e_revisao(
+    scripted, tmp_path, grafo_com_acervo, secoes_draft, monkeypatch, fluxo,
+):
+    prompts = {}
+
+    def capturar(model, schema, messages, *, etapa, **kwargs):
+        prompts.setdefault(etapa, []).append(messages[0].content)
+        return invoke_structured(model, schema, messages, etapa=etapa, **kwargs)
+
+    for modulo in (plan, write, review):
+        monkeypatch.setattr(modulo, "invoke_structured", capturar)
+
     escritor = scripted(
         invoke_texts=["busca sobre o tema", "notas de pesquisa"],
         structured=[Plano(tese="tese", esboco="esboço"), *secoes_draft(referencia=CAMINHO)],
     )
     revisor = scripted(structured=[ReviewResult(aprovado=True)])
     settings = Settings(_env_file=None, juiz_relevancia=False)
-    graph = build_graph(escritor, settings, revisor=revisor)
+    graph = build_graph(escritor, settings, revisor=revisor, fluxo_geracao=fluxo)
     final = graph.invoke({"tema": "tema dado", "rounds": 0, "run_dir": tmp_path, "passos": 0})
     assert final["review"].aprovado is True
     assert escritor.structured == []
     assert revisor.structured == []
+    assert {etapa: len(items) for etapa, items in prompts.items()} == {
+        "plan": 1, "write": 9, "review": 1,
+    }
+    for items in prompts.values():
+        for prompt in items:
+            if fluxo and fluxo.instrucoes:
+                assert fluxo.instrucoes in prompt
+            else:
+                assert "## Fluxo de geração" not in prompt
 
 
 def test_grafo_handoff_de_write_vai_so_para_research(scripted, tmp_path, grafo_com_acervo, secoes_draft):

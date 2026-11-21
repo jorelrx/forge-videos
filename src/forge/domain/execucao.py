@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from forge.domain.fluxo_geracao import FluxoGeracao
 from forge.domain.operacao import Artifact, JSON_OBJECT, StageName, WorkItem
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -134,6 +135,12 @@ class RunSnapshot(BaseModel):
     artifacts: list[Artifact]
     work_items: list[WorkItem]
     reusable_outputs: list[ReusableOutput] = Field(default_factory=list)
+
+    @property
+    def fluxo_geracao(self) -> FluxoGeracao | None:
+        if "fluxo_geracao" in self.config_snapshot:
+            return FluxoGeracao.model_validate(self.config_snapshot["fluxo_geracao"])
+        return None
 
     @model_validator(mode="after")
     def run_dir_is_canonical(self):

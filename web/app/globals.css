@@ -675,6 +675,7 @@ a { color: inherit; }
 .field-hint { color: var(--muted); font-size: var(--text-xs); }
 
 .video-form input,
+.video-form select,
 .video-form textarea {
   width: 100%;
   min-height: 36px;
@@ -690,11 +691,17 @@ a { color: inherit; }
 .video-form input::placeholder,
 .video-form textarea::placeholder { color: var(--muted); }
 .video-form input:focus,
+.video-form select:focus,
 .video-form textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 25%, transparent);
 }
+
+.video-flow-create { margin: 0 var(--s-4) var(--s-4); border-top: 1px solid var(--border); }
+.video-flow-create summary { padding-top: var(--s-3); color: var(--accent); cursor: pointer; }
+.video-flow-create .video-form { padding: var(--s-3) 0 0; }
+.flow-form-error { color: var(--fail); }
 
 .form-row { display: flex; align-items: flex-end; gap: var(--s-3); margin-top: var(--s-1); }
 .field-priority { width: 96px; flex: none; }

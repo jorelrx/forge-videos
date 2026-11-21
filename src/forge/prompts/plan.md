@@ -6,7 +6,7 @@ Notas de pesquisa:
 {skills}
 
 Eixos editoriais do canal:
-{eixos}
+{eixos}{fluxo_geracao}
 
 Produza:
 1. tese — a afirmação central do roteiro.

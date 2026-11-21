@@ -104,6 +104,8 @@ describe("dashboard — comportamento completo (REAL)", () => {
       getServices: vi.fn().mockResolvedValue({}),
       getEvents: vi.fn().mockResolvedValue({ items: [], next_before_id: null }),
       createVideo: vi.fn(),
+      getGenerationFlows: vi.fn().mockResolvedValue([]),
+      createGenerationFlow: vi.fn(),
       pauseRun: vi.fn(),
       resumeRun: vi.fn(),
       retryStage: vi.fn(),

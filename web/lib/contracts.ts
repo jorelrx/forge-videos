@@ -193,6 +193,18 @@ export interface CreateVideoRequest {
   tese: string | null;
   priority: number;
   preset: "local-recomendado-v1";
+  fluxo_geracao?: string;
+}
+
+export interface NovoFluxoGeracao {
+  nome: string;
+  descricao: string;
+  instrucoes: string;
+}
+
+export interface FluxoGeracao extends Omit<NovoFluxoGeracao, "instrucoes"> {
+  id: string;
+  instrucoes: string | null;
 }
 
 export interface CreateVideoResponse {

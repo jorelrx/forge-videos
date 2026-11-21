@@ -102,12 +102,19 @@ def revisar(
     model, roteiro: Roteiro, *, run_dir=None,
     research_notes: str = "", research_passages: list[PassageEvidence] | None = None,
     eixo: str | None = None,
+    diretrizes: str = "",
 ) -> ReviewResult:
     logger.debug("Starting review phase", tema=roteiro.tema[:50] + "..." if len(roteiro.tema) > 50 else roteiro.tema)
     prompt = load_prompt("review").format(
         roteiro=_render(roteiro), skills=load_skills(SKILLS, "review"),
         research_notes=research_notes or "Síntese não fornecida.",
         eixo_referencia=carregar_eixo(eixo),
+        fluxo_geracao=(
+            "## Fluxo de geração\n\nConfira o cumprimento destas diretrizes junto dos "
+            "demais critérios. Registre desvios editoriais em `notas`, indicando a seção, "
+            "e reprove até que sejam corrigidos.\n\n"
+            f"{diretrizes}\n\n" if diretrizes else ""
+        ),
         research_passages="\n\n".join(
             f"### {p.path} — {p.title} ({', '.join(p.authors)})\n{p.text}"
             for p in (research_passages or [])

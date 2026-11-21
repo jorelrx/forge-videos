@@ -34,6 +34,42 @@ describe("NewVideoForm", () => {
       tese: "Silêncio decide",
       priority: 50,
       preset: "local-recomendado-v1",
+      fluxo_geracao: "padrao",
     });
+  });
+
+  it("salva e seleciona um fluxo personalizado sem perder o tema", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const fluxo = {
+      id: "personalizado-1",
+      nome: "Dilemas",
+      descricao: "Uma decisão concreta.",
+      instrucoes: "Abra o roteiro com duas escolhas.",
+    };
+    const fluxosApi = {
+      getGenerationFlows: vi.fn().mockResolvedValue([
+        { id: "padrao", nome: "Padrão", descricao: "Roteiro atual.", instrucoes: null },
+      ]),
+      createGenerationFlow: vi.fn().mockResolvedValue(fluxo),
+    };
+    render(<NewVideoForm onSubmit={onSubmit} fluxosApi={fluxosApi} />);
+
+    await user.type(screen.getByLabelText("Tema"), "Coragem");
+    await user.click(await screen.findByText("Criar fluxo"));
+    await user.type(screen.getByLabelText("Nome do fluxo"), fluxo.nome);
+    await user.type(screen.getByLabelText("Descrição"), fluxo.descricao);
+    await user.type(screen.getByLabelText("Instruções para o roteiro"), fluxo.instrucoes);
+    await user.click(screen.getByRole("button", { name: "Salvar fluxo" }));
+    await screen.findByRole("option", { name: "Dilemas", selected: true });
+    expect(fluxosApi.createGenerationFlow).toHaveBeenCalledWith({
+      nome: fluxo.nome, descricao: fluxo.descricao, instrucoes: fluxo.instrucoes,
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Enfileirar vídeo" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      tema: "Coragem", fluxo_geracao: fluxo.id,
+    }));
   });
 });

@@ -154,17 +154,13 @@ def v1_db(tmp_path):
     return db
 
 
-def test_migrate_v1_to_v2_preserves_existing_run_and_adds_read_only(v1_db):
-    assert migrate(v1_db) == 2
-    assert migrate(v1_db) == 2
+def test_migrate_preserves_existing_run_and_adds_read_only(v1_db):
+    assert migrate(v1_db) == LATEST_SCHEMA_VERSION
+    assert migrate(v1_db) == LATEST_SCHEMA_VERSION
 
     with v1_db.connection() as conn:
         row = conn.execute("SELECT id, is_read_only FROM runs WHERE id = ?", ("run-1",)).fetchone()
     assert dict(row) == {"id": "run-1", "is_read_only": 0}
-
-
-def test_latest_schema_version_is_two():
-    assert LATEST_SCHEMA_VERSION == 2
 
 
 def test_read_only_run_cannot_pause_resume_or_retry(v1_db):

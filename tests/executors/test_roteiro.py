@@ -74,9 +74,14 @@ def test_execute_passes_reentered_research_evidence_to_gate(tmp_path, monkeypatc
 
 def test_retry_resumes_saved_draft_at_review_instead_of_rewriting(tmp_path, monkeypatch):
     from forge.services.artefatos import gravar_artefato
+    from forge.domain.fluxo_geracao import FLUXOS_INICIAIS
     from forge.domain.roteiro import SECOES_NOMES
 
-    context = _snapshot(tmp_path).model_copy(update={"attempt": 2})
+    fluxo = FLUXOS_INICIAIS[2]
+    context = _snapshot(tmp_path).model_copy(update={
+        "attempt": 2,
+        "config_snapshot": {"fluxo_geracao": fluxo.model_dump()},
+    })
     context.run_dir.mkdir(parents=True)
     bundle = ResearchBundle(brief="brief", fontes=[], raw_markdown="raw", passages=[], passage_count=0, canonical_paths=[])
     gravar_modelo(context.run_dir / "video/research.json", bundle)
@@ -90,11 +95,13 @@ def test_retry_resumes_saved_draft_at_review_instead_of_rewriting(tmp_path, monk
             return {"roteiro":state["roteiro"]}
     def build(*args, **kwargs):
         captured["inicio"] = kwargs["inicio"]
+        captured["fluxo_geracao"] = kwargs["fluxo_geracao"]
         return Graph()
     monkeypatch.setattr("forge.executors.roteiro.build_graph",build)
     executor=ScriptExecutor(settings=Settings(_env_file=None),model=object())
     executor.execute(context,executor.prepare(context),lambda **event:None)
     assert captured["inicio"] == "review"
+    assert captured["fluxo_geracao"] == fluxo
     assert captured["roteiro"] == roteiro
     assert captured["esboco"] == "Esboço salvo"
     assert captured["eixo"] == "autoconhecimento"

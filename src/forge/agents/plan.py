@@ -11,11 +11,18 @@ logger = get_logger(__name__)
 SKILLS = ["story", "canal"]
 LE = ["tema", "research_notes", "run_dir"]
 
-def planejar(model, tema: str, research: str, *, run_dir=None) -> Plano:
+def planejar(
+    model, tema: str, research: str, *, run_dir=None, diretrizes: str = "",
+) -> Plano:
     logger.debug("Starting planning phase", tema=tema[:50] + "..." if len(tema) > 50 else tema)
     prompt = load_prompt("plan").format(
         tema=tema, research=research, skills=load_skills(SKILLS, "plan"),
         eixos=resumo_eixos(),
+        fluxo_geracao=(
+            "\n\n## Fluxo de geração\n\nIncorpore estas diretrizes no esboço, "
+            "respeitando as nove seções e as evidências do acervo.\n\n"
+            f"{diretrizes}" if diretrizes else ""
+        ),
     )
     plano = invoke_structured(
         model, Plano, [HumanMessage(content=prompt)],

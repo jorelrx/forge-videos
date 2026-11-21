@@ -16,6 +16,12 @@ const BASE = "http://127.0.0.1:8765";
 const RUN_ID = "e393867a-d57b-479e-97fc-f2786668b554";
 const VIDEO_ID = "f725de0d-268a-4279-b35b-1049f5eeea6a";
 const CREATED_AT = "2026-09-14T13:57:53.033773Z";
+const COMMENTS_FLOW = {
+  id: "comentarios",
+  nome: "Comentários",
+  descricao: "Convite ao público.",
+  instrucoes: "Apresente um dilema.",
+};
 
 const VIDEO = {
   id: VIDEO_ID,
@@ -31,7 +37,7 @@ const QUEUED_RUN = {
   status: "queued",
   priority: 50,
   queue_position: 1,
-  config_snapshot: { preset: "local-recomendado-v1" },
+  config_snapshot: { preset: "local-recomendado-v1", fluxo_geracao: COMMENTS_FLOW },
   workflow_version: 1,
   git_commit: "contract-check",
   lease_owner: null,
@@ -158,6 +164,10 @@ describe("fluxo de enfileiramento do painel", () => {
         calls.push(`${method} ${path}`);
 
         if (path === "/api/services") return jsonResponse(SERVICES_BODY);
+        if (path === "/api/fluxos-geracao") return jsonResponse([
+          { id: "padrao", nome: "Padrão", descricao: "Roteiro padrão.", instrucoes: null },
+          COMMENTS_FLOW,
+        ]);
 
         if (path === "/api/videos") {
           expect(JSON.parse(String(init?.body))).toEqual({
@@ -165,6 +175,7 @@ describe("fluxo de enfileiramento do painel", () => {
             tese: null,
             priority: 50,
             preset: "local-recomendado-v1",
+            fluxo_geracao: "comentarios",
           });
           state.posted = true;
           return jsonResponse({ video: VIDEO, run: QUEUED_RUN }, 201);
@@ -211,6 +222,8 @@ describe("fluxo de enfileiramento do painel", () => {
     await waitFor(() => expect(screen.getByText("Nenhum vídeo aguardando")).not.toBeNull());
 
     const user = userEvent.setup();
+    await screen.findByRole("option", { name: "Comentários" });
+    await user.selectOptions(screen.getByLabelText("Fluxo de geração"), "comentarios");
     await user.type(screen.getByLabelText("Tema"), "Ética do silêncio");
     await user.click(screen.getByRole("button", { name: "Enfileirar vídeo" }));
 
@@ -237,6 +250,7 @@ describe("fluxo de enfileiramento do painel", () => {
       { timeout: 3000 },
     );
     expect(screen.getByText("Run em execução")).not.toBeNull();
+    expect(screen.getByText("Comentários", { selector: "dd" })).not.toBeNull();
     expect(screen.getAllByText("25%").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Pesquisa 5/8")).not.toBeNull();
     expect(FakeEventSource.current?.url).toBe(`${BASE}/api/events/stream`);

@@ -30,6 +30,7 @@ def escrever(
     run_dir=None,
     anterior: Roteiro | None = None,
     eixo: str | None = None,
+    diretrizes: str = "",
 ) -> tuple[Roteiro, str | None]:
     """Escreve o roteiro uma seção por chamada.
 
@@ -59,6 +60,11 @@ def escrever(
         "passagens": _fmt_passagens(research_passages or []),
         "eixo_referencia": carregar_eixo(eixo),
         "skills": load_skills(SKILLS, "write"),
+        "fluxo_geracao": (
+            "\n\n## Fluxo de geração\n\nAplique nesta seção as diretrizes que cabem ao "
+            "papel dela. Preserve as regras de conteúdo, blocos e referências.\n\n"
+            f"{diretrizes}" if diretrizes else ""
+        ),
     }
     secoes: list[Secao] = []
     falta: str | None = None

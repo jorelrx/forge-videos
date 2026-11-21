@@ -12,6 +12,7 @@ from forge.agents import review as review_stage
 from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
 from forge.agents.research import PassageEvidence
+from forge.domain.fluxo_geracao import FLUXO_PADRAO, FluxoGeracao
 from forge.domain.models import Fonte
 from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
@@ -103,10 +104,21 @@ def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
     logger.debug("Continuing to write phase", round=rounds)
     return "write"
 
-def build_graph(model, settings, inicio: str = "tema", revisor=None):
+def build_graph(
+    model, settings, inicio: str = "tema", revisor=None, *,
+    fluxo_geracao: FluxoGeracao | None = None,
+):
     """`revisor`, quando dado, é o modelo do nó `review` — de outro provider."""
-    logger.info("Building graph", stages=["tema", "research", "plan", "write", "review"])
+    logger.info(
+        "Building graph", stages=["tema", "research", "plan", "write", "review"],
+        fluxo_geracao=fluxo_geracao.id if fluxo_geracao else FLUXO_PADRAO,
+    )
     modelo_revisao = revisor if revisor is not None else model
+    diretrizes = (
+        {"diretrizes": fluxo_geracao.instrucoes}
+        if fluxo_geracao and fluxo_geracao.instrucoes
+        else {}
+    )
 
     # Um cliente por grafo: `research` é reentrado pelo reviewer e pelo write,
     # e abrir conexão nova a cada passagem não paga nada.
@@ -165,7 +177,8 @@ def build_graph(model, settings, inicio: str = "tema", revisor=None):
     def node_plan(state):
         logger.debug("Starting planning phase")
         plano = plan_stage.planejar(
-            model, state["tema"], state["research_notes"], run_dir=state.get("run_dir")
+            model, state["tema"], state["research_notes"], run_dir=state.get("run_dir"),
+            **diretrizes,
         )
         result = {"tese": plano.tese, "esboco": plano.esboco, "eixo": plano.eixo}
         logger.info("Planning completed", eixo=plano.eixo)
@@ -187,6 +200,7 @@ def build_graph(model, settings, inicio: str = "tema", revisor=None):
             run_dir=state.get("run_dir"),
             anterior=state.get("roteiro"),
             eixo=state.get("eixo"),
+            **diretrizes,
         )
         if falta:
             logger.info("Handoff to research from write", motivo=falta[:120])
@@ -201,6 +215,7 @@ def build_graph(model, settings, inicio: str = "tema", revisor=None):
             research_notes=state.get("research_notes", ""),
             research_passages=state.get("research_passages", []),
             eixo=state.get("eixo"),
+            **diretrizes,
         )
         rounds = state.get("rounds", 0) + 1
         pedido = "\n".join(result.verificar) if result.verificar else None

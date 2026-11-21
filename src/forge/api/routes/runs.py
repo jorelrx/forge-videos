@@ -14,10 +14,12 @@ from forge.api.contracts import (
 from forge.api.errors import transition_error, not_found, validation_error, read_only_error
 from forge.api.sse import ServerSentEvent, iter_sse_events
 from forge.api.ranges import parse_range, RangeNotSatisfiable, iter_file_range
+from forge.domain.fluxo_geracao import FluxoGeracao, NovoFluxoGeracao
 from forge.domain.operacao import StageName
 from forge.services.control_plane import ControlPlaneService, TransicaoInvalida, HistoricoSomenteLeitura
 from forge.services.studio_query import StudioQueryService
 from forge.repositories.connection import Database
+from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
 
 runs_router = APIRouter()
 
@@ -39,18 +41,34 @@ def _settings(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/videos
+# Fluxos de geração e criação de vídeos
 # ---------------------------------------------------------------------------
 
 
+@runs_router.get("/fluxos-geracao")
+def list_generation_flows(request: Request) -> list[FluxoGeracao]:
+    return FluxosGeracaoRepository(_control(request).db).listar()
+
+
+@runs_router.post("/fluxos-geracao", status_code=201)
+def create_generation_flow(payload: NovoFluxoGeracao, request: Request) -> FluxoGeracao:
+    return FluxosGeracaoRepository(_control(request).db).criar(payload)
+
+
 @runs_router.post("/videos", status_code=201)
-async def create_video(payload: CreateVideoRequest, request: Request) -> CreateVideoResponse:
+def create_video(payload: CreateVideoRequest, request: Request) -> CreateVideoResponse:
     commands = _control(request)
+    snapshot = {"preset": payload.preset}
+    if payload.fluxo_geracao is not None:
+        fluxo = FluxosGeracaoRepository(commands.db).obter(payload.fluxo_geracao)
+        if fluxo is None:
+            validation_error(f"Fluxo de geração desconhecido: {payload.fluxo_geracao}")
+        snapshot["fluxo_geracao"] = fluxo.model_dump(mode="json")
     video, run = commands.enqueue_video(
         tema=payload.tema,
         tese=payload.tese,
         priority=payload.priority,
-        config_snapshot={"preset": payload.preset},
+        config_snapshot=snapshot,
         workflow_version=request.app.state.services.workflow_version,
         git_commit=request.app.state.services.git_commit,
     )

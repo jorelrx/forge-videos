@@ -17,6 +17,34 @@ def test_create_video_returns_video_and_run(client: TestClient) -> None:
     assert "run" in data
     assert data["video"]["tema"] == "meu tema"
     assert data["run"]["status"] == RunStatus.QUEUED.value
+    assert "fluxo_geracao" not in data["run"]["config_snapshot"]
+
+
+def test_custom_flow_is_listed_and_frozen_in_the_run(client: TestClient) -> None:
+    path = "/api/fluxos-geracao"
+    catalog = client.get(path).json()
+    assert [flow["id"] for flow in catalog] == ["padrao", "comentarios", "gancho-inicial"]
+    created = client.post(path, json={
+        "nome": "  Dilema moral  ",
+        "descricao": "Uma decisão difícil.",
+        "instrucoes": "Abra com uma decisão que tem duas respostas plausíveis.",
+    })
+    assert created.status_code == 201, created.text
+    flow = created.json()
+    assert flow["nome"] == "Dilema moral"
+    assert flow in client.get(path).json()
+
+    queued = client.post("/api/videos", json={"tema": "Coragem", "fluxo_geracao": flow["id"]})
+    assert queued.status_code == 201, queued.text
+    run = queued.json()["run"]
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["run"]["config_snapshot"]["fluxo_geracao"] == flow
+
+
+def test_unknown_flow_cannot_enqueue_a_video(client: TestClient) -> None:
+    response = client.post("/api/videos", json={"tema": "Coragem", "fluxo_geracao": "outro"})
+    assert response.status_code == 422
+    assert client.get("/api/queue").json() == []
 
 
 def test_get_run_not_found(client: TestClient) -> None:

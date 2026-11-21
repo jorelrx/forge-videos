@@ -1,5 +1,5 @@
 import React from "react";
-import { StageName } from "../lib/contracts";
+import type { JsonObject, StageName } from "../lib/contracts";
 import { stageStatus } from "../lib/stage-map";
 import { formatClock, formatDateTime, formatDuration, parseInstant, shortId } from "../lib/format";
 import { StatusBadge, runTone } from "./status-badge";
@@ -34,7 +34,7 @@ type StageProbe = {
 
 export interface ActiveRunProps {
   run: {
-    run: { id: string; status: string; tema?: string };
+    run: { id: string; status: string; tema?: string; config_snapshot?: JsonObject };
     video: { tema?: string };
     progress: number;
     current_stage: StageName | null;
@@ -97,6 +97,9 @@ export function ActiveRun({
   const currentStage = stageKey ? stageStatus(stageKey) : "—";
   const meta = run.run as { started_at?: unknown; finished_at?: unknown };
   const started = meta.started_at;
+  const fluxo = run.run?.config_snapshot?.fluxo_geracao;
+  const nomeFluxo = fluxo && typeof fluxo === "object" && "nome" in fluxo
+    && typeof fluxo.nome === "string" ? fluxo.nome : "Padrão";
 
   return (
     <div className="active-run-detail">
@@ -108,6 +111,10 @@ export function ActiveRun({
           </div>
           <h2 className="run-title">{tema}</h2>
           <dl className="run-meta">
+            <div>
+              <dt>Fluxo</dt>
+              <dd>{nomeFluxo}</dd>
+            </div>
             <div>
               <dt>{STOPPED_STATUSES.includes(runStatus ?? "") ? "Parou em" : "Etapa atual"}</dt>
               <dd><b>{currentStage}</b></dd>

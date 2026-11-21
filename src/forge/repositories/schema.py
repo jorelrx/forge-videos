@@ -14,6 +14,7 @@ TABLES = {
     "artifacts",
     "events",
     "commands",
+    "fluxos_geracao",
 }
 
 

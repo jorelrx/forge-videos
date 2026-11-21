@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from typing import Any as JSON_OBJECT
 
+from forge.domain.fluxo_geracao import FluxoId
 from forge.domain.operacao import (
     RunStatus,
     StageName,
@@ -25,6 +26,7 @@ class CreateVideoRequest(BaseModel):
     tese: str | None = Field(default=None, max_length=2000)
     priority: int = Field(default=50, ge=0, le=100)
     preset: Literal["local-recomendado-v1"] = "local-recomendado-v1"
+    fluxo_geracao: FluxoId | None = None
 
 class CreateVideoResponse(BaseModel):
     video: Video

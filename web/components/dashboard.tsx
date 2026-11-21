@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { NewVideoForm } from "./new-video-form";
+import { NewVideoForm, type NewVideoFormProps } from "./new-video-form";
 import { ActiveRun, lastStageWithData } from "./active-run";
 import { ActivityDock } from "./activity-dock";
 import { Queue } from "./queue";
@@ -42,6 +42,7 @@ export interface DashboardProps {
 
 export interface DashboardViewProps {
   state: DashboardState;
+  fluxosApi?: NewVideoFormProps["fluxosApi"];
   /** Injetável para teste; padrão é `GET /api/runs/{id}/artifacts`. */
   loadArtifacts?: (runId: string) => Promise<Artifact[]>;
 }
@@ -198,7 +199,7 @@ function ServicesStrip({
   );
 }
 
-export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
+export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardViewProps) {
   const focusRun = state.focusRun;
   const formRef = React.useRef<HTMLFormElement>(null);
   const [screen, navigate] = useScreen();
@@ -425,6 +426,7 @@ export function DashboardView({ state, loadArtifacts }: DashboardViewProps) {
               ref={formRef}
               onSubmit={(input) => state.createVideo?.(input)}
               disabled={loading}
+              fluxosApi={fluxosApi}
             />
           </section>
 
@@ -535,5 +537,5 @@ export function Dashboard({ api, eventSource }: DashboardProps) {
   const state = useDashboard(api ?? defaultApi, {
     EventSource: eventSource,
   });
-  return <DashboardView state={state} />;
+  return <DashboardView state={state} fluxosApi={api ?? defaultApi} />;
 }

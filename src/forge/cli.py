@@ -4,6 +4,7 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 
+from forge.domain.fluxo_geracao import FLUXOS_INICIAIS, FLUXO_PADRAO, FluxoGeracao
 from forge.gpu.broker import GPUOcupada
 from forge.gpu.liberadores import montar_broker
 from typing import get_args
@@ -12,9 +13,13 @@ from forge.infrastructure.config import Provider, get_settings
 from forge.infrastructure.logging import get_logger, setup_logging
 from forge.llms.model import build_chat_model, build_review_model
 from forge.orchestration.graph import build_graph
+from forge.repositories.connection import Database
+from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
+from forge.services.persistencia import carregar_modelo, gravar_modelo
 from forge.services.storage import gravar_roteiro
 
 logger = get_logger("forge.cli")
+ARQUIVO_FLUXO = "fluxo-geracao.json"
 
 
 def _forcar_stdout_utf8() -> None:
@@ -36,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("roteiro", help="Gera um roteiro de vídeo")
     r.add_argument("--tema", default=None, help="Tema (opcional; gerado se ausente)")
+    r.add_argument(
+        "--fluxo",
+        help="ID do fluxo: padrao, comentarios, gancho-inicial ou um ID do Studio",
+    )
     r.add_argument(
         "--provider",
         choices=list(get_args(Provider)),
@@ -229,6 +238,23 @@ def _cmd_temas(args) -> int:
     return 0
 
 
+def _selecionar_fluxo(settings, fluxo_id: str | None) -> FluxoGeracao | None:
+    if fluxo_id is None or fluxo_id == FLUXO_PADRAO:
+        return None
+    for fluxo in FLUXOS_INICIAIS:
+        if fluxo.id == fluxo_id:
+            return fluxo
+    if settings.studio_db_path.is_file():
+        from forge.repositories.schema import init_db
+
+        db = Database(settings.studio_db_path)
+        init_db(db)
+        fluxo = FluxosGeracaoRepository(db).obter(fluxo_id)
+        if fluxo is not None:
+            return fluxo
+    raise ValueError(f"Fluxo de geração desconhecido: {fluxo_id}")
+
+
 def _cmd_roteiro(args) -> int:
     logger.info("Starting", command="roteiro", provider=args.provider, tema=args.tema)
 
@@ -236,17 +262,21 @@ def _cmd_roteiro(args) -> int:
     if args.provider is not None:
         settings = settings.model_copy(update={"provider": args.provider})
     setup_logging(settings.log_level)
-    model = build_chat_model(settings)
-    logger.info("Model built", model=settings.resolved_model, provider=settings.provider)
-
     from forge.services.artefatos import carregar_run, criar_run_dir
 
+    fluxo = None
     if args.retomar:
         run_dir = Path(args.retomar)
         if not run_dir.is_dir():
             logger.error("Run directory not found", run_dir=str(run_dir))
             sys.exit(1)
         try:
+            fluxo_path = run_dir / ARQUIVO_FLUXO
+            if fluxo_path.is_file():
+                fluxo = carregar_modelo(fluxo_path, FluxoGeracao)
+            fluxo_salvo = fluxo.id if fluxo is not None else FLUXO_PADRAO
+            if args.fluxo is not None and args.fluxo != fluxo_salvo:
+                raise ValueError(f"Esta execução usa o fluxo '{fluxo_salvo}'.")
             conteudo, inicio = carregar_run(run_dir)
         except Exception as e:
             # Artefato truncado ou malformado é justamente o cenário que
@@ -257,11 +287,25 @@ def _cmd_roteiro(args) -> int:
         logger.info("Resuming run", run_dir=str(run_dir), inicio=inicio,
                     carregados=sorted(conteudo))
     else:
+        try:
+            fluxo = _selecionar_fluxo(settings, args.fluxo)
+        except ValueError as e:
+            logger.error("Fluxo de geração inválido", error=str(e))
+            return 1
+
+    model = build_chat_model(settings)
+    logger.info("Model built", model=settings.resolved_model, provider=settings.provider)
+
+    if not args.retomar:
         run_dir = criar_run_dir(settings, args.tema or "roteiro")
+        if fluxo is not None:
+            gravar_modelo(run_dir / ARQUIVO_FLUXO, fluxo)
         conteudo, inicio = {"tema": args.tema}, "tema"
 
     revisor = build_review_model(settings)
     extra = {"revisor": revisor} if revisor is not None else {}
+    if fluxo is not None:
+        extra["fluxo_geracao"] = fluxo
     graph = build_graph(model, settings, inicio=inicio, **extra)
     estado_inicial = {**conteudo, "rounds": 0, "passos": 0, "run_dir": run_dir}
 

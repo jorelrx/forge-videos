@@ -18,6 +18,7 @@ from forge.domain.execucao import (
     StagePlan,
     StudioPreset,
 )
+from forge.domain.fluxo_geracao import FluxoGeracao
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
 from forge.services.persistencia import carregar_modelo, gravar_modelo
@@ -35,6 +36,7 @@ class PreparationInput(BaseModel):
     tese: str | None
     workflow_version: int
     preset: StudioPreset
+    fluxo_geracao: FluxoGeracao | None = None
 
 
 class PreparationExecutor(StageImplementation):
@@ -43,6 +45,7 @@ class PreparationExecutor(StageImplementation):
         # The workflow version belongs to the run envelope, not the preset.
         # Older snapshots do not carry it, so they use the first version.
         workflow_version = raw.pop("workflow_version", 1)
+        raw.pop("fluxo_geracao", None)
         return PreparationInput(
             run_id=context.run_id,
             video_id=context.video_id,
@@ -50,12 +53,16 @@ class PreparationExecutor(StageImplementation):
             tese=context.tese,
             workflow_version=workflow_version,
             preset=StudioPreset.model_validate(raw),
+            fluxo_geracao=context.fluxo_geracao,
         )
 
     @staticmethod
     def _hash_input(value: PreparationInput) -> str:
         canonical = json.dumps(
-            value.model_dump(mode="json"),
+            value.model_dump(
+                mode="json",
+                exclude={"fluxo_geracao"} if value.fluxo_geracao is None else None,
+            ),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

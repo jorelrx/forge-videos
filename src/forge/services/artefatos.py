@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from tempfile import mkdtemp
 
 from forge.domain.models import SECOES_NOMES, Fonte, Roteiro, Secao
 from forge.infrastructure.config import Settings
@@ -18,7 +19,10 @@ _POR_RODADA = {"write", "review"}
 def criar_run_dir(settings: Settings, tema: str) -> Path:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = settings.output_dir.parent / "runs" / f"{ts}-{_slug(tema)}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        run_dir.mkdir(parents=True)
+    except FileExistsError:
+        run_dir = Path(mkdtemp(prefix=f"{run_dir.name}-", dir=run_dir.parent))
     logger.info("Run directory created", run_dir=str(run_dir))
     return run_dir
 

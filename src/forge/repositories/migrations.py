@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from forge.repositories.connection import Database
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 SCHEMA_SQL = (
     """
@@ -244,8 +244,22 @@ def _upgrade_v1_to_v2(conn: sqlite3.Connection) -> None:
         )
 
 
+def _upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fluxos_geracao (
+            id TEXT PRIMARY KEY,
+            nome TEXT NOT NULL,
+            descricao TEXT NOT NULL,
+            instrucoes TEXT NOT NULL
+        )
+        """
+    )
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _upgrade_v1_to_v2,
+    2: _upgrade_v2_to_v3,
 }
 
 

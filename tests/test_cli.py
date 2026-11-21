@@ -423,6 +423,35 @@ def test_roteiro_entrega_o_revisor_ao_grafo(monkeypatch, tmp_path):
     assert recebido["revisor"] is revisor
 
 
+def test_roteiro_retomado_reusa_o_fluxo_salvo(monkeypatch, tmp_path):
+    from forge.domain.fluxo_geracao import FluxoGeracao
+    from forge.services import artefatos
+
+    _monta_run(monkeypatch, tmp_path, aprovado=False)
+    fluxos = []
+
+    class FakeGraph:
+        def stream(self, state):
+            yield {"write": {"roteiro": Roteiro(
+                tema="Coragem", tese="tese", secoes=[Secao(nome="Gancho", conteudo="c")],
+            )}}
+
+    def build(model, settings, *, inicio, fluxo_geracao):
+        fluxos.append(fluxo_geracao)
+        return FakeGraph()
+
+    monkeypatch.setattr(cli, "build_graph", build)
+    monkeypatch.setattr(artefatos, "carregar_run", lambda path: ({"tema": "Coragem"}, "write"))
+    assert cli.main(["roteiro", "--tema", "Coragem", "--fluxo", "comentarios"]) == 0
+    run_dir = next((tmp_path / "runs").iterdir())
+    salvo = FluxoGeracao.model_validate_json(
+        (run_dir / "fluxo-geracao.json").read_text(encoding="utf-8")
+    )
+    assert cli.main(["roteiro", "--retomar", str(run_dir)]) == 0
+    assert salvo.id == "comentarios"
+    assert fluxos == [salvo, salvo]
+
+
 def test_cli_aceita_provider_claude(monkeypatch, tmp_path):
     from forge.agents import tema as tema_mod
     from forge.agents.tema import Sugestoes

@@ -1,12 +1,14 @@
 from pathlib import Path
 
 from forge.domain.execucao import RunSnapshot
+from forge.domain.fluxo_geracao import FLUXOS_INICIAIS
 from forge.domain.operacao import StageName
-from forge.executors.preparacao import PreparationExecutor
+from forge.executors.preparacao import PreparationExecutor, PreparationInput
 from forge.repositories.connection import Database
 from forge.repositories.eventos import EventosRepository
 from forge.repositories.operacao import OperacaoRepository
 from forge.repositories.schema import init_db
+from forge.services.persistencia import carregar_modelo
 from forge.services.worker import StageContext, StudioWorker
 
 
@@ -63,6 +65,15 @@ def test_preparation_rejects_unknown_snapshot_fields_before_writing(tmp_path):
     assert not result.gate.approved
     assert result.gate.code == "preparation_snapshot_invalid"
     assert not snapshot.run_dir.exists()
+
+
+def test_preparation_freezes_flow_separately_from_studio_preset(tmp_path):
+    fluxo = FLUXOS_INICIAIS[1]
+    snapshot = _snapshot(tmp_path, config_snapshot={"fluxo_geracao": fluxo.model_dump()})
+    assert PreparationExecutor().run(snapshot, lambda **event: None).gate.approved
+    persisted = carregar_modelo(snapshot.run_dir / "video/input.json", PreparationInput)
+    assert persisted.fluxo_geracao == fluxo
+    assert persisted.preset.preset == "local-recomendado-v1"
 
 
 def test_preparation_gate_rejects_missing_persisted_snapshot(tmp_path):

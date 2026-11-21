@@ -10,7 +10,7 @@ Gancho.
 
 {skills}
 
-Aprove (aprovado=true) somente se o roteiro passa em todos. Caso contrário,
+{fluxo_geracao}Aprove (aprovado=true) somente se o roteiro passa em todos. Caso contrário,
 aprovado=false e liste notas objetivas: dimensão, problema, sugestão.
 
 Em cada nota, preencha `secao` com o nome exato da seção a que ela se aplica

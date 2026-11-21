@@ -8,6 +8,8 @@ import type {
   CommandResponse,
   ServiceHealth,
   EventPage,
+  FluxoGeracao,
+  NovoFluxoGeracao,
   StageName,
   PublicacaoRequest,
   PublicacaoView,
@@ -40,6 +42,8 @@ export interface StudioApi {
   getServices(): Promise<Record<string, ServiceHealth>>;
   getEvents(runId: string, beforeId?: number): Promise<EventPage>;
   createVideo(input: CreateVideoRequest): Promise<CreateVideoResponse>;
+  getGenerationFlows(): Promise<FluxoGeracao[]>;
+  createGenerationFlow(input: NovoFluxoGeracao): Promise<FluxoGeracao>;
   pauseRun(id: string, key: string): Promise<CommandResponse>;
   resumeRun(id: string, key: string): Promise<CommandResponse>;
   retryStage(id: string, stage: StageName, key: string): Promise<CommandResponse>;
@@ -154,6 +158,13 @@ export function createStudioApi(baseUrl = DEFAULT_API_BASE): StudioApi {
     },
     createVideo: (input) =>
       request<CreateVideoResponse>(baseUrl, "/api/videos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    getGenerationFlows: () => request<FluxoGeracao[]>(baseUrl, "/api/fluxos-geracao"),
+    createGenerationFlow: (input) =>
+      request<FluxoGeracao>(baseUrl, "/api/fluxos-geracao", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),

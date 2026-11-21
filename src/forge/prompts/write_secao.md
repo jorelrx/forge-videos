@@ -8,7 +8,7 @@ Seção: {secao}
 Papel no roteiro: {papel}
 O que ela faz: {instrucao}
 Tamanho: entre {alvo_min} e {alvo_max} palavras de narração. Abaixo do mínimo a
-seção é reprovada; não encurte para "ir direto ao ponto".
+seção é reprovada; não encurte para "ir direto ao ponto".{fluxo_geracao}
 
 ## Regras
 

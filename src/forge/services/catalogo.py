@@ -60,6 +60,18 @@ def _resolved_run_file(run_dir: Path, relative_path: str) -> Path | None:
     return path if path.is_file() else None
 
 
+def verified_artifact_file(run_dir: Path, artifact: Artifact) -> Path | None:
+    """Resolve a catalogued file and check that it still matches its recorded contents."""
+    try:
+        path = _resolved_run_file(run_dir, artifact.relative_path)
+        if path is not None and path.stat().st_size == artifact.size_bytes:
+            if sha256_file(path) == artifact.sha256:
+                return path
+    except OSError:
+        return None
+    return None
+
+
 class CatalogoArtefatos:
     """Parent-owned artifact catalog; children submit only run-relative events."""
 
@@ -133,12 +145,7 @@ class CatalogoArtefatos:
                 return None
             artifact = repo.list_artifacts(run_id, current_only=False)
             candidate = next(item for item in artifact if item.id == row["id"])
-            path = _resolved_run_file(self._run_dir, candidate.relative_path)
-            if path is None or path.stat().st_size != candidate.size_bytes:
-                return None
-            if sha256_file(path) != candidate.sha256:
-                return None
-            return candidate
+            return candidate if verified_artifact_file(self._run_dir, candidate) else None
 
     def reusable_outputs(
         self, *, run_id: str, stage: StageName, current_stage_run_id: str,

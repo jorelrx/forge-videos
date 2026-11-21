@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -26,12 +27,14 @@ from forge.domain.execucao import (
 )
 from forge.domain.embalagem import Embalagem
 from forge.domain.midia import PlanoMidia
-from forge.domain.operacao import StageName
+from forge.domain.operacao import Artifact, ItemStatus, StageName
+from forge.executors.abertura import artefato_aprovado, copiar_arquivo
 from forge.executors.base import StageImplementation
 from forge.executors.comfy import ComfyClient
 from forge.executors.estilo_visual import COSMOS_INTERIOR
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
+from forge.services.catalogo import verified_artifact_file
 from forge.services.codex import CodexUsageLimitError
 from forge.infrastructure.logging import get_logger
 from forge.services.persistencia import carregar_modelo
@@ -131,9 +134,46 @@ class ImageExecutor(StageImplementation):
 
         artifacts: list[ArtifactOutput] = []
         failures: list[tuple[str, str]] = []
-        quota_failure: FailureDetail | None = None
+        failure: FailureDetail | None = None
+        completed = {
+            (item.item_key, item.input_hash): item.id
+            for item in context.work_items
+            if item.status is ItemStatus.SUCCEEDED
+        }
+        catalogued: dict[str, list[Artifact]] = defaultdict(list)
+        for artifact in reversed(context.artifacts):
+            if artifact.is_current and artifact.kind == "image.png" and artifact.work_item_id:
+                catalogued[artifact.work_item_id].append(artifact)
 
         for item in plan.items:
+            completed_id = completed.get((item.item_key, item.input_hash))
+            if completed_id is not None:
+                existing = next(
+                    (artifact for artifact in catalogued[completed_id]
+                     if verified_artifact_file(context.run_dir, artifact) is not None),
+                    None,
+                )
+                if existing is None:
+                    failure = FailureDetail(
+                        code="image_checkpoint_invalid",
+                        message=f"Imagem concluída ausente ou modificada: {item.item_key}",
+                        failure_class=FailureClass.ITEM,
+                        retriable=True,
+                        recommended_action="Iniciar nova tentativa da etapa Imagens",
+                        adapter="imagens",
+                        attempt=context.attempt,
+                        item_key=item.item_key,
+                    )
+                    break
+                artifacts.append(ArtifactOutput(
+                    item_key=item.item_key,
+                    kind=existing.kind,
+                    relative_path=existing.relative_path,
+                    mime_type=existing.mime_type,
+                    metadata=existing.metadata,
+                ))
+                continue
+
             prompt = str((item.input.get("beat") or {}).get("prompt") or "")
             emit(
                 kind="item.started",
@@ -143,8 +183,16 @@ class ImageExecutor(StageImplementation):
             )
             started = monotonic()
             destino = output_dir / f"{item.item_key}.png"
+            aprovado = artefato_aprovado(
+                context, "abertura.imagem", item=item.item_key, input_hash=item.input_hash,
+                image_provider=self.settings.image_provider,
+            )
             try:
-                generated = self._generate(context, prompt, seed, destino)
+                if aprovado is not None:
+                    copiar_arquivo(aprovado[0], destino)
+                    generated = destino
+                else:
+                    generated = self._generate(context, prompt, seed, destino)
             except Exception as error:  # noqa: BLE001 - o item falho não derruba o lote
                 elapsed = round((monotonic() - started) * 1000)
                 detail = str(error) or type(error).__name__
@@ -162,7 +210,7 @@ class ImageExecutor(StageImplementation):
                 )
                 failures.append((item.item_key, detail))
                 if quota_exhausted:
-                    quota_failure = FailureDetail(
+                    failure = FailureDetail(
                         code="codex_usage_limit",
                         message=detail,
                         failure_class=FailureClass.CAPACITY,
@@ -192,12 +240,15 @@ class ImageExecutor(StageImplementation):
                     "prompt": prompt,
                     "seed": seed,
                     "preset": COSMOS_INTERIOR.name,
-                    "source": "generated",
                     "cache_key": self.client.cache_key(
                         prompt, seed, COSMOS_INTERIOR, []
                     ),
                     "image_provider": self.settings.image_provider,
-                    **(self.client.artifact_metadata(destino) if hasattr(self.client, "artifact_metadata") else {}),
+                    **(
+                        aprovado[1] if aprovado is not None else
+                        self.client.artifact_metadata(destino) if hasattr(self.client, "artifact_metadata") else {}
+                    ),
+                    "source": "abertura_aprovada" if aprovado is not None else "generated",
                 },
             )
             emit(
@@ -214,7 +265,7 @@ class ImageExecutor(StageImplementation):
             )
             artifacts.append(output)
 
-        failure = quota_failure or (
+        failure = failure or (
             FailureDetail(
                 code=GENERATION_FAILED,
                 message=f"Beats sem imagem: {', '.join(key for key, _ in failures)}",
@@ -263,6 +314,19 @@ class ImageExecutor(StageImplementation):
         marca = hashlib.sha256(f"{prompt}|{seed}".encode("utf-8")).hexdigest()[:12]
         base = video_dir / "thumbnail" / f"base-{marca}.png"
         saida = video_dir / "thumbnail.jpg"
+        aprovado = artefato_aprovado(
+            context, "abertura.thumbnail", prompt=prompt, texto=texto,
+            image_provider=self.settings.image_provider,
+        )
+        if aprovado is not None:
+            copiar_arquivo(aprovado[0], saida)
+            output = ArtifactOutput(
+                kind=THUMBNAIL_KIND, relative_path="video/thumbnail.jpg",
+                mime_type="image/jpeg", metadata=aprovado[1],
+            )
+            emit(kind="artifact.created", level="info", message="Thumbnail aprovada reutilizada",
+                 payload=output.model_dump(mode="json"))
+            return output
         try:
             if not base.is_file():
                 base.parent.mkdir(parents=True, exist_ok=True)

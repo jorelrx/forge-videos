@@ -478,6 +478,25 @@ class StudioWorker:
                 run_id=context.run.id,
                 stage_run_id=context.stage_run.id,
             )
+            if not result.failed and run.config_snapshot.get("revisao_editorial"):
+                checkpoint = {
+                    StageName.PESQUISA: "propostas_editoriais",
+                    StageName.PLANO_MIDIA: "previa_abertura",
+                }.get(stage.stage)
+                if checkpoint and any(
+                    artifact.get("kind") == checkpoint
+                    for artifact in result.outputs.get("artifacts", [])
+                ):
+                    finished_run = operacao.save_run(run.model_copy(update={
+                        "status": mudar_run(mudar_run(run.status, RunStatus.PAUSING), RunStatus.PAUSED),
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "config_snapshot": {**run.config_snapshot, "aguardando_editorial": checkpoint},
+                    }))
+                    EventosRepository(conn).append(
+                        kind="run.paused", level="info", message="Revisão editorial disponível",
+                        payload={"checkpoint": checkpoint}, run_id=run.id, stage_run_id=stage.id,
+                    )
             if not result.failed and stage.stage is StageName.VALIDACAO:
                 validating_run = operacao.save_run(
                     run.model_copy(

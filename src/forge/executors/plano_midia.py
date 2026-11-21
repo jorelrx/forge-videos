@@ -34,18 +34,20 @@ from forge.domain.execucao import (
     StagePlan,
     WorkItemPlan,
 )
+from forge.domain.embalagem import Embalagem
 from forge.domain.midia import PlanoMidia
 from forge.domain.models import Roteiro, Secao
 from forge.domain.roteiro import SECOES_NOMES
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
+from forge.executors.abertura import aplicar_direcao_visual, renderizar_abertura
 from forge.executors.lm_studio import LMStudioManager
 from forge.gpu.liberadores import montar_broker
 from forge.infrastructure.config import Settings
 from forge.llms.model import build_chat_model
 from forge.services.artefatos import _parse_blocos
 from forge.services.citacoes import citacoes_da_run
-from forge.services.persistencia import carregar_modelo
+from forge.services.persistencia import carregar_modelo, gravar_modelo
 from forge.services.worker import EventSink
 
 
@@ -213,43 +215,31 @@ class MediaPlanExecutor(StageImplementation):
         self._plano = None
         self._work_item_plans = []
         self._pre_gate = None
-        model, broker = self._runtime()
-        roteiro = self._load_roteiro(context)
+        proposta_editorial = context.proposta_editorial
+        revisao_editorial = bool(context.config_snapshot.get("revisao_editorial"))
+        reaproveitar = bool(context.config_snapshot.get("reusar_plano_abertura"))
+        plano_base_path = context.run_dir / "video" / "midia-abertura-base.json"
         try:
-            with broker.exclusivo("llm"):
-                if self.settings.provider == "lm-studio":
-                    (self.lm_manager or LMStudioManager(self.settings)).ensure_loaded()
-                # A embalagem vem ANTES do plano de mídia: é uma chamada só, e
-                # um título reprovado não deve custar as chamadas dos beats.
-                try:
-                    embalagem = embalar(
-                        model,
-                        roteiro,
-                        citacoes_da_run(context.run_dir, roteiro),
-                        aviso_ia=self.settings.aviso_ia,
-                        run_dir=context.run_dir,
+            if reaproveitar:
+                plano = carregar_modelo(plano_base_path, PlanoMidia)
+                embalagem = carregar_modelo(context.run_dir / "video" / "embalagem.json", Embalagem)
+            else:
+                model, broker = self._runtime()
+                roteiro = self._load_roteiro(context)
+                with broker.exclusivo("llm"):
+                    embalagem, plano = self._planejar(context, model, roteiro, proposta_editorial)
+        except EmbalagemReprovada as error:
+            self._pre_gate = GateResult(
+                approved=False, code="packaging_gate_failed",
+                findings=[
+                    GateFinding(
+                        code=finding.code, message=finding.message,
+                        details={**finding.details, "severity": finding.severity},
                     )
-                except EmbalagemReprovada as error:
-                    self._pre_gate = GateResult(
-                        approved=False,
-                        code="packaging_gate_failed",
-                        findings=[
-                            GateFinding(
-                                code=finding.code,
-                                message=finding.message,
-                                details={**finding.details, "severity": finding.severity},
-                            )
-                            for finding in error.report.findings
-                            if finding.serious
-                        ],
-                    )
-                    return StageExecutionResult(current_items=0, total_items=1)
-                plano = planejar_midia(
-                    model,
-                    roteiro,
-                    alvo_segundos=self.settings.midia_alvo_segundos,
-                    run_dir=context.run_dir,
-                )
+                    for finding in error.report.findings if finding.serious
+                ],
+            )
+            return StageExecutionResult(current_items=0, total_items=1)
         except CoberturaInsuficiente as error:
             return StageExecutionResult(
                 current_items=0,
@@ -265,6 +255,8 @@ class MediaPlanExecutor(StageImplementation):
                 ),
             )
 
+        plano_base = plano
+        plano = aplicar_direcao_visual(plano, context.config_snapshot.get("ajustes_abertura") or {})
         self._plano = plano
         candidate_gate = self.validate(
             context,
@@ -278,6 +270,21 @@ class MediaPlanExecutor(StageImplementation):
         # Só grava a embalagem com o plano de mídia aprovado: uma etapa que
         # falha não deixa meio resultado para a retentativa confundir com pronto.
         gravar_embalagem(context.run_dir, embalagem)
+        previa_outputs = []
+        if revisao_editorial:
+            if not reaproveitar:
+                gravar_modelo(plano_base_path, plano_base)
+            try:
+                previa_outputs = renderizar_abertura(context, plano, embalagem, self.settings, emit)
+            except (OSError, RuntimeError, ValueError) as error:
+                return StageExecutionResult(
+                    current_items=0, total_items=1, failure=FailureDetail(
+                        code="opening_preview_failed", message=str(error) or "Prévia indisponível",
+                        failure_class=FailureClass.PROCESS, retriable=True,
+                        recommended_action="Verificar geração de mídia e tentar novamente",
+                        adapter="abertura", attempt=context.attempt,
+                    ),
+                )
         embalagem_outputs = [
             ArtifactOutput(
                 item_key="",
@@ -298,7 +305,7 @@ class MediaPlanExecutor(StageImplementation):
                 metadata={},
             ),
         ]
-        for embalagem_output in embalagem_outputs:
+        for embalagem_output in [*embalagem_outputs, *previa_outputs]:
             emit(
                 kind="artifact.created",
                 level="info",
@@ -335,8 +342,26 @@ class MediaPlanExecutor(StageImplementation):
         return StageExecutionResult(
             current_items=1,
             total_items=1,
-            artifacts=[*embalagem_outputs, output],
+            artifacts=[*embalagem_outputs, *previa_outputs, output],
         )
+
+    def _planejar(self, context, model, roteiro, proposta_editorial):
+        if self.settings.provider == "lm-studio":
+            (self.lm_manager or LMStudioManager(self.settings)).ensure_loaded()
+        # Uma embalagem reprovada não deve custar as chamadas dos beats.
+        diretrizes = (
+            {"diretrizes_editoriais": proposta_editorial.diretrizes()} if proposta_editorial else {}
+        )
+        embalagem = embalar(
+            model, roteiro, citacoes_da_run(context.run_dir, roteiro),
+            aviso_ia=self.settings.aviso_ia, run_dir=context.run_dir, **diretrizes,
+        )
+        plano = planejar_midia(
+            model, roteiro, alvo_segundos=self.settings.midia_alvo_segundos,
+            run_dir=context.run_dir,
+            **({"direcao_editorial": proposta_editorial.diretrizes()} if proposta_editorial else {}),
+        )
+        return embalagem, plano
 
     def validate(
         self, context: RunSnapshot, plan: StagePlan, result: StageExecutionResult

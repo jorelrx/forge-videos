@@ -37,6 +37,8 @@ class PreparationInput(BaseModel):
     workflow_version: int
     preset: StudioPreset
     fluxo_geracao: FluxoGeracao | None = None
+    revisao_editorial: bool = False
+    referencias_editoriais: str | None = None
 
 
 class PreparationExecutor(StageImplementation):
@@ -46,6 +48,8 @@ class PreparationExecutor(StageImplementation):
         # Older snapshots do not carry it, so they use the first version.
         workflow_version = raw.pop("workflow_version", 1)
         raw.pop("fluxo_geracao", None)
+        revisao_editorial = raw.pop("revisao_editorial", False)
+        referencias_editoriais = raw.pop("referencias_editoriais", None)
         return PreparationInput(
             run_id=context.run_id,
             video_id=context.video_id,
@@ -54,6 +58,8 @@ class PreparationExecutor(StageImplementation):
             workflow_version=workflow_version,
             preset=StudioPreset.model_validate(raw),
             fluxo_geracao=context.fluxo_geracao,
+            revisao_editorial=revisao_editorial,
+            referencias_editoriais=referencias_editoriais,
         )
 
     @staticmethod

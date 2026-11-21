@@ -13,7 +13,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from forge.api.errors import not_found
+from forge.api.errors import not_found, transition_error
+from forge.domain.operacao import RunStatus
+from forge.services.desempenho import Medicao, ler_desempenho, salvar_medicao
 from forge.services.publicacao import Publicador, ler_estado
 from forge.services.youtube import YouTubeAuthError, YouTubeError
 
@@ -67,8 +69,14 @@ async def get_publication(run_id: str, request: Request) -> dict:
 
 @publication_router.post("/runs/{run_id}/publication", status_code=202)
 async def publish(run_id: str, payload: PublishRequest, request: Request):
-    publicador = _publicador(request)
     run_dir = _run_dir(request, run_id)
+    try:
+        run = request.app.state.services.commands.get_run(run_id).run
+    except KeyError:
+        run = None
+    if run and run.config_snapshot.get("revisao_editorial") and run.status is not RunStatus.COMPLETED:
+        transition_error("Conclua a revisão editorial e a validação antes de publicar")
+    publicador = _publicador(request)
     try:
         publicador.iniciar(run_dir, titulo=payload.titulo, publicar_em=payload.publicar_em,
                            canal_id=payload.canal_id)
@@ -78,3 +86,22 @@ async def publish(run_id: str, payload: PublishRequest, request: Request):
         return JSONResponse(status_code=409, content={
             "error": {"code": codigo, "message": str(erro)}})
     return JSONResponse(status_code=202, content=_visao(publicador, run_dir))
+
+
+def _publicacao_concluida(run_dir):
+    estado = ler_estado(run_dir)
+    if estado is None or estado.etapa != "concluida" or not estado.video_id:
+        transition_error("A execução ainda não tem um vídeo enviado ao YouTube")
+    return estado
+
+
+@publication_router.get("/runs/{run_id}/desempenho")
+def get_performance(run_id: str, request: Request) -> dict:
+    run_dir = _run_dir(request, run_id)
+    return ler_desempenho(run_dir, _publicacao_concluida(run_dir)).para_api()
+
+
+@publication_router.put("/runs/{run_id}/desempenho")
+def save_performance(run_id: str, payload: Medicao, request: Request) -> dict:
+    run_dir = _run_dir(request, run_id)
+    return salvar_medicao(run_dir, _publicacao_concluida(run_dir), payload).para_api()

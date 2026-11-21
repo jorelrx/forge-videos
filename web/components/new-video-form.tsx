@@ -16,6 +16,8 @@ export const NewVideoForm = forwardRef<HTMLFormElement, NewVideoFormProps>(
     const [tema, setTema] = useState("");
     const [tese, setTese] = useState("");
     const [priority, setPriority] = useState(50);
+    const [revisaoEditorial, setRevisaoEditorial] = useState(false);
+    const [referenciasEditoriais, setReferenciasEditoriais] = useState("");
     const [fluxos, setFluxos] = useState<FluxoGeracao[]>([]);
     const [fluxoId, setFluxoId] = useState(FLUXO_PADRAO);
     const [erroCatalogo, setErroCatalogo] = useState(false);
@@ -72,6 +74,9 @@ export const NewVideoForm = forwardRef<HTMLFormElement, NewVideoFormProps>(
         priority,
         preset: "local-recomendado-v1",
         fluxo_geracao: fluxoId,
+        ...(revisaoEditorial ? { revisao_editorial: true } : {}),
+        ...(revisaoEditorial && referenciasEditoriais.trim()
+          ? { referencias_editoriais: referenciasEditoriais.trim() } : {}),
       });
     }
 
@@ -145,6 +150,27 @@ export const NewVideoForm = forwardRef<HTMLFormElement, NewVideoFormProps>(
                 </button>
               )}
             </div>
+            <div className="editorial-option">
+              <input
+                id="revisao-editorial"
+                type="checkbox"
+                checked={revisaoEditorial}
+                onChange={(event) => setRevisaoEditorial(event.target.checked)}
+                aria-describedby="editorial-hint"
+              />
+              <label htmlFor="revisao-editorial">Revisar proposta e abertura</label>
+              <small id="editorial-hint" className="field-hint">
+                Escolha o recorte após a pesquisa e aprove a prévia antes de gerar o restante.
+              </small>
+            </div>
+            {revisaoEditorial && (
+              <div className="field">
+                <label htmlFor="referencias-editoriais">Referências editoriais opcionais</label>
+                <textarea id="referencias-editoriais" rows={3} maxLength={3000}
+                  value={referenciasEditoriais} onChange={(event) => setReferenciasEditoriais(event.target.value)}
+                  placeholder="Ex.: no vidIQ, ensaios sobre preocupação com o futuro abriram com uma decisão concreta." />
+              </div>
+            )}
             <div className="form-row">
               <div className="field field-priority">
                 <label htmlFor="priority">Prioridade</label>

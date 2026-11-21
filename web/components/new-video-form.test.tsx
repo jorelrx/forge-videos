@@ -38,6 +38,22 @@ describe("NewVideoForm", () => {
     });
   });
 
+  it("enfileira a revisão editorial com as referências escolhidas", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(<NewVideoForm onSubmit={onSubmit} />);
+
+    await user.type(screen.getByLabelText("Tema"), "Liberdade");
+    await user.click(screen.getByRole("checkbox", { name: "Revisar proposta e abertura" }));
+    await user.type(screen.getByLabelText("Referências editoriais opcionais"), "  Abrir com uma escolha concreta.  ");
+    await user.click(screen.getByRole("button", { name: "Enfileirar vídeo" }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      revisao_editorial: true,
+      referencias_editoriais: "Abrir com uma escolha concreta.",
+    }));
+  });
+
   it("salva e seleciona um fluxo personalizado sem perder o tema", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();

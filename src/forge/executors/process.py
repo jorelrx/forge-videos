@@ -57,9 +57,15 @@ class StageProcessExecutor:
             self.stage.value,
         ]
         try:
+            timeout = self.timeout_seconds
+            if self.stage is StageName.PLANO_MIDIA and snapshot.config_snapshot.get("revisao_editorial"):
+                from forge.infrastructure.config import get_settings
+
+                settings = get_settings()
+                timeout += settings.stage_timeout(StageName.AUDIO) + settings.stage_timeout(StageName.IMAGENS)
             result = SubprocessExecutor(
                 argv,
-                timeout_seconds=self.timeout_seconds,
+                timeout_seconds=timeout,
             ).execute(context, emit)
             if result.failure_code not in _PROTOCOL_FAILURES:
                 context_path.unlink(missing_ok=True)

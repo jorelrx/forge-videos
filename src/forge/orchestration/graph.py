@@ -13,6 +13,7 @@ from forge.agents import tema as tema_stage
 from forge.agents import write as write_stage
 from forge.agents.research import PassageEvidence
 from forge.domain.fluxo_geracao import FLUXO_PADRAO, FluxoGeracao
+from forge.domain.editorial import PropostaEditorial
 from forge.domain.models import Fonte
 from forge.services.acervo import Acervo
 from forge.services.artefatos import gravar_artefato, gravar_bruto
@@ -107,6 +108,8 @@ def rotear(state: dict, max_rounds: int, max_passos: int) -> str:
 def build_graph(
     model, settings, inicio: str = "tema", revisor=None, *,
     fluxo_geracao: FluxoGeracao | None = None,
+    proposta_editorial: PropostaEditorial | None = None,
+    tese_editorial: str | None = None,
 ):
     """`revisor`, quando dado, é o modelo do nó `review` — de outro provider."""
     logger.info(
@@ -114,11 +117,18 @@ def build_graph(
         fluxo_geracao=fluxo_geracao.id if fluxo_geracao else FLUXO_PADRAO,
     )
     modelo_revisao = revisor if revisor is not None else model
-    diretrizes = (
-        {"diretrizes": fluxo_geracao.instrucoes}
-        if fluxo_geracao and fluxo_geracao.instrucoes
-        else {}
-    )
+    instrucoes = [
+        fluxo_geracao.instrucoes if fluxo_geracao else None,
+        proposta_editorial.diretrizes() if proposta_editorial else None,
+        f"Tese fornecida na criação: {tese_editorial}" if tese_editorial else None,
+    ]
+    if proposta_editorial and fluxo_geracao and fluxo_geracao.id == "gancho-inicial":
+        instrucoes.append(
+            "Confirme a promessa do título nos primeiros 30 segundos estimados "
+            "de narração. O espectador já deve reconhecer a tensão e a pergunta central."
+        )
+    texto_diretrizes = "\n\n".join(texto for texto in instrucoes if texto)
+    diretrizes = {"diretrizes": texto_diretrizes} if texto_diretrizes else {}
 
     # Um cliente por grafo: `research` é reentrado pelo reviewer e pelo write,
     # e abrir conexão nova a cada passagem não paga nada.

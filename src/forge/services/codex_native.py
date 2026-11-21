@@ -17,9 +17,19 @@ import httpx
 
 from forge.infrastructure.config import Settings
 from forge.services.codex import CodexError, CodexUsageLimitError, _strict_schema
+from forge.infrastructure.logging import get_logger
 from forge.services.codex_auth import CodexAuthError, OAuthCredentials, request_headers
 
 BASE_URL = "https://chatgpt.com/backend-api/codex"
+_RETRY_DELAYS = (2.0, 4.0)
+_OVERLOAD_CODES = frozenset({
+    "server_overloaded", "overloaded", "overloaded_error", "model_overloaded", "service_unavailable",
+})
+logger = get_logger(__name__)
+
+
+class CodexUnavailableError(CodexError):
+    """O servidor declarou indisponibilidade temporária."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,8 @@ def check_http(response: httpx.Response, token: str) -> None:
         )
     if response.status_code == 429:
         raise CodexUsageLimitError("Cota Codex indisponível; " + message)
+    if response.status_code in (502, 503, 504):
+        raise CodexUnavailableError(message)
     raise CodexError(message)
 
 
@@ -156,92 +168,110 @@ class CodexNative:
         )
         deadline = time.monotonic() + timeout
         try:
-            with (
-                context as client,
-                client.stream(
-                    "POST",
-                    f"{BASE_URL}/responses",
-                    headers=request_headers(token),
-                    json=body,
-                    timeout=timeout,
-                ) as response,
-            ):
-                check_http(response, token)
-                with (work_dir / "events.jsonl").open("w", encoding="utf-8") as events:
-                    for event in _events(response, deadline):
-                        events.write(json.dumps({"type": event.get("type")}) + "\n")
-                        events.flush()
-                        if event.get("type") in (
-                            "error",
-                            "response.failed",
-                            "response.incomplete",
-                        ):
-                            detail = _safe_message(event, token)
-                            error = (
-                                event.get("error")
-                                or (event.get("response") or {}).get("error")
-                                or event
-                            )
-                            code = (
-                                str(error.get("code", ""))
-                                if isinstance(error, dict)
-                                else ""
-                            )
-                            if "usage_limit" in code or "usage limit" in detail.lower():
-                                raise CodexUsageLimitError(
-                                    "Cota Codex indisponível; " + detail
-                                )
-                            raise CodexError("Resposta Codex falhou: " + detail)
-                        if event.get("type") == "response.completed":
-                            result = event.get("response") or {}
-                            if (
-                                result.get("status") != "completed"
-                                or result.get("model") != model
-                            ):
-                                raise CodexError(
-                                    "Resposta Codex incompleta ou modelo diferente do solicitado"
-                                )
-                            parts = [
-                                part
-                                for item in result.get("output", [])
-                                if item.get("type") == "message"
-                                for part in item.get("content", [])
-                            ]
-                            if any(part.get("type") == "refusal" for part in parts):
-                                raise CodexError("Codex recusou a solicitação")
-                            text = "".join(
-                                part.get("text", "")
-                                for part in parts
-                                if part.get("type") == "output_text"
-                            )
-                            if not text.strip():
-                                raise CodexError("Codex concluiu sem texto")
-                            if schema is not None:
-                                json.loads(text)
-                            metadata = {
-                                "model": result["model"],
-                                "status": result["status"],
-                                "usage": result.get("usage") or {},
-                                "request_id": result.get("id"),
-                            }
-                            (work_dir / "response.txt").write_text(
-                                text.replace(token, "[redacted]"), encoding="utf-8"
-                            )
-                            (work_dir / "metadata.json").write_text(
-                                json.dumps(metadata, ensure_ascii=False),
-                                encoding="utf-8",
-                            )
-                            return NativeResponse(
-                                text,
-                                work_dir,
-                                result["model"],
-                                metadata["usage"],
-                                metadata["request_id"],
-                            )
-            raise CodexError("Stream Codex terminou sem response.completed")
+            with context as client:
+                for attempt in range(1, len(_RETRY_DELAYS) + 2):
+                    try:
+                        return self._request_once(client, body, token, work_dir, deadline, attempt)
+                    except CodexUnavailableError:
+                        if attempt > len(_RETRY_DELAYS):
+                            raise
+                        delay = _RETRY_DELAYS[attempt - 1]
+                        if time.monotonic() + delay >= deadline:
+                            raise
+                        logger.warning("Codex indisponível; repetindo chamada", attempt=attempt, delay=delay)
+                        time.sleep(delay)
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
             raise CodexError(
                 f"Falha de transporte ou resposta Codex inválida; logs: {work_dir}"
             ) from None
         except CodexError as error:
             raise type(error)(f"{error}; logs: {work_dir}") from None
+
+    @staticmethod
+    def _request_once(
+        client: httpx.Client, body: dict, token: str, work_dir: Path, deadline: float, attempt: int,
+    ) -> NativeResponse:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CodexUnavailableError("Prazo esgotado enquanto o Codex estava indisponível")
+        with client.stream(
+            "POST", f"{BASE_URL}/responses", headers=request_headers(token),
+            json=body, timeout=remaining,
+        ) as response:
+            check_http(response, token)
+            with (work_dir / "events.jsonl").open("a", encoding="utf-8") as events:
+                for event in _events(response, deadline):
+                    events.write(json.dumps({"type": event.get("type"), "attempt": attempt}) + "\n")
+                    events.flush()
+                    if event.get("type") in (
+                        "error",
+                        "response.failed",
+                        "response.incomplete",
+                    ):
+                        detail = _safe_message(event, token)
+                        error = (
+                            event.get("error")
+                            or (event.get("response") or {}).get("error")
+                            or event
+                        )
+                        code = (
+                            str(error.get("code", ""))
+                            if isinstance(error, dict)
+                            else ""
+                        )
+                        if "usage_limit" in code or "usage limit" in detail.lower():
+                            raise CodexUsageLimitError(
+                                "Cota Codex indisponível; " + detail
+                            )
+                        if code in _OVERLOAD_CODES or (
+                            "servers are currently overloaded" in detail.casefold()
+                        ):
+                            raise CodexUnavailableError("Resposta Codex indisponível: " + detail)
+                        raise CodexError("Resposta Codex falhou: " + detail)
+                    if event.get("type") == "response.completed":
+                        result = event.get("response") or {}
+                        if (
+                            result.get("status") != "completed"
+                            or result.get("model") != body["model"]
+                        ):
+                            raise CodexError(
+                                "Resposta Codex incompleta ou modelo diferente do solicitado"
+                            )
+                        parts = [
+                            part
+                            for item in result.get("output", [])
+                            if item.get("type") == "message"
+                            for part in item.get("content", [])
+                        ]
+                        if any(part.get("type") == "refusal" for part in parts):
+                            raise CodexError("Codex recusou a solicitação")
+                        text = "".join(
+                            part.get("text", "")
+                            for part in parts
+                            if part.get("type") == "output_text"
+                        )
+                        if not text.strip():
+                            raise CodexError("Codex concluiu sem texto")
+                        if "text" in body:
+                            json.loads(text)
+                        metadata = {
+                            "model": result["model"],
+                            "status": result["status"],
+                            "usage": result.get("usage") or {},
+                            "request_id": result.get("id"),
+                        }
+                        (work_dir / "response.txt").write_text(
+                            text.replace(token, "[redacted]"), encoding="utf-8"
+                        )
+                        (work_dir / "metadata.json").write_text(
+                            json.dumps(metadata, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        return NativeResponse(
+                            text,
+                            work_dir,
+                            result["model"],
+                            metadata["usage"],
+                            metadata["request_id"],
+                        )
+        raise CodexError("Stream Codex terminou sem response.completed")

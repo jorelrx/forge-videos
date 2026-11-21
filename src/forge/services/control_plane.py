@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel
 
+from forge.domain.editorial import DecisaoAbertura, EscolhaEditorial, PropostasEditoriais
 from forge.domain.operacao import (
     Artifact,
     Command,
@@ -241,6 +242,8 @@ class ControlPlaneService:
                 return command
 
             run = operacao.get_run(run_id)
+            if run.config_snapshot.get("aguardando_editorial"):
+                raise TransicaoInvalida("Conclua a revisão editorial para continuar")
             resumable_stage = next(
                 (
                     stage
@@ -332,12 +335,24 @@ class ControlPlaneService:
                 run.status, RunStatus.QUEUED, motivo="retry_stage"
             )
             dependent_stages = dependentes_de(stage)
+            snapshot = dict(run.config_snapshot)
+            if snapshot.get("aguardando_editorial") == "propostas_editoriais" and StageName.PESQUISA not in dependent_stages:
+                raise TransicaoInvalida("Escolha uma proposta ou refaça a pesquisa")
+            if snapshot.get("aguardando_editorial") == "previa_abertura" and StageName.PLANO_MIDIA not in dependent_stages:
+                raise TransicaoInvalida("Aprove ou refaça a prévia antes das etapas de mídia")
+            if StageName.PLANO_MIDIA in dependent_stages:
+                for key in ("aguardando_editorial", "ajustes_abertura", "reusar_plano_abertura",
+                            "previa_aprovada", "previa_aprovada_sha256"):
+                    snapshot.pop(key, None)
+            if StageName.PESQUISA in dependent_stages:
+                snapshot.pop("proposta_editorial", None)
             operacao.invalidate_from_stage(run_id, stage)
             operacao.invalidate_artifacts(run_id, dependent_stages)
             operacao.save_run(
                 run.model_copy(
                     update={
                         "status": queued_status,
+                        "config_snapshot": snapshot,
                         "lease_owner": None,
                         "lease_expires_at": None,
                         "pause_requested_at": None,
@@ -363,6 +378,68 @@ class ControlPlaneService:
                 run_id=run_id,
             )
             return command
+
+    def escolher_proposta(self, run_id: str, escolha: EscolhaEditorial) -> Run:
+        with self.db.transaction(immediate=True) as conn:
+            repo = OperacaoRepository(conn)
+            run, artifact = self._checkpoint(repo, run_id, escolha.artefato_id, "propostas_editoriais")
+            recortes = PropostasEditoriais.model_validate(artifact.metadata).propostas
+            if escolha.indice >= len(recortes):
+                raise TransicaoInvalida("A proposta selecionada não existe")
+            snapshot = dict(run.config_snapshot)
+            snapshot["proposta_editorial"] = recortes[escolha.indice].model_dump(mode="json")
+            return self._continuar_editorial(conn, repo, run, snapshot)
+
+    def decidir_abertura(self, run_id: str, decisao: DecisaoAbertura) -> Run:
+        with self.db.transaction(immediate=True) as conn:
+            repo = OperacaoRepository(conn)
+            run, artifact = self._checkpoint(repo, run_id, decisao.artefato_id, "previa_abertura")
+            snapshot = dict(run.config_snapshot)
+            if decisao.acao == "aprovar":
+                snapshot["previa_aprovada"] = True
+                snapshot["previa_aprovada_sha256"] = artifact.sha256
+                snapshot.pop("reusar_plano_abertura", None)
+            else:
+                alvos = artifact.metadata.get(f"itens_{decisao.acao}", [])
+                if not any(isinstance(alvo, dict) and alvo.get("id") == decisao.item for alvo in alvos):
+                    raise TransicaoInvalida("O item não pertence à prévia atual")
+                ajustes = dict(snapshot.get("ajustes_abertura") or {})
+                anteriores = dict(ajustes.get(decisao.acao) or {})
+                anterior = anteriores.get(decisao.item, {})
+                anteriores[decisao.item] = {
+                    "revisao": anterior.get("revisao", 0) + 1,
+                    "orientacao": decisao.orientacao or anterior.get("orientacao"),
+                }
+                ajustes[decisao.acao] = anteriores
+                snapshot["ajustes_abertura"] = ajustes
+                snapshot["reusar_plano_abertura"] = True
+                repo.invalidate_from_stage(run_id, StageName.PLANO_MIDIA)
+                repo.invalidate_artifacts(run_id, dependentes_de(StageName.PLANO_MIDIA))
+            return self._continuar_editorial(conn, repo, run, snapshot)
+
+    def _checkpoint(
+        self, repo: OperacaoRepository, run_id: str, artifact_id: str, checkpoint: str,
+    ) -> tuple[Run, Artifact]:
+        run = self._require_mutable_run(repo, run_id)
+        if run.status is not RunStatus.PAUSED or run.config_snapshot.get("aguardando_editorial") != checkpoint:
+            raise TransicaoInvalida("A revisão editorial não está disponível neste momento")
+        artifact = repo.get_artifact(artifact_id)
+        if artifact is None or artifact.run_id != run_id or not artifact.is_current or artifact.kind != checkpoint:
+            raise TransicaoInvalida("A revisão mudou. Atualize o painel e escolha novamente.")
+        return run, artifact
+
+    def _continuar_editorial(self, conn, repo, run, snapshot) -> Run:
+        snapshot.pop("aguardando_editorial", None)
+        queued = repo.save_run(run.model_copy(update={
+            "status": mudar_run(run.status, RunStatus.QUEUED),
+            "config_snapshot": snapshot,
+            "pause_requested_at": None,
+        }))
+        EventosRepository(conn).append(
+            kind="run.queued", level="info", message="Decisão editorial registrada",
+            payload={}, run_id=run.id,
+        )
+        return queued
 
     @staticmethod
     def _require_run(operacao: OperacaoRepository, run_id: str) -> Run:

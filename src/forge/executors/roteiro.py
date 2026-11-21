@@ -220,6 +220,10 @@ class ScriptExecutor(StageImplementation):
         self, context: RunSnapshot, plan: StagePlan, emit: EventSink
     ) -> StageExecutionResult:
         fluxo = context.fluxo_geracao
+        proposta = context.proposta_editorial
+        contexto_editorial = (
+            {"proposta_editorial": proposta, "tese_editorial": context.tese} if proposta else {}
+        )
         model, broker = self._runtime()
         bundle = self._load_bundle(context.run_dir)
         resumed = self._resume_content(context, bundle)
@@ -230,6 +234,7 @@ class ScriptExecutor(StageImplementation):
                 model, self.settings, inicio="review" if resumed else "plan",
                 revisor=build_review_model(self.settings),
                 fluxo_geracao=fluxo,
+                **contexto_editorial,
             )
             state = graph.invoke({
                 "tema": context.tema,

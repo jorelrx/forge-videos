@@ -32,6 +32,9 @@ FORGE_ANTHROPIC_API_KEY=sk-ant-...
 # API (FastAPI)
 uv run forge-api
 
+# Worker
+uv run forge-worker
+
 # Dev web (Next.js)
 npm run dev --prefix web
 
@@ -239,6 +242,10 @@ aprovado: True
 O Studio é local e de usuário único: API em `127.0.0.1:8765`, web em `127.0.0.1:3100`. `data/forge.db` é a fonte de verdade operacional.
 
 Em **Novo vídeo**, escolha **Padrão**, **Comentários** ou **Gancho inicial** antes de enfileirar. Para cadastrar outro, abra **Criar fluxo** e informe nome, descrição e instruções para o roteiro. Use as instruções para dizer o que deve acontecer em cada seção relevante e o que o revisor deve conferir. A execução conserva as instruções escolhidas ao entrar na fila.
+
+Marque **Revisar proposta e abertura** para decidir o recorte após a pesquisa no acervo. Você pode informar referências de formato e público, como observações do vidIQ. A execução pausa de novo para apresentar a prévia de até 30 segundos com voz, legendas, imagens e embalagem. Ajuste a direção visual de uma cena ou peça outra leitura de um trecho. Ao aprovar, a geração continua e reaproveita as mídias aprovadas.
+
+Em **Publicação**, abra **Desempenho no YouTube** depois do envio. Registre os totais dos primeiros 7 e 28 dias de publicação pública. As medições ficam ligadas ao vídeo enviado e à versão editorial registrada na publicação.
 
 No CLI, use `uv run forge roteiro --tema "Coragem" --fluxo comentarios`. Também são aceitos `padrao`, `gancho-inicial` e IDs de fluxos personalizados, disponíveis em `GET /api/fluxos-geracao`. Ao retomar pelo CLI, o comando usa o fluxo gravado na execução.
 

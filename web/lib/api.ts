@@ -10,6 +10,10 @@ import type {
   EventPage,
   FluxoGeracao,
   NovoFluxoGeracao,
+  EscolhaEditorial,
+  DecisaoAbertura,
+  Desempenho,
+  Medicao,
   StageName,
   PublicacaoRequest,
   PublicacaoView,
@@ -47,6 +51,8 @@ export interface StudioApi {
   pauseRun(id: string, key: string): Promise<CommandResponse>;
   resumeRun(id: string, key: string): Promise<CommandResponse>;
   retryStage(id: string, stage: StageName, key: string): Promise<CommandResponse>;
+  escolherProposta?(id: string, input: EscolhaEditorial): Promise<unknown>;
+  decidirAbertura?(id: string, input: DecisaoAbertura): Promise<unknown>;
 }
 
 interface ApiErrorEnvelope {
@@ -169,6 +175,16 @@ export function createStudioApi(baseUrl = DEFAULT_API_BASE): StudioApi {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       }),
+    escolherProposta: (id, input) => request(baseUrl, "/api/runs/" + encodeURIComponent(id) + "/proposta-editorial", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+    decidirAbertura: (id, input) => request(baseUrl, "/api/runs/" + encodeURIComponent(id) + "/previa-abertura", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
     pauseRun: (id, key) =>
       commandRequest(baseUrl, `/api/runs/${encodeURIComponent(id)}/pause`, key),
     resumeRun: (id, key) =>
@@ -203,6 +219,18 @@ export function listRunArtifacts(runId: string, baseUrl = DEFAULT_API_BASE): Pro
 /** Estado da publicação no YouTube (`GET /api/runs/{run_id}/publication`). */
 export function getPublication(runId: string, baseUrl = DEFAULT_API_BASE): Promise<PublicacaoView> {
   return request<PublicacaoView>(baseUrl, `/api/runs/${encodeURIComponent(runId)}/publication`);
+}
+
+export function getPerformance(runId: string, baseUrl = DEFAULT_API_BASE): Promise<Desempenho> {
+  return request(baseUrl, "/api/runs/" + encodeURIComponent(runId) + "/desempenho");
+}
+
+export function savePerformance(runId: string, medicao: Medicao, baseUrl = DEFAULT_API_BASE): Promise<Desempenho> {
+  return request(baseUrl, "/api/runs/" + encodeURIComponent(runId) + "/desempenho", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(medicao),
+  });
 }
 
 /** Inicia ou retoma o envio ao YouTube (`POST /api/runs/{run_id}/publication`, 202). */

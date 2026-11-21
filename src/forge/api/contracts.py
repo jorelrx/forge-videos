@@ -27,6 +27,8 @@ class CreateVideoRequest(BaseModel):
     priority: int = Field(default=50, ge=0, le=100)
     preset: Literal["local-recomendado-v1"] = "local-recomendado-v1"
     fluxo_geracao: FluxoId | None = None
+    revisao_editorial: bool = False
+    referencias_editoriais: str | None = Field(default=None, max_length=3000)
 
 class CreateVideoResponse(BaseModel):
     video: Video

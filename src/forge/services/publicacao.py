@@ -12,6 +12,7 @@ sessão Google interrompem, e a retomada refaz apenas o que faltou.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import threading
@@ -23,6 +24,8 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from forge.domain.embalagem import Embalagem
+from forge.domain.editorial import AberturaAprovada
+from forge.services.persistencia import carregar_modelo
 from forge.infrastructure.logging import get_logger
 from forge.services.youtube import (
     YouTubeAuthError, YouTubeError, YouTubeQuotaError, YouTubeSessaoExpirada,
@@ -67,6 +70,9 @@ class EstadoPublicacao(BaseModel):
     # A sessão de upload pertence ao token do canal: a retomada usa este.
     canal_id: str | None = None
     canal_titulo: str | None = None
+    fluxo_geracao: str | None = None
+    abertura_sha256: str | None = None
+    thumbnail_sha256: str | None = None
     thumbnail: Passo = "pendente"
     legenda: Passo = "pendente"
     avisos: list[str] = Field(default_factory=list)
@@ -228,6 +234,7 @@ def _publicar(run_dir, cliente, settings, titulo, publicar_em, agora, ao_progred
     try:
         if estado.video_id is None:
             estado.etapa = "enviando"
+            _registrar_versao_editorial(video, estado)
             salvar()
             _enviar_video(cliente, settings, embalagem, estado, video / "final.mp4", salvar)
         estado.etapa = "thumbnail"
@@ -236,6 +243,11 @@ def _publicar(run_dir, cliente, settings, titulo, publicar_em, agora, ao_progred
             estado.thumbnail = _passo_opcional(
                 lambda: cliente.definir_thumbnail(estado.video_id, video / "thumbnail.jpg"),
                 video / "thumbnail.jpg", "thumbnail_recusada", estado)
+            if estado.thumbnail == "ok":
+                try:
+                    estado.thumbnail_sha256 = hashlib.sha256((video / "thumbnail.jpg").read_bytes()).hexdigest()
+                except OSError:
+                    estado.thumbnail_sha256 = None
         estado.etapa = "legenda"
         salvar()
         if estado.legenda == "pendente":
@@ -254,6 +266,32 @@ def _publicar(run_dir, cliente, settings, titulo, publicar_em, agora, ao_progred
         salvar()
         log.warning("publicacao_falhou", run=run_dir.name, codigo=erro.codigo)
         raise
+
+
+def _registrar_versao_editorial(video: Path, estado: EstadoPublicacao) -> None:
+    entrada = video / "input.json"
+    if entrada.is_file():
+        try:
+            fluxo = json.loads(entrada.read_text(encoding="utf-8")).get("fluxo_geracao") or {}
+            estado.fluxo_geracao = fluxo.get("id", "padrao")
+        except (OSError, ValueError, AttributeError):
+            estado.fluxo_geracao = None
+    aprovada = video / "abertura-aprovada.json"
+    if aprovada.is_file():
+        try:
+            estado.abertura_sha256 = carregar_modelo(aprovada, AberturaAprovada).previa_sha256
+            return
+        except (OSError, ValueError):
+            estado.abertura_sha256 = None
+    roteiro = video / "roteiro.json"
+    if roteiro.is_file():
+        try:
+            secoes = json.loads(roteiro.read_text(encoding="utf-8")).get("secoes", [])
+            gancho = next((item.get("conteudo") for item in secoes if item.get("nome") == "Gancho"), None)
+            if gancho:
+                estado.abertura_sha256 = hashlib.sha256(gancho.encode("utf-8")).hexdigest()
+        except (OSError, ValueError, AttributeError, TypeError):
+            estado.abertura_sha256 = None
 
 
 def _enviar_video(cliente, settings, embalagem, estado, arquivo, salvar):

@@ -9,8 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from forge.domain.execucao import RunSnapshot, StageChildResult
+from forge.domain.execucao import FailureClass, FailureDetail, GateFinding, GateResult, RunSnapshot, StageChildResult
 from forge.domain.operacao import StageName
+from forge.services.codex_native import CodexUnavailableError
 
 IMPLEMENTATIONS = {
     StageName.PREPARACAO: "forge.executors.preparacao:PreparationExecutor",
@@ -61,18 +62,38 @@ def main(argv: list[str] | None = None) -> int:
                 f"{snapshot.stage.value!r}"
             )
         implementation = _implementation(stage)
-        result = implementation.run(snapshot, emit)
-        child_result = StageChildResult.model_validate(result)
-        emit(
-            kind="stage.result",
-            level="info",
-            message="Etapa concluída",
-            payload=child_result.model_dump(mode="json"),
+        child_result = StageChildResult.model_validate(implementation.run(snapshot, emit))
+    except CodexUnavailableError as error:
+        failure = FailureDetail(
+            code="codex_unavailable",
+            message="Codex temporariamente indisponível após as tentativas de reconexão",
+            failure_class=FailureClass.TRANSIENT,
+            retriable=True,
+            recommended_action="Retomar a etapa quando o Codex voltar a responder",
+            adapter="codex",
+            attempt=snapshot.attempt,
+            services={"codex": str(error)},
         )
-        return 0
+        child_result = StageChildResult(
+            current_items=0,
+            total_items=0,
+            failure=failure,
+            gate=GateResult(
+                approved=False,
+                code=failure.code,
+                findings=[GateFinding(code=failure.code, message=failure.message)],
+            ),
+        )
     except Exception as error:  # noqa: BLE001 - child reports diagnostics on stderr
         print(f"stage executor failed: {error}", file=sys.stderr)
         return 1
+    emit(
+        kind="stage.result",
+        level="info",
+        message="Etapa concluída",
+        payload=child_result.model_dump(mode="json"),
+    )
+    return 0
 
 
 if __name__ == "__main__":

@@ -14,9 +14,13 @@ from PIL import Image
 
 from forge.domain.execucao import RunSnapshot
 from forge.domain.midia import Beat, PlanoMidia
-from forge.domain.operacao import StageName
+from forge.domain.operacao import ItemStatus, StageName
 from forge.executors.imagens import ImageExecutor
 from forge.infrastructure.config import Settings
+from forge.repositories.connection import Database
+from forge.repositories.operacao import OperacaoRepository
+from forge.repositories.schema import init_db
+from forge.services.catalogo import ChildEventProjector
 from forge.services.persistencia import gravar_modelo
 
 
@@ -50,9 +54,9 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
-def _snapshot(tmp_path: Path, *, beats: list[Beat] | None = None) -> RunSnapshot:
+def _snapshot(tmp_path: Path, *, beats: list[Beat] | None = None, run_id: str = "run-1") -> RunSnapshot:
     root = tmp_path / "runs"
-    run_dir = root / "run-1"
+    run_dir = root / run_id
     (run_dir / "video").mkdir(parents=True, exist_ok=True)
     gravar_modelo(
         run_dir / "video" / "midia.json",
@@ -65,7 +69,7 @@ def _snapshot(tmp_path: Path, *, beats: list[Beat] | None = None) -> RunSnapshot
         ),
     )
     return RunSnapshot(
-        run_id="run-1",
+        run_id=run_id,
         video_id="v1",
         tema="T",
         tese="Teste",
@@ -180,6 +184,59 @@ def test_item_failure_does_not_stop_other_images(tmp_path):
     assert [artifact.item_key for artifact in result.artifacts] == ["i002"]
     assert result.failure.code == "image_generation_failed"
     assert result.failure.retriable is True
+
+
+@pytest.mark.parametrize("scenario", ["complete", "partial", "modified_file"])
+def test_resume_reuses_only_intact_succeeded_images_in_the_same_attempt(tmp_path, scenario):
+    db = Database(tmp_path / "forge.db")
+    init_db(db)
+    with db.transaction(immediate=True) as conn:
+        repo = OperacaoRepository(conn)
+        _, run = repo.create_video_and_run(
+            tema="Tema", tese="Tese", priority=50, config_snapshot={},
+            workflow_version=2, git_commit="abc123",
+        )
+        stage = next(stage for stage in repo.current_stages(run.id) if stage.stage is StageName.IMAGENS)
+    snapshot = _snapshot(tmp_path, run_id=run.id)
+    projector = ChildEventProjector(db, snapshot.run_dir, stage.id)
+
+    def emit(*, kind, payload, **_):
+        projector.project(kind, payload)
+
+    first_failure = scenario == "partial"
+    first = _executor(tmp_path, FakeComfy(fail_on={"sala vazia"} if first_failure else set()))
+    first.run(snapshot, emit)
+    with db.connection() as conn:
+        repo = OperacaoRepository(conn)
+        resumed = snapshot.model_copy(update={
+            "artifacts": repo.list_artifacts(run.id),
+            "work_items": repo.list_work_items(stage.id),
+        })
+
+    if scenario == "modified_file":
+        Image.new("RGB", (1024, 576), "red").save(snapshot.run_dir / "video/images/i001.png")
+
+    client = FakeComfy()
+    result = _executor(tmp_path, client).run(resumed, emit)
+
+    if scenario == "modified_file":
+        assert not result.gate.approved
+        assert result.failure.code == "image_checkpoint_invalid"
+        assert result.failure.item_key == "i001"
+        assert client.calls == []
+        return
+
+    assert result.gate.approved
+    assert (result.current_items, result.total_items) == (2, 2)
+    assert [artifact.item_key for artifact in result.artifacts] == ["i001", "i002"]
+    assert [prompt for prompt, _, _ in client.calls] == (["sala vazia"] if first_failure else [])
+    with db.connection() as conn:
+        repo = OperacaoRepository(conn)
+        assert [(item.status, item.attempts) for item in repo.list_work_items(stage.id)] == [
+            (ItemStatus.SUCCEEDED, 1),
+            (ItemStatus.SUCCEEDED, 2 if first_failure else 1),
+        ]
+        assert len(repo.list_artifacts(run.id)) == 2
 
 
 def test_codex_quota_stops_batch_and_preserves_completed_images(tmp_path):

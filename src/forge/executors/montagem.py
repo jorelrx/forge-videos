@@ -31,6 +31,7 @@ from forge.domain.execucao import (
 )
 from forge.agents.embalagem import aplicar_tempos_reais, gravar_embalagem
 from forge.domain.embalagem import Embalagem
+from forge.domain.editorial import AberturaAprovada
 from forge.domain.midia import BlocoNarracao, PlanoMidia
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
@@ -56,7 +57,7 @@ from forge.services.citacoes import ARQUIVO as CITACOES_ARQUIVO
 from forge.services.citacoes import carregar_citacoes
 from forge.services.legendas import conferir_deixas, formatar_srt, gerar_deixas
 from forge.services.linha_tempo import TrechoTempo, linha_do_tempo
-from forge.services.persistencia import carregar_modelo
+from forge.services.persistencia import carregar_modelo, gravar_modelo
 from forge.services.trilha import Trilha, escolher_trilha
 from forge.services.worker import EventSink
 
@@ -335,6 +336,13 @@ class ComposeExecutor(StageImplementation):
             },
         )
         outputs = [output, *acabamento["artifacts"]]
+        sha_previa = context.config_snapshot.get("previa_aprovada_sha256")
+        if sha_previa:
+            destino = "video/abertura-aprovada.json"
+            gravar_modelo(context.run_dir / destino, AberturaAprovada(previa_sha256=sha_previa))
+            outputs.append(ArtifactOutput(
+                kind="abertura.aprovacao", relative_path=destino, mime_type="application/json",
+            ))
         for criado in outputs:
             emit(
                 kind="artifact.created",

@@ -15,7 +15,8 @@ from forge.api.errors import transition_error, not_found, validation_error, read
 from forge.api.sse import ServerSentEvent, iter_sse_events
 from forge.api.ranges import parse_range, RangeNotSatisfiable, iter_file_range
 from forge.domain.fluxo_geracao import FluxoGeracao, NovoFluxoGeracao
-from forge.domain.operacao import StageName
+from forge.domain.operacao import Run, StageName
+from forge.domain.editorial import DecisaoAbertura, EscolhaEditorial
 from forge.services.control_plane import ControlPlaneService, TransicaoInvalida, HistoricoSomenteLeitura
 from forge.services.studio_query import StudioQueryService
 from forge.repositories.connection import Database
@@ -59,6 +60,10 @@ def create_generation_flow(payload: NovoFluxoGeracao, request: Request) -> Fluxo
 def create_video(payload: CreateVideoRequest, request: Request) -> CreateVideoResponse:
     commands = _control(request)
     snapshot = {"preset": payload.preset}
+    if payload.revisao_editorial:
+        snapshot["revisao_editorial"] = True
+        if payload.referencias_editoriais and payload.referencias_editoriais.strip():
+            snapshot["referencias_editoriais"] = payload.referencias_editoriais.strip()
     if payload.fluxo_geracao is not None:
         fluxo = FluxosGeracaoRepository(commands.db).obter(payload.fluxo_geracao)
         if fluxo is None:
@@ -76,6 +81,30 @@ def create_video(payload: CreateVideoRequest, request: Request) -> CreateVideoRe
         video=video,
         run=run,
     )
+
+
+@runs_router.post("/runs/{run_id}/proposta-editorial")
+def select_editorial_proposal(run_id: str, payload: EscolhaEditorial, request: Request) -> Run:
+    try:
+        return _control(request).escolher_proposta(run_id, payload)
+    except KeyError:
+        not_found("run", run_id)
+    except HistoricoSomenteLeitura as exc:
+        read_only_error(str(exc))
+    except TransicaoInvalida as exc:
+        transition_error(str(exc))
+
+
+@runs_router.post("/runs/{run_id}/previa-abertura")
+def review_opening(run_id: str, payload: DecisaoAbertura, request: Request) -> Run:
+    try:
+        return _control(request).decidir_abertura(run_id, payload)
+    except KeyError:
+        not_found("run", run_id)
+    except HistoricoSomenteLeitura as exc:
+        read_only_error(str(exc))
+    except TransicaoInvalida as exc:
+        transition_error(str(exc))
 
 
 # ---------------------------------------------------------------------------

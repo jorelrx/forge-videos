@@ -1,5 +1,7 @@
 "use client";
 
+import { DesempenhoPublicacao } from "./desempenho";
+
 import React from "react";
 import {
   artifactContentUrl, artifactDownloadUrl, disconnectChannel, getPublication, getYouTube, listRunArtifacts,
@@ -508,6 +510,7 @@ function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) 
   return (
     <Field title="Publicar no YouTube" headingId="pub-youtube">
       <div className="pub-publish">{body}</div>
+      {estado?.etapa === "concluida" && estado.video_id && <DesempenhoPublicacao runId={runId} />}
     </Field>
   );
 }

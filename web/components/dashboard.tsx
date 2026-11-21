@@ -7,6 +7,7 @@ import { ActivityDock } from "./activity-dock";
 import { Queue } from "./queue";
 import { RecentRuns } from "./history";
 import { RunOutputs } from "./run-outputs";
+import { EditorialReview } from "./editorial-review";
 import { Publication } from "./publication";
 import { Sidebar } from "./sidebar";
 import {
@@ -219,8 +220,14 @@ export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardView
   // "transition_invalid"). Oferecer o que a API recusa faz o clique não
   // acontecer do ponto de vista do operador.
   const canPauseRun = ["preparing", "running", "validating"].includes(focusStatus);
-  const canResumeRun = ["paused", "failed", "interrupted"].includes(focusStatus);
+  const checkpointEditorial = focusRun?.run.config_snapshot?.aguardando_editorial;
+  const canResumeRun = ["paused", "failed", "interrupted"].includes(focusStatus) &&
+    !checkpointEditorial;
   const canRetryRun = ["paused", "failed", "completed"].includes(focusStatus);
+  const limiteRetry = checkpointEditorial === "propostas_editoriais" ? "pesquisa" :
+    checkpointEditorial === "previa_abertura" ? "plano_midia" : "validacao";
+  const etapasRetry = PIPELINE_STAGES.filter((etapa) =>
+    STAGE_ORDER.indexOf(etapa.key) <= STAGE_ORDER.indexOf(limiteRetry));
 
   const activePipeline: { stage: StageName; status: ChipStatus; sub: string; items?: string }[] = [];
   if (focusRun) {
@@ -380,7 +387,7 @@ export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardView
                         }}
                       >
                         <option value="">Repetir etapa…</option>
-                        {PIPELINE_STAGES.map((s) => (
+                        {etapasRetry.map((s) => (
                           <option key={s.key} value={s.key}>
                             {stageStatus(s.key)}
                           </option>
@@ -391,6 +398,8 @@ export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardView
                 )}
               </section>
 
+              <EditorialReview key={focusRun.run.id + "-editorial"} run={focusRun}
+                escolher={state.escolherProposta} decidir={state.decidirAbertura} />
               <RunOutputs key={focusRun.run.id} run={focusRun} />
             </>
           ) : (

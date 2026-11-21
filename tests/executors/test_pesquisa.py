@@ -2,11 +2,13 @@ from pathlib import Path
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from forge.domain.execucao import FailureClass, RunSnapshot
 from forge.domain.operacao import StageName
 from forge.executors.pesquisa import ResearchExecutor
 from forge.agents.research import ResearchBundle
-from forge.domain.models import Fonte
+from forge.domain.models import Fonte, VeredictoRelevancia
 from forge.infrastructure.config import Settings
 from forge.services.acervo import AcervoIndisponivel
 
@@ -70,10 +72,10 @@ class OfflineAcervo:
         raise AssertionError("discover must not be used after unavailable search")
 
 
-def test_research_requires_minimum_canonical_sources(tmp_path):
+def test_research_requires_minimum_canonical_sources(tmp_path, scripted):
     events = []
     executor = ResearchExecutor(
-        model=FakeModel(),
+        model=scripted(invoke_texts=["consciência", "Consciência", "brief com fontes"]),
         acervo=FakeAcervo([passage(None), passage("12/ch1/p2")]),
         minimum_sources=2,
         settings=Settings(_env_file=None, juiz_relevancia=False),
@@ -89,6 +91,54 @@ def test_research_requires_minimum_canonical_sources(tmp_path):
         "research_source_missing_path",
         "research_minimum_not_met",
     }
+
+
+@pytest.mark.parametrize("aprovar_complemento", [True, False])
+def test_research_complements_partial_evidence_before_the_gate(
+    tmp_path, scripted, acervo_fake, aprovar_complemento,
+):
+    acervo = acervo_fake(por_query={
+        "conflito entre decisão e vontade": [passage("12/ch1/p1"), passage("12/ch1/p2")],
+        "pressão social sobre as decisões": [
+            passage("12/ch1/p2"), passage("42/ch3/p7"),
+            *(passage(f"78/ch2/p{i}") for i in range(10)),
+        ],
+    })
+    model = scripted(
+        invoke_texts=[
+            "conflito entre decisão e vontade",
+            "Conflito entre decisão e vontade\npressão social sobre as decisões",
+            "brief consolidado",
+        ],
+        structured=[
+            VeredictoRelevancia(relevantes=[0, 1], motivo=""),
+            VeredictoRelevancia(relevantes=[0, 1] if aprovar_complemento else [], motivo=""),
+        ],
+    )
+    context = _snapshot(tmp_path)
+    executor = ResearchExecutor(
+        model=model,
+        acervo=acervo,
+        minimum_sources=3,
+        settings=Settings(_env_file=None, juiz_relevancia=True),
+    )
+
+    result = executor.run(context, lambda **event: None)
+
+    assert result.gate.approved is aprovar_complemento
+    assert acervo.chamadas == [
+        "conflito entre decisão e vontade", "pressão social sobre as decisões",
+    ]
+    bundle = ResearchBundle.model_validate_json(
+        (context.run_dir / "video" / "research.json").read_bytes()
+    )
+    expected = ["12/ch1/p1", "12/ch1/p2"]
+    if aprovar_complemento:
+        expected.append("42/ch3/p7")
+    else:
+        assert result.gate.findings[0].details == {"found": 2, "required": 3}
+    assert bundle.canonical_paths == expected
+    assert bundle.brief == "brief consolidado"
 
 
 def test_research_persists_bundle_and_emits_counts_without_passage_bodies(tmp_path):

@@ -27,6 +27,7 @@ from forge.domain.execucao import (
     WorkItemPlan,
 )
 from forge.domain.operacao import Artifact, ItemStatus, StageName, WorkItem
+from forge.executors.abertura import artefato_aprovado
 from forge.executors.audio_generate import AudioGenerateClient, AudioOutcome, AudioRequest
 from forge.executors.base import StageImplementation
 from forge.executors.plano_midia import hash_json
@@ -437,6 +438,16 @@ class AudioExecutor(StageImplementation):
                     paths[item.item_key], artifacts[item.item_key] = found
                     continue
             found = self._reusable_output(context, item)
+            aprovado = artefato_aprovado(
+                context, "abertura.audio", item=item.item_key, input_hash=item.input_hash,
+            )
+            if aprovado is not None:
+                path, metadata = aprovado
+                output, findings = self._artifact_for(
+                    context, item.item_key, path, seed=int(metadata["seed"]),
+                )
+                if output is not None and not findings:
+                    found = path, output
             if found is not None:
                 reusable[item.item_key] = found
             else:

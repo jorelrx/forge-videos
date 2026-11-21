@@ -194,6 +194,20 @@ export interface CreateVideoRequest {
   priority: number;
   preset: "local-recomendado-v1";
   fluxo_geracao?: string;
+  revisao_editorial?: boolean;
+  referencias_editoriais?: string;
+}
+
+export interface EscolhaEditorial {
+  artefato_id: string;
+  indice: number;
+}
+
+export interface DecisaoAbertura {
+  artefato_id: string;
+  acao: "aprovar" | "audio" | "imagem";
+  item?: string;
+  orientacao?: string;
 }
 
 export interface NovoFluxoGeracao {
@@ -340,6 +354,27 @@ export interface PublicacaoView {
   estado: PublicacaoEstado | null;
   em_andamento: boolean;
   conectado: boolean;
+}
+
+export interface Medicao {
+  janela: 7 | 28;
+  visualizacoes: number;
+  impressoes: number | null;
+  ctr: number | null;
+  origem_trafego: string;
+  retencao_30s: number | null;
+  percentual_assistido: number | null;
+  comentarios: number | null;
+  respostas_lidas: number | null;
+  respostas_substantivas: number | null;
+  cliques_tela_final: number | null;
+}
+
+export interface Desempenho {
+  video_id: string;
+  titulo: string;
+  fluxo_geracao: string | null;
+  medicoes: (Medicao & { comentarios_por_mil: number | null })[];
 }
 
 export interface PublicacaoRequest {

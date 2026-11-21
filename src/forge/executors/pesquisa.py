@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from forge.agents.research import ResearchBundle, pesquisar
+from forge.agents.editorial import propor_recortes
 from forge.domain.execucao import (
     ArtifactOutput,
     FailureDetail,
@@ -111,6 +112,7 @@ class ResearchExecutor(StageImplementation):
         self, context: RunSnapshot, plan: StagePlan, emit: EventSink
     ) -> StageExecutionResult:
         model, acervo, broker = self._runtime()
+        recortes = None
         try:
             with broker.exclusivo("llm"):
                 bundle = pesquisar(
@@ -120,9 +122,31 @@ class ResearchExecutor(StageImplementation):
                     top=self.settings.acervo_top,
                     settings=self.settings,
                     run_dir=context.run_dir,
+                    tese=context.tese,
+                    minimum_sources=self.minimum_sources,
                 )
+                if (
+                    context.config_snapshot.get("revisao_editorial")
+                    and len(bundle.canonical_paths) >= self.minimum_sources
+                ):
+                    recortes = propor_recortes(
+                        model, context.tema, context.tese, bundle,
+                        fluxo=context.fluxo_geracao,
+                        referencias_editoriais=context.config_snapshot.get("referencias_editoriais") or "",
+                        run_dir=context.run_dir,
+                    )
             self._bundle = bundle
             paths = self._write_artifacts(context.run_dir, bundle, emit)
+            if recortes is not None:
+                destino = "video/propostas-editoriais.json"
+                gravar_modelo(context.run_dir / destino, recortes)
+                artifact = ArtifactOutput(
+                    kind="propostas_editoriais", relative_path=destino,
+                    mime_type="application/json", metadata=recortes.model_dump(mode="json"),
+                )
+                emit(kind="artifact.created", level="info", message="Recortes editoriais disponíveis",
+                     payload=artifact.model_dump(mode="json"))
+                paths.append(artifact)
             return StageExecutionResult(
                 current_items=1,
                 total_items=1,
@@ -259,7 +283,10 @@ class ResearchExecutor(StageImplementation):
             findings.append(
                 GateFinding(
                     code="research_minimum_not_met",
-                    message="Pesquisa não atingiu o mínimo de fontes canônicas",
+                    message=(
+                        f"Pesquisa encontrou {len(unique_paths)} de "
+                        f"{self.minimum_sources} fontes canônicas exigidas"
+                    ),
                     details={
                         "found": len(unique_paths),
                         "required": self.minimum_sources,

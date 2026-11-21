@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from forge.domain.fluxo_geracao import FluxoGeracao
+from forge.domain.editorial import PropostaEditorial
 from forge.domain.operacao import Artifact, JSON_OBJECT, StageName, WorkItem
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -141,6 +142,11 @@ class RunSnapshot(BaseModel):
         if "fluxo_geracao" in self.config_snapshot:
             return FluxoGeracao.model_validate(self.config_snapshot["fluxo_geracao"])
         return None
+
+    @property
+    def proposta_editorial(self) -> PropostaEditorial | None:
+        proposta = self.config_snapshot.get("proposta_editorial")
+        return PropostaEditorial.model_validate(proposta) if proposta is not None else None
 
     @model_validator(mode="after")
     def run_dir_is_canonical(self):

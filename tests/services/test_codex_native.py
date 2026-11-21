@@ -208,6 +208,37 @@ def test_stream_quota_is_typed_even_without_usage_limit_words(tmp_path, event):
         )
 
 
+@pytest.mark.parametrize("recover", [True, False])
+def test_stream_overload_retries_only_the_current_request(tmp_path, monkeypatch, recover):
+    from forge.services import codex_native
+    from forge.services.codex import CodexError
+
+    calls = []
+    delays = []
+    monkeypatch.setattr(codex_native.time, "sleep", delays.append)
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        event = {"type": "error", "message": "Our servers are currently overloaded. Please try again later."}
+        if recover and len(calls) == 2:
+            event = completed()
+        return httpx.Response(200, content=sse([event]))
+
+    native = make_native(tmp_path, handler)
+    kwargs = {"model": "gpt-6.1-sol", "timeout": 15}
+    messages = [{"role": "user", "content": "roteiro"}]
+    if recover:
+        assert native.chat(messages, **kwargs).text == "OK"
+        assert delays == [2.0]
+    else:
+        with pytest.raises(CodexError) as error:
+            native.chat(messages, **kwargs)
+        assert type(error.value).__name__ == "CodexUnavailableError"
+        assert delays == [2.0, 4.0]
+    assert len(calls) == len(delays) + 1
+    assert all(body == calls[0] for body in calls)
+
+
 def test_stream_disconnect_is_explicit_and_not_retried(tmp_path):
     from forge.services.codex import CodexError
 

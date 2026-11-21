@@ -252,6 +252,7 @@ def embalar(
     *,
     aviso_ia: bool = True,
     run_dir: Path | None = None,
+    diretrizes_editoriais: str = "",
 ) -> Embalagem:
     """Propõe, monta e confere a embalagem; uma segunda tentativa se reprovar.
 
@@ -268,6 +269,8 @@ def embalar(
             fontes="\n".join(f"- {fonte}" for fonte in fontes) or "(nenhuma)",
             achados=_fmt_achados(report),
         )
+        if diretrizes_editoriais:
+            prompt += "\n\n## Proposta editorial aprovada\n\n" + diretrizes_editoriais
         proposta = invoke_structured(
             model, EmbalagemProposta, [HumanMessage(content=prompt)],
             run_dir=run_dir, etapa="embalagem", subfase=f"tentativa{tentativa}",

@@ -109,3 +109,29 @@ def test_process_executor_rejects_secret_preparation_snapshot_before_disk_touch(
 
     assert started == []
     assert not context.run_dir.exists()
+
+
+def test_exhausted_codex_overload_is_a_retriable_stage_failure(tmp_path, monkeypatch, capsys):
+    import json
+
+    from forge.domain.execucao import FailureClass, StageChildResult
+    from forge.executors import entrypoint
+    from forge.services.codex_native import CodexUnavailableError
+
+    class OverloadedStage:
+        def run(self, snapshot, emit):
+            raise CodexUnavailableError("Our servers are currently overloaded")
+
+    monkeypatch.setattr(entrypoint, "_implementation", lambda stage: OverloadedStage())
+    executor = StageProcessExecutor(StageName.AUDIO, tmp_path / "runs", 90)
+    snapshot = executor._snapshot(stage_context(tmp_path))
+    path = executor._write_context(snapshot)
+
+    assert entrypoint.main(["--context", str(path), "--stage", "audio"]) == 0
+    event = json.loads(capsys.readouterr().out)
+    assert event["kind"] == "stage.result"
+    result = StageChildResult.model_validate(event["payload"])
+    assert not result.gate.approved
+    assert result.failure.code == "codex_unavailable"
+    assert result.failure.failure_class is FailureClass.TRANSIENT
+    assert result.failure.retriable

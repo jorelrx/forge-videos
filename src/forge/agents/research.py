@@ -9,6 +9,8 @@ referências de memória.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
@@ -95,62 +97,74 @@ def pesquisar(
     top: int | None = None,
     settings=None,
     run_dir=None,
+    tese: str | None = None,
+    minimum_sources: int | None = None,
 ) -> ResearchBundle:
     progresso = ProgressoLogger(run_dir) if run_dir else None
-
     catalogo = _catalogo(acervo)
-    queries = formular_queries(model, tema, pedido, catalogo)
-    if progresso:
-        progresso.log("research", "queries_formuladas",
-                      prompt=load_prompt("queries").format(
-                          tema=tema, pedido=_fmt_pedido(pedido), catalogo=catalogo,
-                      ),
-                      resultado="\n".join(queries),
-                      metadados={"num_queries": len(queries)})
-
-    # `top=None` deixa o default do próprio `colher_por_query` decidir — não
-    # duplicamos aqui o valor de fallback.
-    por_query = (
-        colher_por_query(acervo, queries, top=top)
-        if top is not None
-        else colher_por_query(acervo, queries)
-    )
-    passagens = _fundir(por_query)
-    bruto = _bruto(queries, passagens)
-
-    if progresso:
-        texto_passagens = "\n".join(
-            f"[{i}] {p.book_title} — score={p.score:.4f} — {p.text[:300]}"
-            for i, p in enumerate(passagens)
-        )
-        progresso.log("research", "busca_completada",
-                      resultado=texto_passagens,
-                      metadados={"total_passagens": len(passagens),
-                                 "queries": queries})
-
-    julgou = False
-    if passagens and settings is not None and settings.juiz_relevancia:
-        passagens = _julgar_e_registrar(
-            model, tema, passagens, por_query, settings, queries=queries, pedido=pedido,
-            run_dir=run_dir,
-        )
-        julgou = True
+    orientacao = f"Tese de trabalho a investigar: {tese}" if tese else ""
+    por_query: dict[str, list[Passagem]] = {}
+    passagens: list[Passagem] = []
+    limite = 2 if minimum_sources is not None else 1
+    for rodada in range(1, limite + 1):
+        prompt = _prompt_queries(tema, pedido, catalogo, orientacao)
+        anteriores = {query.casefold() for query in por_query}
+        queries = [q for q in _consultar_queries(model, prompt) if q.casefold() not in anteriores]
         if progresso:
-            progresso.log("research", "juiz_relevancia",
-                          resultado=f"Aprovadas: {len(passagens)}/{len(_fundir(por_query))}",
-                          metadados={"aprovadas": len(passagens)})
+            progresso.log("research", "queries_formuladas", prompt=prompt,
+                          resultado="\n".join(queries),
+                          metadados={"num_queries": len(queries), "rodada": rodada})
 
+        # Sem override, o default fica em colher_por_query.
+        achadas = (
+            colher_por_query(acervo, queries, top=top)
+            if top is not None
+            else colher_por_query(acervo, queries)
+        )
+        por_query.update(achadas)
+        pool = _fundir(achadas.values())
+        if progresso:
+            texto_passagens = "\n".join(
+                f"[{i}] {p.book_title} — score={p.score:.4f} — {p.text[:300]}"
+                for i, p in enumerate(pool)
+            )
+            progresso.log("research", "busca_completada", resultado=texto_passagens,
+                          metadados={"total_passagens": len(pool), "queries": queries,
+                                     "rodada": rodada})
+        if pool and settings is not None and settings.juiz_relevancia:
+            aprovadas = _julgar_e_registrar(
+                model, tema, pool, achadas, settings, queries=queries, pedido=pedido,
+                run_dir=run_dir, aceitar_pool_sem_juiz=rodada == 1,
+            )
+            if progresso:
+                progresso.log("research", "juiz_relevancia",
+                              resultado=f"Aprovadas: {len(aprovadas)}/{len(pool)}",
+                              metadados={"aprovadas": len(aprovadas), "rodada": rodada})
+        else:
+            aprovadas = pool
+            if settings is not None:
+                # Busca vazia é evidência de lacuna mesmo com o juiz desligado.
+                vazias = {query: itens for query, itens in achadas.items() if not itens}
+                _registrar_lacunas_de_busca_vazia(vazias, tema, settings)
+
+        passagens = _fundir((passagens, aprovadas))
+        total_canonicas = sum(bool(p.path and p.path.strip()) for p in passagens)
+        if minimum_sources is None or total_canonicas >= minimum_sources:
+            break
+        if rodada < limite:
+            buscas = "\n".join(f"- {q}" for q in por_query)
+            cobertas = "\n".join(f"- {p.book_title}: {p.breadcrumb}" for p in passagens)
+            orientacao += (
+                f"\n\nRodada complementar: faltam {minimum_sources - total_canonicas} "
+                "passagens pertinentes. Faça buscas novas sobre conceitos distintos da tese, "
+                "usando a terminologia das obras do catálogo. Procure evidência direta para "
+                "ângulos que as fontes aprovadas ainda não sustentam."
+                f"\nBuscas já feitas:\n{buscas or '(nenhuma)'}"
+                f"\nPassagens aprovadas:\n{cobertas or '(nenhuma)'}"
+            )
+
+    bruto = _bruto(list(por_query), _fundir(por_query.values()))
     if not passagens:
-        # Se o juiz rodou, ele já registrou lacuna por query dentro de
-        # `_julgar_e_registrar` (rejeitadas e vazias). Se não rodou, é porque
-        # NENHUMA query achou nada — o gate `if passagens` acima nem chegou a
-        # olhar `juiz_relevancia`. Registrar aqui não depende dessa flag:
-        # `juiz_relevancia=False` só significa "não gaste uma chamada de LLM
-        # decidindo relevância"; constatar que a busca devolveu zero linhas
-        # não exige julgamento nenhum, então amarrar isso à flag surpreenderia
-        # quem a desligou só para economizar a chamada extra.
-        if settings is not None and not julgou:
-            _registrar_lacunas_de_busca_vazia(por_query, tema, settings)
         candidatos = acervo.descobrir(tema)
         logger.warning("Acervo gap", tema=tema, sugestoes=len(candidatos))
         if progresso:
@@ -161,21 +175,12 @@ def pesquisar(
             unanswered_queries=list(por_query),
         )
 
-    if settings is not None and not julgou:
-        # With the relevance judge disabled, a partial pool still contains
-        # queries the acervo answered with zero passages. Record those as
-        # evidence just as in the all-empty branch; otherwise the lacuna would
-        # disappear merely because another query happened to succeed.
-        vazias = {query: achadas for query, achadas in por_query.items() if not achadas}
-        if vazias:
-            _registrar_lacunas_de_busca_vazia(vazias, tema, settings)
-
     brief = _sintetizar(model, tema, pedido, passagens)
     if progresso:
         progresso.log("research", "sintese_concluida",
                       resultado=brief,
                       metadados={"passagens_usadas": len(passagens)})
-    logger.info("Research completed", queries=len(queries), passagens=len(passagens))
+    logger.info("Research completed", queries=len(por_query), passagens=len(passagens))
     return _bundle(
         brief,
         _fontes(passagens),
@@ -187,7 +192,7 @@ def pesquisar(
 
 def _julgar_e_registrar(
     model, tema, passagens, por_query, settings, *, queries=None, pedido=None,
-    run_dir=None,
+    run_dir=None, aceitar_pool_sem_juiz=True,
 ):
     """Filtra pelo juiz e devolve ao acervo as queries que não renderam nada.
 
@@ -206,9 +211,9 @@ def _julgar_e_registrar(
     prompt melhora o veredicto — o juiz passa a julgar contra a necessidade de
     informação real, não contra o tema nu —, mas não desfaz a fusão.
 
-    O juiz é OPCIONAL (`FORGE_JUIZ_RELEVANCIA`); o roteiro não é. Por isso as
-    duas guardas abaixo: falha da chamada e veredicto degenerado ambos caem
-    para "mantém tudo, registra nada".
+    Na busca inicial, falha da chamada e veredicto degenerado mantêm o pool
+    sem registrar lacunas. A busca complementar só acrescenta passagens
+    aprovadas quando o juiz está ligado, pois pode destravar o gate.
     """
     # Import tardio: `lacunas` importa `Settings`, e o agente de pesquisa não
     # depende de config em lugar nenhum além daqui.
@@ -224,13 +229,22 @@ def _julgar_e_registrar(
         # qualquer uma matava o grafo duas horas run adentro. Falhar em produzir
         # um benefício opcional não pode destruir a saída obrigatória — mesma
         # postura que `services/lacunas.py` documenta para as escritas.
+        if not aceitar_pool_sem_juiz:
+            logger.error(
+                "Juiz falhou na busca complementar", erro=str(e), passagens=len(passagens),
+            )
+            return []
         logger.error(
             "Juiz de relevância falhou; seguindo com todas as passagens",
             erro=str(e), passagens=len(passagens),
         )
         return passagens
 
-    if not aprovadas and len(passagens) >= POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ:
+    if (
+        aceitar_pool_sem_juiz
+        and not aprovadas
+        and len(passagens) >= POOL_MINIMO_PARA_DESCONFIAR_DO_JUIZ
+    ):
         # Piso de sanidade, irmão do piso de cobertura do plano de mídia. Sem
         # ele, um único veredicto vazio esvazia `passagens`, o controle cai no
         # ramo de "o acervo não tem o livro", a síntese é pulada, `fontes` fica
@@ -288,14 +302,14 @@ def _registrar_lacunas_de_busca_vazia(por_query, tema, settings):
         )
 
 
-def _fundir(por_query: dict[str, list[Passagem]]) -> list[Passagem]:
+def _fundir(lotes: Iterable[list[Passagem]]) -> list[Passagem]:
     """Dedupe por path guardando o maior score, ordenado por relevância.
 
     A mesma passagem costuma responder a mais de uma query; guardar a última
     vista destruiria a ordenação.
     """
     por_path: dict[str, Passagem] = {}
-    for achadas in por_query.values():
+    for achadas in lotes:
         for p in achadas:
             atual = por_path.get(p.path)
             if atual is None or p.score > atual.score:
@@ -327,10 +341,20 @@ def _catalogo(acervo) -> str:
 def formular_queries(
     model, tema: str, pedido: str | None = None, catalogo: str | None = None,
 ) -> list[str]:
+    return _consultar_queries(model, _prompt_queries(tema, pedido, catalogo))
+
+
+def _prompt_queries(
+    tema: str, pedido: str | None, catalogo: str | None, orientacao: str = "",
+) -> str:
     prompt = load_prompt("queries").format(
         tema=tema, pedido=_fmt_pedido(pedido),
         catalogo=catalogo or CATALOGO_INDISPONIVEL,
     )
+    return f"{prompt}\n\n{orientacao}" if orientacao else prompt
+
+
+def _consultar_queries(model, prompt: str) -> list[str]:
     resp = model.invoke([HumanMessage(content=prompt)])
     queries = _parse_queries(_texto(resp))
     logger.debug("Queries formuladas", queries=queries)
@@ -353,7 +377,7 @@ def colher(acervo: Acervo, queries: list[str], *, top: int = 8) -> list[Passagem
     Delega a `colher_por_query` + `_fundir`: a origem por query importa para
     detectar lacuna, mas `colher` continua devolvendo só o pool ordenado.
     """
-    return _fundir(colher_por_query(acervo, queries, top=top))
+    return _fundir(colher_por_query(acervo, queries, top=top).values())
 
 
 def colher_por_query(
@@ -507,7 +531,7 @@ def _bundle(
         )
         for p in passagens
     ]
-    canonical_paths = list(dict.fromkeys(item.path for item in evidence if item.path))
+    canonical_paths = list(dict.fromkeys(item.path for item in evidence if item.path.strip()))
     return ResearchBundle(
         brief=brief,
         fontes=fontes,

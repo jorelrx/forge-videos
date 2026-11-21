@@ -66,6 +66,7 @@ def planejar_midia(
     *,
     alvo_segundos: int = 15,
     run_dir: Path | None = None,
+    direcao_editorial: str = "",
 ) -> PlanoMidia:
     # O alvo do operador está em segundos; o fatiador só entende palavras. Sem
     # esta conversão `fatiar` ficava no default de 35 palavras qualquer que
@@ -116,10 +117,22 @@ def planejar_midia(
     # Segunda passada: aqui, e só aqui, o modelo entra.
     beats: list[Beat] = []
     for nome, rubrica, da_secao in fatiado:
+        if direcao_editorial:
+            rubrica = (
+                f"{rubrica}\n\n{direcao_editorial}\n"
+                "Dê a cada beat uma função na narração: cena, exemplo, virada ou retorno. "
+                "No Fecho, retome o elemento visual da abertura com o novo sentido."
+            )
         propostos = propor_beats(
             model, nome, rubrica, da_secao, alvo_segundos=alvo_segundos,
             run_dir=run_dir,
         )
+        if direcao_editorial and propostos:
+            # A montagem começa a narrar no primeiro beat de cada seção.
+            # A prévia e o vídeo final precisam começar no mesmo bloco.
+            ordem = {bloco.id: indice for indice, bloco in enumerate(da_secao)}
+            primeiro = min(propostos, key=lambda item: ordem[item.bloco_id])
+            primeiro.bloco_id = da_secao[0].id
         for p in propostos:
             beats.append(
                 Beat(id=f"i{len(beats) + 1:03d}", bloco_id=p.bloco_id, prompt=p.prompt)

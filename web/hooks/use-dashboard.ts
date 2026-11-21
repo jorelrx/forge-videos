@@ -26,6 +26,8 @@ export interface DashboardState {
   pause(): Promise<void>;
   resume(): Promise<void>;
   retry(stage: StageName): Promise<void>;
+  escolherProposta?(input: import("../lib/contracts").EscolhaEditorial): Promise<void>;
+  decidirAbertura?(input: import("../lib/contracts").DecisaoAbertura): Promise<void>;
 }
 
 export function useDashboard(
@@ -191,7 +193,10 @@ export function useDashboard(
     async createVideo(input: CreateVideoRequest) {
       setLoading(true);
       try {
-        await api.createVideo(input);
+        const criada = await api.createVideo(input);
+        if (input.revisao_editorial && typeof criada.run.id === "string") {
+          selectedRunId.current = criada.run.id;
+        }
         await refresh();
       } catch (reason) {
         captureFailure(reason);
@@ -202,5 +207,15 @@ export function useDashboard(
     pause: () => runCommand((runId: string, key: string) => api.pauseRun(runId, key)),
     resume: () => runCommand((runId: string, key: string) => api.resumeRun(runId, key)),
     retry: (stage: StageName) => runCommand((runId, key) => api.retryStage(runId, stage, key)),
+    escolherProposta: api.escolherProposta && (async (input) => {
+      if (!focusRun) return;
+      await api.escolherProposta?.(focusRun.run.id, input);
+      await refresh();
+    }),
+    decidirAbertura: api.decidirAbertura && (async (input) => {
+      if (!focusRun) return;
+      await api.decidirAbertura?.(focusRun.run.id, input);
+      await refresh();
+    }),
   };
 }

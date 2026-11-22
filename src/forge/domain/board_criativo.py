@@ -61,7 +61,7 @@ class MensagemBoard(BaseModel):
 
 class FonteBoard(BaseModel):
     id: str
-    tipo: Literal["catalogo", "desempenho", "comentario"]
+    tipo: Literal["catalogo", "desempenho", "comentario", "episodio"]
     titulo: str
     url: str
     texto: str | None = None

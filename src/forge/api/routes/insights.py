@@ -8,6 +8,7 @@ from forge.api.errors import not_found, validation_error
 from forge.api.routes.sessao import conta_atual, exigir_canal
 from forge.repositories.catalogo_canal import CursorDesatualizado, obter, pagina
 from forge.services.catalogo_canal import ContextoCanal
+from forge.services.episodios_board import pauta_de_origem
 from forge.services.insights_canal import incluir_manuais, periodo
 
 insights_router = APIRouter(prefix="/canais/{canal_id}")
@@ -104,4 +105,4 @@ def video(request: Request, canal_id: str, video_id: str, tarefas: BackgroundTas
     resultado = ctx.relatorio(*datas, video=item)
     item["views"] = resultado["views"]
     incluir_manuais(resultado, item, ctx.raiz, canal_id)
-    return {**resultado, "video": item}
+    return {**resultado, "video": item, "episodio_board": pauta_de_origem(ctx, item.get("run_id"))}

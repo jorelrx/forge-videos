@@ -24,6 +24,8 @@ não repita números, períodos de Analytics ou atribuições pessoais no texto 
 Se não houver comentário com pergunta, a categoria publico deve ser uma pergunta editorial hipotética,
 sem dizer que veio do público. Se houver comentários com pergunta, a categoria publico deve citar
 pelo menos um desses comentários. Uma continuação com catálogo deve indicar a referência que a inspirou.
+Fontes do tipo episodio são episódios planejados no Board e já publicados: trazem a promessa,
+a abertura aprovada e, quando houver, a medida da janela desde a publicação.
 Com pouco material, baseie as hipóteses no posicionamento do canal.
 """
 
@@ -49,7 +51,7 @@ def _validar(proposta: PropostaModelo, fontes: list[FonteBoard], *, trilogia: bo
         raise ValueError("A proposta citou uma fonte fora do contexto")
     refs = [permitidas[id_] for id_ in dict.fromkeys(proposta.referencias)]
     tem_comentario = any(f.tipo == "comentario" for f in refs)
-    tem_catalogo = any(f.tipo in {"catalogo", "desempenho"} for f in refs)
+    tem_catalogo = any(f.tipo in {"catalogo", "desempenho", "episodio"} for f in refs)
     if trilogia and proposta.tipo == "publico" and not tem_comentario and any(
         f.tipo == "comentario" for f in fontes
     ):

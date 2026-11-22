@@ -13,6 +13,7 @@ from forge.infrastructure.logging import get_logger
 from forge.llms.model import build_chat_model
 from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
 from forge.services.board_contexto import perguntas_publicas
+from forge.services.episodios_board import episodios, fontes_de_episodios
 
 log = get_logger(__name__)
 LIMITE_CONVERSA = 60
@@ -102,7 +103,8 @@ def _fontes_permitidas(fontes, editorial):
 def executar_analise(repo, dono, pedido, entrada, ctx, editorial, settings, modelo=None):
     try:
         if isinstance(pedido, GerarSugestoes):
-            fontes = [*editorial.videos, *editorial.observacoes, *perguntas_publicas(ctx, editorial)]
+            fontes = [*editorial.videos, *editorial.observacoes, *perguntas_publicas(ctx, editorial),
+                      *fontes_de_episodios(episodios(ctx), editorial.pode_exibir_analytics)]
         elif isinstance(pedido, Conversar):
             fontes = _fontes_permitidas({f.id: f for f in entrada["fontes"]}.values(), editorial)
         else:
@@ -175,14 +177,23 @@ def pendencias(board, fluxos) -> list[dict]:
     return faltas
 
 
-def expor_board(board, operacao, editorial, fluxos):
+def expor_board(board, operacao, editorial, fluxos, lista_episodios=None):
     dados = board.model_dump()
+    lista_episodios = [dict(item) for item in lista_episodios or []]
     if not editorial.pode_exibir_analytics:
         ideias = [*dados["propostas"], *dados["guardadas"], dados["candidata"], dados["origem_pauta"]]
         for ideia in ideias:
-            if ideia and any(fonte["tipo"] == "desempenho" for fonte in ideia["referencias"]):
+            if not ideia:
+                continue
+            for fonte in ideia["referencias"]:
+                if fonte["tipo"] == "episodio":
+                    fonte["observacao"] = None
+            if any(fonte["tipo"] == "desempenho" for fonte in ideia["referencias"]):
                 ideia["referencias"] = [fonte for fonte in ideia["referencias"] if fonte["tipo"] != "desempenho"]
                 ideia["justificativa"] = "A justificativa usa indicadores que precisam de nova autorização."
                 ideia["hipotese"] = True
+        for item in lista_episodios:
+            if item.get("janelas"):
+                item["janelas"] = {nome: {**janela, "observacoes": []} for nome, janela in item["janelas"].items()}
     return {**dados, "operacao": operacao, "contexto": editorial.para_api(),
-            "fluxos": fluxos, "pendencias": pendencias(board, fluxos)}
+            "fluxos": fluxos, "pendencias": pendencias(board, fluxos), "episodios": lista_episodios}

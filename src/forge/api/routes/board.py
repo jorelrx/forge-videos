@@ -10,6 +10,7 @@ from forge.domain.board_criativo import Analise, AprovarPauta, Comando, EscolhaF
 from forge.domain.fluxo_geracao import FluxoGeracao
 from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
 from forge.services.control_plane import ControlPlaneService
+from forge.services.episodios_board import episodios
 from forge.repositories.board_criativo import BoardRepository, ConflitoBoard
 from forge.services.board_contexto import ler_contexto
 from forge.services.board_criativo import (
@@ -29,7 +30,7 @@ def _conflito(erro, tarefas):
 def get_board(canal_id: str, request: Request, tarefas: BackgroundTasks):
     ctx = contexto(request, canal_id, tarefas)
     board, operacao = BoardRepository(ctx.db, ctx.conta, ctx.canal).ler()
-    return expor_board(board, operacao, ler_contexto(ctx), fluxos_compativeis(ctx.db, ctx.canal))
+    return expor_board(board, operacao, ler_contexto(ctx), fluxos_compativeis(ctx.db, ctx.canal), episodios(ctx))
 
 
 @board_router.put("")
@@ -45,7 +46,7 @@ def put_board(canal_id: str, comando: Comando, request: Request, tarefas: Backgr
         return _conflito(erro, tarefas)
     except ValueError as erro:
         validation_error(str(erro))
-    return expor_board(board, operacao, ler_contexto(ctx), fluxos)
+    return expor_board(board, operacao, ler_contexto(ctx), fluxos, episodios(ctx))
 
 
 @board_router.post("/analises", status_code=202)
@@ -68,7 +69,7 @@ def analisar_board(canal_id: str, pedido: Analise, request: Request, tarefas: Ba
         tarefas.add_task(executar_analise, repo, dono, pedido, entrada, ctx, editorial, settings,
                          getattr(request.app.state, "modelo_board", None))
     board, operacao = repo.ler()
-    return expor_board(board, operacao, editorial, fluxos_compativeis(ctx.db, ctx.canal))
+    return expor_board(board, operacao, editorial, fluxos_compativeis(ctx.db, ctx.canal), episodios(ctx))
 
 
 def _snapshot_aprovado(fluxo: FluxoGeracao, board, revisao: int, aprovacao_id: str) -> dict:
@@ -110,5 +111,5 @@ def aprovar_pauta(canal_id: str, pedido: AprovarPauta, request: Request, tarefas
         validation_error(str(erro))
     board, operacao = repo.ler()
     corpo = {"aprovacao": aprovacao, "run_id": aprovacao["run_id"],
-             "board": expor_board(board, operacao, ler_contexto(ctx), fluxos)}
+             "board": expor_board(board, operacao, ler_contexto(ctx), fluxos, episodios(ctx))}
     return JSONResponse(status_code=201 if criada else 200, background=tarefas, content=corpo)

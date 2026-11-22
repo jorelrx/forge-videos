@@ -6,45 +6,29 @@ import asyncio
 
 system_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
-REQUIRED_SERVICES = frozenset({
-    "research",
-    "lm_studio",
-    "comfyui",
-    "tts",
-    "ffmpeg",
-    "gpu",
-})
-
-
 @system_router.get("/services")
 async def list_services(request: Request) -> dict:
-    services = request.app.state.services
-    health = services.health
-    settings = getattr(services, "settings", None)
-    required = set(REQUIRED_SERVICES)
-    if settings is not None:
-        if settings.provider == "codex":
-            required.discard("lm_studio")
-            required.add("codex")
-        if settings.image_provider == "codex":
-            required.discard("comfyui")
-            required.add("codex")
-        if settings.provider == "claude":
-            required.discard("lm_studio")
-        if "claude" in (settings.provider, settings.review_provider):
-            required.add("claude")
+    """Todos os serviços que o Forge conhece, habilitados ou não.
+
+    `enabled`/`usos` dizem se a configuração atual usa o serviço e em que
+    etapa; `state` diz se ele responde. `required` são os habilitados.
+    """
+    health = request.app.state.services.health
     checks = await asyncio.to_thread(health.check_all)
-    items = []
-    for name in sorted(checks.keys()):
-        item = checks[name]
-        items.append({
+    items = [
+        {
             "name": item.name,
             "state": item.state,
-            "message": item.message if item.state == "available" else f"{item.name}: {item.state.value}",
-        })
+            "message": item.message,
+            "latency_ms": item.latency_ms,
+            "enabled": item.enabled,
+            "usos": item.usos,
+        }
+        for item in checks.values()
+    ]
     return {
         "items": items,
-        "required": list(REQUIRED_SERVICES) if required == REQUIRED_SERVICES else sorted(required),
+        "required": sorted(item.name for item in checks.values() if item.enabled),
     }
 
 

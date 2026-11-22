@@ -809,7 +809,7 @@ a { color: inherit; }
   font-size: var(--text-sm);
 }
 .history-table .hist-name { min-width: 220px; }
-.services-table { min-width: 560px; }
+.services-table { min-width: 680px; }
 .history-table th {
   padding: 10px var(--s-4);
   border-bottom: 1px solid var(--border);
@@ -865,6 +865,9 @@ a { color: inherit; }
 
 .svc-name { display: block; font-weight: 550; }
 .services-table td.muted { max-width: 44ch; }
+.services-table td .hist-meta { display: block; margin-top: 4px; }
+/* Fora de uso: continua legível (a disponibilidade importa para trocar de provider), mas recua. */
+.services-table tr.svc-off .svc-name { color: var(--text-2); font-weight: 450; }
 
 /* Filtro segmentado */
 .segmented {

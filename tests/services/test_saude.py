@@ -73,24 +73,6 @@ def test_studio_health_service_degraded_for_unavailable_probe():
     assert "simulado" in result["research"].message
 
 
-def test_check_all_returns_six_services():
-    def true_probe() -> bool:
-        return True
-    service = StudioHealthService(
-        probes=HealthProbes(
-            research=true_probe,
-            lm_studio=true_probe,
-            comfyui=true_probe,
-            tts=true_probe,
-            ffmpeg=true_probe,
-            gpu=lambda: None,
-        )
-    )
-    result = service.check_all()
-    assert len(result) == 6
-    assert set(result.keys()) == {"research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"}
-
-
 def test_default_probes_gpu_le_o_estado_real_do_broker(tmp_path, monkeypatch):
     """O probe de GPU precisa ler o MESMO arquivo que o broker grava.
 
@@ -146,50 +128,6 @@ def test_default_probes_report_structured_health_when_services_are_offline():
     # Esperado parcial: alguns disponíveis, a maioria UNAVAILABLE sem endpoints ativos.
     for name in result:
         assert isinstance(result[name], ServiceHealth)
-def test_codex_health_replaces_only_selected_local_backends():
-    from forge.services.saude import HealthProbes, StudioHealthService
-
-    def unused():
-        raise AssertionError('Serviço local não utilizado')
-
-    probes = HealthProbes(
-        research=lambda:True, lm_studio=unused, comfyui=unused,
-        tts=lambda:True, ffmpeg=lambda:True, gpu=lambda:None,
-        codex=lambda:True, codex_llm=True, codex_images=True,
-    )
-    health = StudioHealthService(probes).check_all()
-    assert set(health) == {'research', 'tts', 'ffmpeg', 'gpu', 'codex'}
-    assert health['codex'].state == 'available'
-
-
-def test_claude_health_troca_lm_studio_pelo_login_claude():
-    from forge.services.saude import HealthProbes, StudioHealthService
-
-    def unused():
-        raise AssertionError('Serviço local não utilizado')
-
-    probes = HealthProbes(
-        research=lambda: True, lm_studio=unused, comfyui=lambda: True,
-        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
-        claude=lambda: True, claude_llm=True,
-    )
-    health = StudioHealthService(probes).check_all()
-    assert set(health) == {'research', 'comfyui', 'tts', 'ffmpeg', 'gpu', 'claude'}
-    assert health['claude'].state == 'available'
-
-
-def test_claude_revisor_entra_sem_tirar_o_lm_studio():
-    from forge.services.saude import HealthProbes, StudioHealthService
-
-    probes = HealthProbes(
-        research=lambda: True, lm_studio=lambda: True, comfyui=lambda: True,
-        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
-        claude=lambda: False, claude_review=True,
-    )
-    health = StudioHealthService(probes).check_all()
-    assert 'lm_studio' in health and health['claude'].state == 'unavailable'
-
-
 def test_probe_padrao_do_claude_nao_chama_o_modelo(monkeypatch):
     """O painel consulta a saúde em laço: uma chamada de modelo por consulta
     gastaria a cota da assinatura à toa. Só `auth status`."""
@@ -202,5 +140,145 @@ def test_probe_padrao_do_claude_nao_chama_o_modelo(monkeypatch):
                         lambda self: (_ for _ in ()).throw(AssertionError('modelo chamado')))
     probes = saude._default_probes(Settings(_env_file=None, provider='claude'))
     assert probes.claude() is True
-    assert probes.claude_llm is True
+    assert probes.usos['claude'] == ('roteiro', 'revisão')
     assert chamadas == ['status']
+
+
+def _probes_todos(**extra):
+    base = dict(
+        research=lambda: True, lm_studio=lambda: True, comfyui=lambda: True,
+        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
+        codex=lambda: True, claude=lambda: True, anthropic=lambda: True,
+        openai=lambda: True, youtube=lambda: True,
+    )
+    base.update(extra)
+    return HealthProbes(**base)
+
+
+def test_check_all_lista_todos_os_servicos_mesmo_os_nao_habilitados():
+    from forge.infrastructure.config import Settings
+    from forge.services.saude import usos_dos_servicos
+
+    usos = usos_dos_servicos(Settings(_env_file=None, provider="claude", image_provider="comfyui"))
+    health = StudioHealthService(_probes_todos(usos=usos)).check_all()
+
+    assert set(health) == {
+        "research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu",
+        "codex", "claude", "anthropic", "openai", "youtube",
+    }
+    assert health["claude"].enabled and health["claude"].usos == ["roteiro", "revisão"]
+    assert health["comfyui"].enabled and health["comfyui"].usos == ["imagens"]
+    assert not health["lm_studio"].enabled and health["lm_studio"].usos == []
+    assert not health["anthropic"].enabled
+    # Habilitado e disponível são eixos distintos: o não habilitado também é sondado.
+    assert health["lm_studio"].state == ServiceState.AVAILABLE
+
+
+def test_usos_separam_escritor_revisor_e_imagens():
+    from forge.infrastructure.config import Settings
+    from forge.services.saude import usos_dos_servicos
+
+    usos = usos_dos_servicos(Settings(
+        _env_file=None, provider="lm-studio", review_provider="claude", image_provider="codex",
+    ))
+    assert usos["lm_studio"] == ("roteiro",)
+    assert usos["claude"] == ("revisão",)
+    assert usos["codex"] == ("imagens",)
+    assert usos["research"] == ("pesquisa",)
+    assert usos["tts"] == ("narração",)
+    assert usos["ffmpeg"] == ("montagem",)
+    assert usos["youtube"] == ("publicação",)
+    assert "gpu" in usos
+    assert "comfyui" not in usos and "anthropic" not in usos and "openai" not in usos
+
+
+def test_sondas_rodam_em_paralelo():
+    """Com todo serviço sondado, timeouts de 2 s em série somariam ~10 s."""
+    import time
+
+    def lenta() -> bool:
+        time.sleep(0.2)
+        return True
+
+    probes = _probes_todos(research=lenta, lm_studio=lenta, comfyui=lenta, codex=lenta, claude=lenta)
+    inicio = time.perf_counter()
+    StudioHealthService(probes).check_all()
+    assert time.perf_counter() - inicio < 0.6
+
+
+def test_leitura_carrega_estado_e_mensagem_propria():
+    from forge.services.saude import Leitura
+
+    probes = _probes_todos(
+        anthropic=lambda: Leitura(ServiceState.UNAVAILABLE, "Sem FORGE_ANTHROPIC_API_KEY"),
+        youtube=lambda: Leitura(ServiceState.DEGRADED, "Nenhum canal vinculado"),
+    )
+    health = StudioHealthService(probes).check_all()
+    assert health["anthropic"].state == ServiceState.UNAVAILABLE
+    assert health["anthropic"].message == "Sem FORGE_ANTHROPIC_API_KEY"
+    assert health["youtube"].state == ServiceState.DEGRADED
+
+
+def test_sem_usos_injetados_tudo_conta_como_habilitado():
+    health = StudioHealthService(HealthProbes(
+        research=lambda: True, lm_studio=lambda: True, comfyui=lambda: True,
+        tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
+    )).check_all()
+    assert set(health) == {"research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"}
+    assert all(item.enabled for item in health.values())
+
+
+def test_chaves_de_api_nao_vazam_e_seguem_o_provider(monkeypatch):
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    probes = saude._default_probes(Settings(
+        _env_file=None, provider="openai", api_key="sk-generica", anthropic_api_key=None, openai_api_key=None,
+    ))
+    anthropic, openai = probes.anthropic(), probes.openai()
+    # A chave genérica é do provider principal; não serve à Anthropic.
+    assert anthropic.state == ServiceState.UNAVAILABLE
+    assert openai.state == ServiceState.AVAILABLE
+    assert "sk-" not in anthropic.message + openai.message
+
+
+def test_youtube_le_cliente_e_canais_vinculados(tmp_path):
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    settings = Settings(
+        _env_file=None,
+        youtube_client_secrets=tmp_path / "client.json",
+        youtube_canais_dir=tmp_path / "canais",
+    )
+    leitura = saude._default_probes(settings).youtube()
+    assert leitura.state == ServiceState.UNAVAILABLE
+    assert "cliente" in leitura.message.lower()
+
+
+
+def test_fora_de_uso_reusa_leitura_por_um_minuto():
+    """Serviço fora de uso não paga timeout nem CLI a cada consulta do painel."""
+    agora = [0.0]
+    chamadas = {"lm_studio": 0, "research": 0}
+
+    def contar(nome):
+        def probe() -> bool:
+            chamadas[nome] += 1
+            return True
+        return probe
+
+    service = StudioHealthService(
+        _probes_todos(
+            lm_studio=contar("lm_studio"), research=contar("research"),
+            usos={"research": ("pesquisa",)},
+        ),
+        relogio=lambda: agora[0],
+    )
+    service.check_all()
+    agora[0] = 30.0
+    service.check_all()
+    assert chamadas == {"lm_studio": 1, "research": 2}
+    agora[0] = 61.0
+    service.check_all()
+    assert chamadas == {"lm_studio": 2, "research": 3}

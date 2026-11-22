@@ -164,7 +164,10 @@ function ServicesStrip({
   services: Record<string, ServiceHealth>;
   onOpen: () => void;
 }) {
-  const entries = Object.entries(services).filter(([key]) => key !== "gpu");
+  // Só o que a configuração usa; os fora de uso ficam na tela Serviços.
+  const entries = Object.entries(services).filter(
+    ([key, svc]) => key !== "gpu" && svc.enabled !== false,
+  );
   const slot = gpuSlotLabel(services);
   if (entries.length === 0 && !slot) return null;
   return (

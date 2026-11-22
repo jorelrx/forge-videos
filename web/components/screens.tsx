@@ -46,6 +46,7 @@ const SERVICE_NAMES: Record<string, string> = {
   claude: "Claude",
   anthropic: "Anthropic",
   openai: "OpenAI",
+  youtube: "YouTube",
 };
 
 const SERVICE_ROLES: Record<string, string> = {
@@ -55,8 +56,11 @@ const SERVICE_ROLES: Record<string, string> = {
   tts: "Síntese da narração",
   ffmpeg: "Montagem e codificação do vídeo",
   gpu: "Um consumidor residente por vez",
-  codex: "Modelo de texto pela assinatura",
-  claude: "Modelo de texto pela assinatura",
+  codex: "Texto ou imagens pela assinatura ChatGPT",
+  claude: "Modelo de texto pela assinatura Claude",
+  anthropic: "Modelo de texto pela API Anthropic",
+  openai: "Modelo de texto pela API OpenAI",
+  youtube: "Publicação dos vídeos",
 };
 
 export function serviceName(key: string): string {
@@ -159,18 +163,25 @@ export function RunsScreen({
 
 export function ServicesScreen({ services }: { services: Record<string, ServiceHealth> }) {
   // O slot de GPU tem quadro próprio acima; na tabela ficam só os serviços.
-  const entries = Object.entries(services).filter(([key]) => key !== "gpu");
+  // Habilitados primeiro (ordem estável da API); depois os fora de uso.
+  const all = Object.entries(services).filter(([key]) => key !== "gpu");
+  const enabled = all.filter(([, s]) => s.enabled !== false);
+  const disabled = all.filter(([, s]) => s.enabled === false);
+  const entries = [...enabled, ...disabled];
   const gpuState = services["gpu"];
   const hasLatency = entries.some(([, s]) => s.latency_ms != null);
-  const okCount = entries.filter(([, s]) => serviceTone(s.state) === "ok").length;
+  const okCount = enabled.filter(([, s]) => serviceTone(s.state) === "ok").length;
   const slot = gpuSlotLabel(services);
+  const summary =
+    `${okCount} de ${enabled.length} habilitados disponíveis` +
+    (disabled.length > 0 ? ` · ${disabled.length} fora de uso` : "");
 
   return (
     <main className="main">
       <PageHeader
         screen="servicos"
         title="Serviços"
-        description="Dependências locais que o worker usa em cada etapa."
+        description="Tudo o que o Forge pode usar: o que a configuração atual habilita e se cada serviço responde."
       />
 
       <section className="panel gpu-slot" aria-label="Slot de GPU">
@@ -189,7 +200,7 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
       <section className="panel" aria-label="Estado dos serviços">
         <div className="panel-heading">
           <h3>Estado</h3>
-          <span>{entries.length === 0 ? "sem dados" : `${okCount} de ${entries.length} disponíveis`}</span>
+          <span>{entries.length === 0 ? "sem dados" : summary}</span>
         </div>
         {entries.length === 0 ? (
           <div className="empty-inline">
@@ -202,17 +213,30 @@ export function ServicesScreen({ services }: { services: Record<string, ServiceH
               <thead>
                 <tr>
                   <th scope="col">Serviço</th>
-                  <th scope="col">Estado</th>
+                  <th scope="col">Uso</th>
+                  <th scope="col">Disponibilidade</th>
                   <th scope="col">Detalhe</th>
                   {hasLatency && <th scope="col" className="num">Latência</th>}
                 </tr>
               </thead>
               <tbody>
                 {entries.map(([key, svc]) => (
-                  <tr key={key}>
+                  <tr key={key} className={svc.enabled === false ? "svc-off" : undefined}>
                     <td>
                       <span className="svc-name">{serviceName(key)}</span>
                       <small className="hist-meta">{SERVICE_ROLES[key] ?? key}</small>
+                    </td>
+                    <td>
+                      {svc.enabled === false ? (
+                        <StatusBadge tone="neutral">Fora de uso</StatusBadge>
+                      ) : (
+                        <>
+                          <StatusBadge tone="live">Habilitado</StatusBadge>
+                          {svc.usos && svc.usos.length > 0 && (
+                            <small className="hist-meta">{svc.usos.join(" · ")}</small>
+                          )}
+                        </>
+                      )}
                     </td>
                     <td>
                       <StatusBadge tone={serviceTone(svc.state)}>{serviceStateLabel(svc.state)}</StatusBadge>

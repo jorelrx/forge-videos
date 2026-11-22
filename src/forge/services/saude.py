@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import shutil
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable
+from typing import Callable, Mapping
 
 import httpx
 
@@ -27,82 +30,162 @@ class ServiceHealth(BaseModel):
     message: str
     latency_ms: int | None = None
     details: dict = Field(default_factory=dict)
+    # Habilitado: a configuração atual usa o serviço em alguma etapa (`usos`).
+    enabled: bool = True
+    usos: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Leitura:
+    """Resultado de uma sonda com mensagem própria (ex.: "Sem chave")."""
+
+    state: ServiceState
+    message: str
+
+
+Sonda = Callable[[], "bool | Leitura"]
+
+# Ordem de exibição: pipeline primeiro, depois provedores de modelo.
+ORDEM = (
+    "research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu",
+    "codex", "claude", "anthropic", "openai", "youtube",
+)
+
+# Provider de texto (config) -> serviço sondado.
+SERVICO_DO_PROVIDER = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "lm-studio": "lm_studio",
+    "codex": "codex",
+    "claude": "claude",
+}
+SERVICO_DE_IMAGEM = {"comfyui": "comfyui", "codex": "codex"}
+CONSUMIDORES_GPU = ("lm_studio", "comfyui", "tts")
+
+
+def usos_dos_servicos(settings: Settings) -> dict[str, tuple[str, ...]]:
+    """Etapas em que cada serviço entra com a configuração atual.
+
+    Habilitado é ter algum uso aqui; disponível é a sonda responder. Os dois
+    eixos são independentes: um serviço fora de uso também é sondado, para o
+    painel mostrar se trocar o provider funcionaria.
+    """
+    usos: dict[str, list[str]] = {
+        "research": ["pesquisa"],
+        "tts": ["narração"],
+        "ffmpeg": ["montagem"],
+        "youtube": ["publicação"],
+    }
+    escritor = SERVICO_DO_PROVIDER[settings.provider]
+    revisor = SERVICO_DO_PROVIDER[settings.review_provider or settings.provider]
+    usos.setdefault(escritor, []).append("roteiro")
+    usos.setdefault(revisor, []).append("revisão")
+    usos.setdefault(SERVICO_DE_IMAGEM[settings.image_provider], []).append("imagens")
+    if any(nome in usos for nome in CONSUMIDORES_GPU):
+        usos["gpu"] = ["residente"]
+    return {nome: tuple(lista) for nome, lista in usos.items()}
 
 
 @dataclass(frozen=True)
 class HealthProbes:
-    research: Callable[[], bool]
-    lm_studio: Callable[[], bool]
-    comfyui: Callable[[], bool]
-    tts: Callable[[], bool]
-    ffmpeg: Callable[[], bool]
+    research: Sonda
+    lm_studio: Sonda
+    comfyui: Sonda
+    tts: Sonda
+    ffmpeg: Sonda
     gpu: Callable[[], str | None | object]
-    codex: Callable[[], bool] | None = None
-    codex_llm: bool = False
-    codex_images: bool = False
-    claude: Callable[[], bool] | None = None
-    # Provider principal: substitui o LM Studio. Revisor: só acrescenta.
-    claude_llm: bool = False
-    claude_review: bool = False
+    codex: Sonda | None = None
+    claude: Sonda | None = None
+    anthropic: Sonda | None = None
+    openai: Sonda | None = None
+    youtube: Sonda | None = None
+    # None: sem configuração conhecida, todo serviço sondado conta como habilitado.
+    usos: Mapping[str, tuple[str, ...]] | None = None
+
+
+# Leitura de serviço fora de uso vale por este tempo. O painel consulta a cada
+# lote de eventos; sem isso, um LM Studio desligado custava ~4 s de timeout e o
+# Claude/Codex abriam um processo de CLI por consulta sem ninguém usá-los.
+TTL_FORA_DE_USO = 60.0
 
 
 class StudioHealthService:
-    def __init__(self, probes: HealthProbes | None = None) -> None:
+    def __init__(
+        self,
+        probes: HealthProbes | None = None,
+        *,
+        relogio: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.probes = probes or _default_probes()
+        self._relogio = relogio
+        self._cache: dict[str, tuple[float, ServiceHealth]] = {}
+        self._trava = threading.Lock()
 
     def check_all(self) -> dict[str, ServiceHealth]:
+        usos = self.probes.usos
+        names = [name for name in ORDEM if getattr(self.probes, name) is not None]
+        habilitado = {name: usos is None or bool(usos.get(name)) for name in names}
+        agora = self._relogio()
+        with self._trava:
+            reuso = {
+                name: item for name, (lido_em, item) in self._cache.items()
+                if not habilitado.get(name, True) and agora - lido_em < TTL_FORA_DE_USO
+            }
+        pendentes = [name for name in names if name not in reuso]
+        # Em paralelo: com todos os serviços sondados, timeouts de 2 s em série
+        # passariam de 10 s por consulta do painel.
+        lidos: dict[str, ServiceHealth] = dict(reuso)
+        if pendentes:
+            with ThreadPoolExecutor(max_workers=len(pendentes), thread_name_prefix="saude") as pool:
+                for item in pool.map(self._ler, pendentes):
+                    lidos[item.name] = item
+            with self._trava:
+                for name in pendentes:
+                    if not habilitado[name]:
+                        self._cache[name] = (agora, lidos[name])
         result: dict[str, ServiceHealth] = {}
-        names = ["research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"]
-        if self.probes.codex_llm:
-            names.remove("lm_studio")
-        if self.probes.codex_images:
-            names.remove("comfyui")
-        if self.probes.codex_llm or self.probes.codex_images:
-            names.append("codex")
-        if self.probes.claude_llm and "lm_studio" in names:
-            names.remove("lm_studio")
-        if self.probes.claude_llm or self.probes.claude_review:
-            names.append("claude")
         for name in names:
-            try:
-                probe = getattr(self.probes, name)  # type: ignore[attr-defined]
-                start = __import__("time").time()
-                value = probe()
-                latency = int((__import__("time").time() - start) * 1000)
-                if isinstance(value, bool):
-                    if value:
-                        result[name] = ServiceHealth(
-                            name=name, state=ServiceState.AVAILABLE, message="OK", latency_ms=latency
-                        )
-                    else:
-                        result[name] = ServiceHealth(
-                            name=name, state=ServiceState.UNAVAILABLE,
-                            message=f"{name.replace('_', ' ').title()} não respondeu",
-                            latency_ms=latency,
-                        )
-                else:
-                    # gpu probe returns str | None | ILEGIVEL
-                    if value is None:
-                        state = ServiceState.AVAILABLE
-                        msg = "Sem residente"
-                    elif isinstance(value, str):
-                        state = ServiceState.AVAILABLE
-                        msg = f"Residente: {value}"
-                    else:
-                        state = ServiceState.DEGRADED
-                        msg = "Estado ilegível"
-                    result[name] = ServiceHealth(
-                        name=name, state=state, message=msg, latency_ms=latency,
-                        details={"resident": value if isinstance(value, str) else None},
-                    )
-            except Exception as exc:
-                logger.warning("Health probe failed", probe=name, error=str(exc))
-                result[name] = ServiceHealth(
-                    name=name,
-                    state=ServiceState.UNAVAILABLE,
-                    message=f"{name.replace('_', ' ').title()} indisponível: {exc}",
-                )
+            item = lidos[name].model_copy()
+            if usos is not None:
+                item.usos = list(usos.get(name, ()))
+                item.enabled = bool(item.usos)
+            result[name] = item
         return result
+
+    def _ler(self, name: str) -> ServiceHealth:
+        try:
+            probe = getattr(self.probes, name)
+            start = time.perf_counter()
+            value = probe()
+            latency = int((time.perf_counter() - start) * 1000)
+        except Exception as exc:
+            logger.warning("Health probe failed", probe=name, error=str(exc))
+            return ServiceHealth(
+                name=name,
+                state=ServiceState.UNAVAILABLE,
+                message=f"{name.replace('_', ' ').title()} indisponível: {exc}",
+            )
+        if isinstance(value, Leitura):
+            return ServiceHealth(name=name, state=value.state, message=value.message, latency_ms=latency)
+        if isinstance(value, bool):
+            if value:
+                return ServiceHealth(name=name, state=ServiceState.AVAILABLE, message="OK", latency_ms=latency)
+            return ServiceHealth(
+                name=name, state=ServiceState.UNAVAILABLE,
+                message=f"{name.replace('_', ' ').title()} não respondeu",
+                latency_ms=latency,
+            )
+        # gpu probe returns str | None | ILEGIVEL
+        if value is None:
+            state, msg = ServiceState.AVAILABLE, "Sem residente"
+        elif isinstance(value, str):
+            state, msg = ServiceState.AVAILABLE, f"Residente: {value}"
+        else:
+            state, msg = ServiceState.DEGRADED, "Estado ilegível"
+        return ServiceHealth(
+            name=name, state=state, message=msg, latency_ms=latency,
+            details={"resident": value if isinstance(value, str) else None},
+        )
 
 
 def _default_probes(settings=None) -> HealthProbes:
@@ -188,6 +271,33 @@ def _default_probes(settings=None) -> HealthProbes:
         except ClaudeError:
             return False
 
+    def chave_probe(provider: str, variavel: str) -> Callable[[], Leitura]:
+        # Só a presença da chave: sondar a API a cada consulta do painel
+        # gastaria cota. A chave genérica (`FORGE_API_KEY`) é do provider
+        # principal e nunca serve a outro (ver `Settings.resolved_api_key`).
+        def probe() -> Leitura:
+            especifica = getattr(settings, f"{provider}_api_key")
+            generica = settings.api_key if settings.provider == provider else None
+            if especifica or generica:
+                return Leitura(ServiceState.AVAILABLE, "Chave configurada (não sondada)")
+            return Leitura(ServiceState.UNAVAILABLE, f"Sem {variavel}")
+
+        return probe
+
+    def youtube_probe() -> Leitura:
+        from forge.services.youtube_canais import CanaisYouTube
+
+        canais = CanaisYouTube(settings)
+        if not canais.cliente_configurado():
+            return Leitura(ServiceState.UNAVAILABLE, "Cliente OAuth do Google não configurado")
+        vinculados = len(canais.listar())
+        if vinculados == 0:
+            return Leitura(ServiceState.DEGRADED, "Nenhum canal vinculado")
+        return Leitura(
+            ServiceState.AVAILABLE,
+            "1 canal vinculado" if vinculados == 1 else f"{vinculados} canais vinculados",
+        )
+
     return HealthProbes(
         research=research_probe,
         lm_studio=lm_studio_probe,
@@ -196,9 +306,9 @@ def _default_probes(settings=None) -> HealthProbes:
         ffmpeg=ffmpeg_probe,
         gpu=gpu_probe,
         codex=codex_probe,
-        codex_llm=settings.provider == "codex",
-        codex_images=settings.image_provider == "codex",
         claude=claude_probe,
-        claude_llm=settings.provider == "claude",
-        claude_review=settings.review_provider == "claude",
+        anthropic=chave_probe("anthropic", "FORGE_ANTHROPIC_API_KEY"),
+        openai=chave_probe("openai", "FORGE_OPENAI_API_KEY"),
+        youtube=youtube_probe,
+        usos=usos_dos_servicos(settings),
     )

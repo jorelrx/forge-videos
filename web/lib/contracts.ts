@@ -271,6 +271,10 @@ export interface ServiceHealth {
   message: string;
   latency_ms?: number | null;
   details?: JsonObject;
+  /** A configuração atual usa o serviço (ausente = API antiga, conta como habilitado). */
+  enabled?: boolean;
+  /** Etapas em que o serviço entra: pesquisa, roteiro, revisão, imagens... */
+  usos?: string[];
 }
 
 export interface EffectiveConfig {

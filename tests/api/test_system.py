@@ -14,7 +14,7 @@ from forge.services.studio_query import StudioQueryService
 from forge.services.saude import StudioHealthService
 from forge.services.saude import _default_probes as _health_probes
 from forge.repositories.schema import init_db
-from forge.api.routes.system import REQUIRED_SERVICES, list_services
+from forge.api.routes.system import list_services
 import json
 
 
@@ -37,7 +37,7 @@ def test_services_route_exists(client: TestClient) -> None:
     body = resp.json()
     assert "items" in body
     names = {item["name"] for item in body["items"]}
-    assert names == REQUIRED_SERVICES
+    assert {"research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu"} <= names
 
 
 def test_effective_config_redacts_keys(client: TestClient) -> None:
@@ -51,21 +51,24 @@ def test_effective_config_redacts_keys(client: TestClient) -> None:
 
 
 def test_codex_services_and_effective_config_follow_selected_backends():
-    from forge.services.saude import HealthProbes
+    from forge.services.saude import HealthProbes, usos_dos_servicos
     from forge.api.routes.system import effective_config
 
     settings = Settings(_env_file=None, provider='codex', image_provider='codex')
     probes = HealthProbes(
         research=lambda:True, lm_studio=lambda:False, comfyui=lambda:False,
         tts=lambda:True, ffmpeg=lambda:True, gpu=lambda:None,
-        codex=lambda:True, codex_llm=True, codex_images=True,
+        codex=lambda:True, usos=usos_dos_servicos(settings),
     )
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
         services=SimpleNamespace(settings=settings, health=StudioHealthService(probes)),
     )))
     response = asyncio.run(list_services(request))
     assert set(response['required']) == {'research', 'codex', 'tts', 'ffmpeg', 'gpu'}
-    assert {item['name'] for item in response['items']} == set(response['required'])
+    itens = {item['name']: item for item in response['items']}
+    # Não habilitados continuam listados, com o estado real da sonda.
+    assert itens['lm_studio']['enabled'] is False and itens['lm_studio']['state'] == 'unavailable'
+    assert itens['codex']['usos'] == ['roteiro', 'revisão', 'imagens']
     config = asyncio.run(effective_config(request))
     assert config['generation']['llm_provider'] == 'codex'
     assert config['generation']['image_provider'] == 'codex'
@@ -73,14 +76,14 @@ def test_codex_services_and_effective_config_follow_selected_backends():
 
 
 def test_claude_services_e_config_efetiva():
-    from forge.services.saude import HealthProbes
+    from forge.services.saude import HealthProbes, usos_dos_servicos
     from forge.api.routes.system import effective_config
 
     settings = Settings(_env_file=None, provider='claude', review_provider='codex')
     probes = HealthProbes(
         research=lambda: True, lm_studio=lambda: False, comfyui=lambda: True,
         tts=lambda: True, ffmpeg=lambda: True, gpu=lambda: None,
-        claude=lambda: True, claude_llm=True,
+        claude=lambda: True, codex=lambda: True, usos=usos_dos_servicos(settings),
     )
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
         services=SimpleNamespace(settings=settings, health=StudioHealthService(probes)),
@@ -101,7 +104,7 @@ def test_system_routes_return_structured_health(client: TestClient) -> None:
     body = resp.json()
     assert "items" in body
     for item in body["items"]:
-        assert set(item.keys()) == {"name", "state", "message"}
+        assert set(item.keys()) == {"name", "state", "message", "latency_ms", "enabled", "usos"}
         assert item["state"] in ("available", "unavailable", "degraded")
 
 
@@ -126,8 +129,11 @@ def test_services_route_does_not_block_the_event_loop() -> None:
         await asyncio.sleep(0.01)
         # A rota não bloqueou: completou dentro do sleep de 10ms provavelmente por causa de asyncio.to_thread
         assert await response == {
-            "items": [{"name": "research", "state": "available", "message": "OK"}],
-            "required": list(REQUIRED_SERVICES),
+            "items": [{
+                "name": "research", "state": "available", "message": "OK",
+                "latency_ms": None, "enabled": True, "usos": [],
+            }],
+            "required": ["research"],
         }
 
     asyncio.run(exercise())

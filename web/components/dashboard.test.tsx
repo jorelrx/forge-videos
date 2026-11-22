@@ -175,6 +175,43 @@ describe("dashboard — comportamento completo (REAL)", () => {
     expect(table.textContent).toContain("LM Studio");
   });
 
+  it("separa serviços habilitados dos fora de uso, com disponibilidade de cada um", async () => {
+    const user = userEvent.setup();
+    const state = fullState({
+      services: {
+        research: { name: "research", state: "available", message: "OK", enabled: true, usos: ["pesquisa"] },
+        lm_studio: { name: "lm_studio", state: "available", message: "OK", enabled: false, usos: [] },
+        claude: { name: "claude", state: "unavailable", message: "Claude não respondeu", enabled: true, usos: ["roteiro", "revisão"] },
+        anthropic: { name: "anthropic", state: "unavailable", message: "Sem FORGE_ANTHROPIC_API_KEY", enabled: false, usos: [] },
+        youtube: { name: "youtube", state: "degraded", message: "Nenhum canal vinculado", enabled: true, usos: ["publicação"] },
+      },
+    });
+    render(<DashboardView state={state} />);
+
+    // A faixa da Produção mostra só o que a configuração usa.
+    const strip = screen.getByLabelText("Status dos serviços");
+    expect(strip.textContent).toContain("Acervo");
+    expect(strip.textContent).toContain("Claude");
+    expect(strip.textContent).toContain("YouTube");
+    expect(strip.textContent).not.toContain("LM Studio");
+    expect(strip.textContent).not.toContain("Anthropic");
+
+    await user.click(screen.getByRole("link", { name: /Serviços/ }));
+    expect(screen.getByText("1 de 3 habilitados disponíveis · 2 fora de uso")).not.toBeNull();
+    const rows = screen.getAllByRole("row").slice(1);
+    const linha = (nome: string) => rows.find((row) => row.textContent?.includes(nome))!;
+    // Habilitados primeiro, na ordem da API.
+    expect(rows.map((row) => row.querySelector(".svc-name")?.textContent)).toEqual([
+      "Acervo", "Claude", "YouTube", "LM Studio", "Anthropic",
+    ]);
+    expect(linha("Claude").textContent).toContain("Habilitado");
+    expect(linha("Claude").textContent).toContain("roteiro · revisão");
+    expect(linha("Claude").textContent).toContain("Indisponível");
+    expect(linha("LM Studio").textContent).toContain("Fora de uso");
+    expect(linha("LM Studio").textContent).toContain("Disponível");
+    expect(linha("Anthropic").textContent).toContain("Sem FORGE_ANTHROPIC_API_KEY");
+  });
+
   it("marca GPU pelos nomes reais do backend (underscore)", () => {
     const state = fullState({
       services: {

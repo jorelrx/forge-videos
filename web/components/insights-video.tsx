@@ -4,6 +4,10 @@ import { Atualizacao, nomes, Observacoes, SerieDiaria, useLeitura } from "./leit
 import { comConsulta, dataCivil, dataPublicacao, numero, somentePeriodo, type Detalhe } from "../lib/insights";
 import Link from "next/link";
 
+function percentual(proporcao: number | null) {
+  return proporcao === null ? numero(null) : numero(proporcao * 100) + "%";
+}
+
 export function InsightsVideo({canal,videoId,consulta}:{canal:string;videoId:string;consulta:string}) {
   const [versao,setVersao] = useState(0);
   const atualizar = useCallback(()=>setVersao(n=>n+1),[]);
@@ -40,7 +44,9 @@ export function InsightsVideo({canal,videoId,consulta}:{canal:string;videoId:str
         <div className="insight-section-header"><h2>Retenção de público</h2></div>
         {dados.retencao.length > 0 ? <details className="evidence-panel"><summary>Retenção por posição no vídeo</summary>
           <table><thead><tr><th scope="col">Posição no vídeo</th><th scope="col">Retenção</th></tr></thead>
-            <tbody>{dados.retencao.map(p=><tr key={p.posicao}><td>{numero(p.posicao*100)}%</td><td>{numero(p.proporcao*100)}%</td></tr>)}</tbody>
+            <tbody>{dados.retencao.map((p, i) => <tr key={p.posicao ?? `ausente-${i}`}>
+              <td>{percentual(p.posicao)}</td><td>{percentual(p.proporcao)}</td>
+            </tr>)}</tbody>
           </table></details> : <p className="insight-empty">A fonte ainda não disponibilizou a curva de retenção.</p>}
       </section>
       <section className="panel insight-windows">

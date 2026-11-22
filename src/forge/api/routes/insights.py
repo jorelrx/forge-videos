@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from forge.api.errors import not_found, validation_error
 from forge.api.routes.sessao import conta_atual, exigir_canal
-from forge.repositories.catalogo_canal import obter, pagina
+from forge.repositories.catalogo_canal import CursorDesatualizado, obter, pagina
 from forge.services.catalogo_canal import ContextoCanal
 from forge.services.insights_canal import incluir_manuais, periodo
 
@@ -80,6 +80,10 @@ def videos(request: Request, canal_id: str, tarefas: BackgroundTasks,
     try:
         return pagina(ctx.db, canal_id, list(map(str, datas)), views, busca, publicado_de,
                       publicado_ate, ordem, cursor, limite)
+    except CursorDesatualizado:
+        return JSONResponse(status_code=409, background=tarefas, content={
+            "error": {"code": "cursor_desatualizado", "message": "Os resultados foram atualizados."},
+        })
     except ValueError as erro:
         validation_error(str(erro))
 

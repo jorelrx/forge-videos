@@ -1,7 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { SessaoStudio, destinoInicial } from "./sessao-studio";
 
+vi.mock("./dashboard-provider", () => ({DashboardProvider: ({children}: {children: ReactNode}) => children}));
 vi.mock("next/navigation", () => ({
   usePathname: () => location.pathname,
   useRouter: () => ({push: vi.fn()}),
@@ -55,6 +57,16 @@ it("abre o único canal, restaura a última seleção válida e ignora preferên
   expect(destinoInicial([canal("A")], null)).toBe("A");
   expect(destinoInicial([canal("A"),canal("B")], "B")).toBe("B");
   expect(destinoInicial([canal("A"),canal("B")], "C")).toBeUndefined();
+});
+
+it("destaca Próximo vídeo no canal ativo", async () => {
+  history.replaceState(null, "", "/canais/A/proximo-video");
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url === "/api/sessao" ? conta : {canais: [canal("A")]})));
+  render(<SessaoStudio canalId="A">Pauta</SessaoStudio>);
+  const link = await screen.findByRole("link", {name: "Próximo vídeo"});
+  expect(link.getAttribute("href")).toBe("/canais/A/proximo-video");
+  expect(link.getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("link", {name: "Vídeos e insights"}).getAttribute("aria-current")).toBeNull();
 });
 
 it("atualiza os canais ao recuperar foco sem desmontar a página", async () => {

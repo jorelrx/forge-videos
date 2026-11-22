@@ -7,19 +7,21 @@ import { IconRefresh } from "./icons";
 
 export function useLeitura<T>(url: string, versao: number) {
   const [resposta,setResposta] = useState<{url:string;dados:T} | null>(null);
-  const [falha,setFalha] = useState<{url:string;mensagem:string} | null>(null);
+  const [falha,setFalha] = useState<{url:string;mensagem:string;codigo?:string} | null>(null);
   useEffect(()=>{
     const controller=new AbortController();
     studioRequest<T>(url,{signal:controller.signal}).then(dados=>{
       if(!controller.signal.aborted) {setResposta({url,dados});setFalha(null);}
     }).catch(e=>{
       if(controller.signal.aborted) return;
-      if(e instanceof ApiError && [401,403,404].includes(e.failure.status)) setResposta(null);
-      setFalha({url,mensagem:e instanceof Error ? e.message : "Falha temporária de leitura."});
+      const erroApi = e instanceof ApiError ? e.failure : undefined;
+      if (erroApi && ([401,403,404].includes(erroApi.status) || erroApi.code === "cursor_desatualizado")) setResposta(null);
+      setFalha({url,mensagem:e instanceof Error ? e.message : "Falha temporária de leitura.",codigo:erroApi?.code});
     });
     return ()=>controller.abort();
   },[url,versao]);
-  return {dados:resposta?.url === url ? resposta.dados : null, erro:falha?.url === url ? falha.mensagem : ""};
+  const falhaAtual = falha?.url === url ? falha : null;
+  return {dados:resposta?.url === url ? resposta.dados : null, erro:falhaAtual?.mensagem ?? "", codigoErro:falhaAtual?.codigo};
 }
 
 const estados: Record<string,string> = {

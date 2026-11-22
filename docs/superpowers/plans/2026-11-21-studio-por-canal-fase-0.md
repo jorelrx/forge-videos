@@ -132,8 +132,13 @@ Fixture de aceite para as tarefas 4, 5 e 7: período de 1 a 28 de outubro de 202
 
 Repetir a fixture com relatório sem linhas. Nesse caso, retornar `valor: null` e cobertura indisponível. Se a leitura falhar depois de um sucesso, manter a observação anterior com seu `lido_em` e expor a falha no estado da sincronização.
 
+O cursor identifica a consulta, a geração do catálogo e, na ordenação por resultado, os valores usados para ordenar. Um cursor de versão anterior recebe `409 cursor_desatualizado`. A interface oferece retorno à primeira página com o período, a ordenação e os filtros preservados. A geração e a página são lidas na mesma transação SQLite.
+
+Falha isolada na consulta de contribuições retorna `estado_ranking: falha_temporaria` junto aos totais, à série diária e às observações válidas. A ação de atualização permite repetir a leitura. Falhas de autorização seguem o tratamento da conexão. Na série de retenção, proporção `null` significa indisponibilidade, e um zero recebido da fonte aparece como `0%`.
+
 ## Registro de execução
 
+- O usuário aprovou a conclusão da Fase 0 antes do início da Fase 1.
 - Implementação na branch `feat/studio-fase0`. O banco SQLite migra para a versão 6. O histórico com canal de publicação comprovado é associado durante a inicialização ou a sincronização. Registros sem associação comprovada seguem no armazenamento local.
 - A checagem HTTP do build standalone usou banco isolado. Confirmou permalink e recursos estáticos, consulta sem sessão com 401, canal sem vínculo com 404, mídia com resposta parcial 206, eventos ao vivo pela API direta e pelo endereço web e revogação no logout.
 - A suíte web exercita recuperação de permalink, foco do menu, troca de canal com resposta atrasada, conservação de filtros e distinção entre ausência de métrica e zero observado.

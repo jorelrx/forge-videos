@@ -7,7 +7,7 @@ from forge.repositories.connection import Database
 
 from forge.repositories import migracao_insights, migracao_producao_canal
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 SCHEMA_SQL = (
     """
@@ -280,6 +280,13 @@ def _upgrade_v6_to_v7(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE leituras_canal SET proxima=0 WHERE tipo='catalogo'")
 
 
+def _upgrade_v7_to_v8(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE boards_criativos (
+        conta_id TEXT NOT NULL REFERENCES contas(id), canal_id TEXT NOT NULL,
+        dados TEXT NOT NULL, dono TEXT, operacao TEXT, expira REAL,
+        PRIMARY KEY(conta_id,canal_id))""")
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _upgrade_v1_to_v2,
     2: _upgrade_v2_to_v3,
@@ -287,6 +294,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: migracao_producao_canal.migrar,
     5: migracao_insights.migrar,
     6: _upgrade_v6_to_v7,
+    7: _upgrade_v7_to_v8,
 }
 
 

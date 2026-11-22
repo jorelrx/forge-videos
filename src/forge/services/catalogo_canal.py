@@ -2,7 +2,7 @@ from functools import partial
 from pathlib import Path
 
 from forge.repositories.catalogo_canal import confirmar
-from forge.repositories.observacoes_canal import leitura
+from forge.repositories.observacoes_canal import consultar_cache, leitura
 from forge.services import insights_canal
 from forge.services.youtube import YouTubeAuthError, YouTubeClient
 from forge.services.youtube_analytics import YouTubeAnalytics
@@ -51,7 +51,7 @@ class ContextoCanal:
             publicar=lambda conn, dados: confirmar(conn, self.raiz, self.canal, dados))
         return estado, data
 
-    def relatorio(self, inicio, fim, video=None, forcar=False):
+    def relatorio(self, inicio, fim, video=None, forcar=False, *, somente_cache=False):
         dados = dict(views=None, minutos=None, serie=[], observacoes=[], contribuicoes=[], amostra=0,
                      comparacao=None, retencao=[], janelas={"d7": [], "d28": []})
         data = None
@@ -67,8 +67,11 @@ class ContextoCanal:
                 recurso = "resumo"
                 buscar = partial(insights_canal.resumo, self.analytics, self.canal, inicio, fim)
             chave = [*self.identidade, str(inicio), str(fim), recurso]
-            estado, data, ultimo = leitura(self.db, self.canal, "relatorio", chave, buscar,
-                                           self.agendar, forcar=forcar, credencial=self.identidade[:2])
+            if somente_cache:
+                estado, data, ultimo = consultar_cache(self.db, self.canal, "relatorio", chave)
+            else:
+                estado, data, ultimo = leitura(self.db, self.canal, "relatorio", chave, buscar,
+                                               self.agendar, forcar=forcar, credencial=self.identidade[:2])
             if ultimo:
                 dados.update(ultimo)
                 if estado == "atualizado":

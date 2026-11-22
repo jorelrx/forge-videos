@@ -1598,3 +1598,74 @@ a { color: inherit; }
   .catalog-video { grid-template-columns: 3.5rem minmax(0,1fr); gap: var(--s-2); }
   .catalog-number small { display: block; font-size: var(--text-xs); }
 }
+
+/* Próximo vídeo */
+.board-page { max-width: 1420px; }
+.board-page > section, .board-card { min-width: 0; }
+.board-page h2, .board-page h3 { overflow-wrap: anywhere; }
+.board-context, .board-position, .board-pauta, .board-saved, .board-review {
+  display: grid; gap: var(--s-4);
+}
+.board-context .reading-status { justify-content: flex-start; }
+.board-position summary, .board-discard summary { cursor: pointer; width: fit-content; }
+.board-position summary { font-size: var(--text-lg); font-weight: 650; }
+.board-position[open] > summary, .board-discard[open] > summary { margin-bottom: var(--s-3); }
+.board-proposals { display: grid; gap: var(--s-4); }
+.board-proposals > p, .board-saved > p { margin: 0; color: var(--muted); }
+.board-proposals small, .board-pauta small { color: var(--muted); }
+.board-card-grid { display: grid; gap: var(--s-4); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.board-card {
+  --idea-accent: var(--accent);
+  display: grid; align-content: start; gap: var(--s-3); padding: var(--s-5);
+  border-block-start: 3px solid var(--idea-accent); overflow-wrap: anywhere;
+}
+.board-card[data-tipo="publico"] { --idea-accent: var(--ok); }
+.board-card[data-tipo="experimento"] { --idea-accent: var(--violet); }
+.board-card-labels { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
+.board-card-labels > span { color: var(--idea-accent, var(--accent)); font-size: var(--text-xs); font-weight: 700; }
+.board-card-labels small {
+  background: var(--tint-warn); color: var(--warn); border-radius: var(--radius-pill);
+  padding: 2px var(--s-2); font-size: var(--text-xs);
+}
+.board-question { margin: 0; color: var(--text-2); line-height: 1.55; }
+.board-angle, .board-source dl, .board-review dl { margin: 0; display: grid; gap: var(--s-3); }
+.board-angle dt, .board-source dt, .board-review dt { color: var(--muted); font-size: var(--text-xs); font-weight: 650; }
+.board-angle dd, .board-source dd, .board-review dd { margin: var(--s-1) 0 0; }
+.board-evidence > p { padding: 0 var(--s-3); }
+.board-source { display: grid; gap: var(--s-2); padding: var(--s-3); border-top: 1px solid var(--border); }
+.board-source dl { grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); }
+.board-source blockquote {
+  margin: 0; padding-inline-start: var(--s-3); border-inline-start: 2px solid var(--border-strong);
+  color: var(--text-2); overflow-wrap: anywhere;
+}
+.board-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
+.board-check { display: inline-flex; align-items: center; gap: var(--s-2); width: fit-content; }
+.board-check input { accent-color: var(--accent); }
+.board-discard { color: var(--muted); font-size: var(--text-sm); }
+.board-form { display: grid; align-items: start; justify-items: start; gap: var(--s-3); }
+.board-form label { display: grid; gap: var(--s-2); width: 100%; max-width: 54rem; color: var(--text-2); }
+.board-form input, .board-form textarea {
+  width: 100%; padding: var(--s-3); background: var(--surface-0); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit;
+}
+.board-form textarea { resize: vertical; }
+.board-pauta-fields { display: grid; width: 100%; gap: var(--s-4); }
+.board-review dl > div {
+  display: grid; gap: var(--s-2) var(--s-4); grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border); padding-bottom: var(--s-3);
+}
+.board-review dt { grid-column: 1 / -1; }
+.board-review dd { overflow-wrap: anywhere; }
+.board-review dd span { display: block; color: var(--muted); font-size: var(--text-xs); margin-bottom: var(--s-1); }
+.board-saved ul { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--s-3); }
+.board-saved li { display: grid; gap: var(--s-2); overflow-wrap: anywhere; }
+.board-saved li > details > :not(summary) { margin-inline: var(--s-3); }
+.board-saved li > details > summary { color: var(--text); font-weight: 650; }
+
+@media (max-width: 1080px) {
+  .board-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .board-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .board-review dl > div { grid-template-columns: minmax(0, 1fr); }
+}

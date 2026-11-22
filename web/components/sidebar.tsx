@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { screenHref, type Screen } from "../hooks/use-screen";
-import { IconHistory, IconPlus } from "./icons";
+import { IconHistory, IconPlus, IconProduction } from "./icons";
 import { SCREEN_META } from "./screen-meta";
 import Link from "next/link";
 
@@ -12,12 +12,14 @@ export function Sidebar({
   onNewRun,
   queueCount = 0,
   channelBase,
+  boardAtivo = false,
 }: {
   screen?: Screen;
   onNavigate?: (screen: Screen) => void;
   onNewRun?: () => void;
   queueCount?: number;
   channelBase?: string;
+  boardAtivo?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLButtonElement>(null);
@@ -64,12 +66,16 @@ export function Sidebar({
 
       <nav ref={nav} id="studio-navigation" className={`nav${open ? " nav-open" : ""}`}
         aria-label={channelBase ? "Canal" : "Telas"}>
-        {channelBase && (
-          <Link href={channelBase} className={`nav-item${!screen ? " active" : ""}`}
-            data-screen="insights" aria-current={!screen ? "page" : undefined} title="Vídeos e insights">
+        {channelBase && <>
+          <Link href={channelBase} className={`nav-item${!screen && !boardAtivo ? " active" : ""}`}
+            onClick={() => setOpen(false)} data-screen="insights" aria-current={!screen && !boardAtivo ? "page" : undefined} title="Vídeos e insights">
             <IconHistory size={17} /><span className="nav-label">Vídeos e insights</span>
           </Link>
-        )}
+          <Link href={channelBase + "/proximo-video"} className={`nav-item${boardAtivo ? " active" : ""}`}
+            onClick={() => setOpen(false)} data-screen="board" aria-current={boardAtivo ? "page" : undefined} title="Próximo vídeo">
+            <IconProduction size={17} /><span className="nav-label">Próximo vídeo</span>
+          </Link>
+        </>}
         {NAV.map(({ screen: target, label, Icon }) => {
           const active = target === screen;
           return (

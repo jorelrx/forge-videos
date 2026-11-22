@@ -62,3 +62,25 @@ it("recupera falha transitória e consulta o novo período", async () => {
   view.rerender(<InsightsCanal canal="A" consulta="inicio=2026-09-01&fim=2026-09-28"/>);
   expect(fetcher.mock.calls.map(c=>c[0])).toContain("/api/canais/A/resumo?inicio=2026-09-01&fim=2026-09-28");
 });
+
+it("oferece primeira página com filtros quando o cursor fica desatualizado", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => url.includes("/resumo") ? Response.json(resumo) :
+    Response.json({error: {code: "cursor_desatualizado", message: "Os resultados foram atualizados."}}, {status: 409})));
+  const filtros = "busca=externo&ordem=resultado&inicio=2026-10-01&fim=2026-10-28";
+  render(<InsightsCanal canal="A" consulta={filtros + "&cursor=antigo"}/>);
+
+  expect((await screen.findByRole("alert")).textContent).toContain("Os resultados foram atualizados.");
+  const primeira = screen.getByRole("link", {name: "Primeira página"});
+  expect(primeira.getAttribute("href")).toBe("/canais/A?" + filtros);
+  expect(screen.queryByRole("button", {name: "Tentar novamente"})).toBeNull();
+});
+
+it("mostra indisponibilidade do ranking junto aos totais válidos", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.includes("/resumo") ? {
+    ...resumo, estado_ranking: "falha_temporaria",
+  } : {videos: [], proximo_cursor: null})));
+  render(<InsightsCanal canal="A" consulta=""/>);
+
+  expect(await screen.findByText(/Ranking temporariamente indisponível/)).toBeTruthy();
+  expect(screen.getByText("120")).toBeTruthy();
+});

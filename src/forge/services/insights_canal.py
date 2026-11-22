@@ -2,11 +2,15 @@ from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+from httpx import RequestError
+
+from forge.infrastructure.logging import get_logger
 from forge.services.desempenho import ler_desempenho
 from forge.services.publicacao import ler_estado
-from forge.services.youtube import YouTubeError
+from forge.services.youtube import YouTubeApiDesativada, YouTubeAuthError, YouTubeError
 from forge.services.youtube_analytics import UNIDADES
 
+log = get_logger(__name__)
 FUSO = ZoneInfo("America/Los_Angeles")
 BASE = ("views", "estimatedMinutesWatched")
 
@@ -56,7 +60,15 @@ def resumo(api, canal, inicio, fim):
         anterior = atividade(api, canal, inicio-n, inicio-timedelta(days=1))
     atual["comparacao"] = ({k: anterior[k] for k in ("views", "minutos")}
                            if anterior and anterior["completo"] else None)
-    contribuicoes = api.consultar(canal, inicio, fim, ("views",), dimensao="video")
+    estado_ranking = "atualizado"
+    try:
+        contribuicoes = api.consultar(canal, inicio, fim, ("views",), dimensao="video")
+    except (YouTubeAuthError, YouTubeApiDesativada):
+        raise
+    except (YouTubeError, RequestError, ValueError, KeyError, TypeError) as erro:
+        log.warning("ranking_youtube_falhou", canal=canal, erro=type(erro).__name__)
+        contribuicoes = []
+        estado_ranking = "falha_temporaria"
     instante = datetime.now(UTC).isoformat()
     for contribuicao in contribuicoes:
         evid = observacao(canal, contribuicao["video_id"], *UNIDADES["views"], contribuicao["views"],
@@ -64,7 +76,8 @@ def resumo(api, canal, inicio, fim):
         # Top videos informa o agregado por episódio, sem dimensão diária.
         evid["cobertura"] = None
         contribuicao["observacao"] = evid
-    atual.update(contribuicoes=contribuicoes, amostra=len(contribuicoes), limite_amostra=200)
+    atual.update(contribuicoes=contribuicoes, amostra=len(contribuicoes), limite_amostra=200,
+                 estado_ranking=estado_ranking)
     return atual
 
 

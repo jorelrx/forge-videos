@@ -20,10 +20,11 @@ export interface Resumo extends Leitura {
   comparacao: {views: number | null; minutos: number | null} | null;
   contribuicoes: {video_id:string;titulo?:string;views:number | null}[];
   amostra: number | string | null;
+  estado_ranking?: "atualizado" | "falha_temporaria";
 }
 export interface Detalhe extends Leitura {
   video: VideoCatalogo;
-  retencao: {posicao:number;proporcao:number}[];
+  retencao: {posicao:number | null;proporcao:number | null}[];
   janelas: {d7: Observacao[]; d28: Observacao[]};
 }
 export interface ListaVideos { videos: VideoCatalogo[]; proximo_cursor: string | null }

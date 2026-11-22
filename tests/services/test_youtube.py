@@ -17,6 +17,28 @@ def erro(status, reason, message="falhou"):
         "code": status, "message": message, "errors": [{"reason": reason}]}})
 
 
+def test_perguntas_do_catalogo_sao_publicas_e_do_video_solicitado():
+    def thread(id_, video_id, publico, texto):
+        return {"snippet": {"videoId": video_id, "isPublic": publico, "topLevelComment": {
+            "id": id_, "snippet": {"textDisplay": texto, "publishedAt": "2026-11-22", "authorDisplayName": "Autora"},
+        }}}
+
+    def handler(request):
+        assert request.url.path == "/youtube/v3/commentThreads"
+        assert request.url.params["videoId"] == "video"
+        assert request.url.params["textFormat"] == "plainText"
+        return httpx.Response(200, json={"items": [
+            thread("ok", "video", True, "Como isso funciona?"),
+            thread("privado", "video", False, "O que é?"),
+            thread("fora", "outro", True, "O que é?"),
+            thread("frase", "video", True, "Gostei do assunto."),
+        ]})
+
+    assert cliente(handler).comentarios_publicos("video") == [
+        {"id": "ok", "texto": "Como isso funciona?", "publicado_em": "2026-11-22"},
+    ]
+
+
 def test_iniciar_upload_pede_sessao_retomavel_com_metadados():
     def handler(request):
         assert request.method == "POST"

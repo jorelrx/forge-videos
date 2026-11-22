@@ -211,6 +211,29 @@ class YouTubeClient:
         return {"id": str(itens[0].get("id") or ""), "titulo": str(snippet.get("title") or ""),
                 "thumbnail": foto}
 
+    def comentarios_publicos(self, video_id: str) -> list[dict]:
+        """Amostra de perguntas públicas de um vídeo já verificado no catálogo."""
+        resposta = self._com_tentativas(lambda: self._pedir(
+            "GET", "https://www.googleapis.com/youtube/v3/commentThreads",
+            params={"part": "snippet", "videoId": video_id, "maxResults": 12,
+                    "order": "relevance", "textFormat": "plainText",
+                    "fields": "items(snippet(videoId,isPublic,topLevelComment(id,snippet(textDisplay,publishedAt))))"},
+            headers=self._cabecalhos(), timeout=5,
+        ))
+        perguntas = []
+        for item in resposta.json().get("items", []):
+            thread = item["snippet"]
+            if thread.get("videoId") != video_id or thread.get("isPublic") is not True:
+                continue
+            comentario = thread["topLevelComment"]
+            texto = comentario["snippet"]["textDisplay"].strip()[:400]
+            if "?" in texto:
+                perguntas.append({"id": comentario["id"], "texto": texto,
+                                  "publicado_em": comentario["snippet"]["publishedAt"]})
+            if len(perguntas) == 2:
+                break
+        return perguntas
+
     def catalogo_publico(self, canal_id: str):
         """Só entrega vídeos públicos confirmados pela lista de detalhes."""
         from datetime import datetime, timezone

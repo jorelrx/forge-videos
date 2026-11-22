@@ -7,6 +7,10 @@ from zoneinfo import ZoneInfo
 from forge.services.publicacao import ler_estado
 
 
+class CursorDesatualizado(ValueError):
+    """A página anterior pertencia a uma versão diferente dos resultados."""
+
+
 def confirmar(conn, raiz, canal, videos):
     por_id = {v["video_id"]: v for v in videos}
     runs = {}
@@ -45,9 +49,15 @@ def pagina(db, canal, periodo, views, busca, de, ate, ordem, cursor, limite):
     assinatura = hashlib.sha256(json.dumps([canal, periodo, busca.casefold(), str(de),
                                             str(ate), ordem]).encode()).hexdigest()
     ultima = None
+    versao_cursor = None
     if cursor:
         try:
-            identidade, ultima = json.loads(base64.urlsafe_b64decode(cursor))
+            partes = json.loads(base64.urlsafe_b64decode(cursor))
+            if not isinstance(partes, list) or len(partes) not in (2, 3):
+                raise ValueError()
+            identidade, ultima = partes[:2]
+            if len(partes) == 3:
+                versao_cursor = partes[2]
             if (identidade != assinatura or not isinstance(ultima, list) or len(ultima) != 2
                     or not isinstance(ultima[1], str)):
                 raise ValueError()
@@ -65,10 +75,18 @@ def pagina(db, canal, periodo, views, busca, de, ate, ordem, cursor, limite):
     # Todos os critérios crescem; views ausentes vêm depois do zero explícito.
     chave = {"titulo": "casefold(titulo)", "resultado": "-coalesce(m.value,-1)",
              "data": "-julianday(publicado_em)"}[ordem]
-    params = dict(canal=canal, views=json.dumps(views), busca=busca.casefold(),
+    views_json = json.dumps(views, sort_keys=True)
+    params = dict(canal=canal, views=views_json, busca=busca.casefold(),
                   de=str(de) if de else None, ate=str(ate) if ate else None, limite=limite+1,
                   chave=ultima[0] if ultima else None, id=ultima[1] if ultima else None)
-    with db.connection() as conn:
+    with db.transaction() as conn:
+        # Qualquer conjunto de escopos pode publicar o catálogo do canal.
+        leituras = dict(conn.execute("""SELECT chave, sucesso FROM leituras_canal
+                                       WHERE canal_id=? AND tipo='catalogo' AND sucesso IS NOT NULL""", (canal,)))
+        ranking = views_json if ordem == "resultado" else None
+        versao = hashlib.sha256(json.dumps([leituras, ranking], sort_keys=True).encode()).hexdigest()
+        if cursor and versao_cursor != versao:
+            raise CursorDesatualizado()
         conn.create_function("casefold", 1, str.casefold, deterministic=True)
         conn.create_function("dia_civil", 1, dia_civil, deterministic=True)
         rows = conn.execute(f"""
@@ -82,7 +100,7 @@ def pagina(db, canal, periodo, views, busca, de, ate, ordem, cursor, limite):
     proximo = None
     if len(rows) > limite:
         anterior = rows[limite-1]
-        marca = json.dumps([assinatura, [anterior["criterio"], anterior["video_id"]]]).encode()
+        marca = json.dumps([assinatura, [anterior["criterio"], anterior["video_id"]], versao]).encode()
         proximo = base64.urlsafe_b64encode(marca).decode()
     return {"videos": [{k: r[k] for k in r.keys() if k != "criterio"} for r in rows[:limite]],
             "proximo_cursor": proximo}

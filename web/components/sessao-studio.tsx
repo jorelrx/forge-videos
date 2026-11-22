@@ -154,7 +154,7 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
     </header>
     {erro && <p className="app-alert" role="alert">{erro}</p>}
     {atual && base ? <DashboardProvider key={atual.id}><div className={producao ? "channel-production" : "channel-body"}>
-      {producao ? null : <Sidebar channelBase={base}/>}
+      {producao ? null : <Sidebar channelBase={base} boardAtivo={pathname === base + "/proximo-video"}/>}
       <div className="channel-content">
         {!atual.conectado && <aside className="channel-notice">Conexão do YouTube expirada. <VinculoCanal canalId={atual.id} onComplete={revalidar}/></aside>}
         {children}

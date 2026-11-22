@@ -4,13 +4,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from forge.services.catalogo_canal import ANALYTICS, LEITURA
-from forge.services.youtube import YouTubeAuthError
+from forge.services.youtube import YouTubeAuthError, YouTubeError
 
 
 class CanalTeste:
     visiveis = ("a", "b", "antigo", "sem-medida")
     falha = False
-    revogado = False
+    ranking = {"a": 70, "antigo": 50, "b": 0}
+    erro_ranking = None
 
     def catalogo_publico(self, canal):
         for i in self.visiveis:
@@ -20,11 +21,10 @@ class CanalTeste:
                 raise RuntimeError("segunda página")
 
     def consultar(self, canal, inicio, fim, metricas, *, dimensao=None, video=None):
-        if self.revogado:
-            raise YouTubeAuthError("Revogado")
         if dimensao == "video":
-            return [dict(video_id="a", views=70), dict(video_id="antigo", views=50),
-                    dict(video_id="b", views=0)]
+            if self.erro_ranking:
+                raise self.erro_ranking
+            return [dict(video_id=video_id, views=views) for video_id, views in self.ranking.items()]
         if metricas[0] != "views":
             return []
         total = 120 if not video else 70
@@ -94,10 +94,52 @@ def test_falha_preserva_geracao_e_retry_remove_videos(client, fonte):
     assert client.get(BASE+"/videos/a", params=JANELA).status_code == 404
 
 
+@pytest.mark.parametrize("ordem, primeira_esperada", [("resultado", "antigo"), ("data", "b")])
+def test_cursor_rejeita_catalogo_ou_ordem_atualizados(client, fonte, ordem, primeira_esperada):
+    client.post(BASE+"/sincronizacoes", params=JANELA)
+    params = dict(**JANELA, ordem=ordem, limite=1)
+    primeira = client.get(BASE+"/videos", params=params).json()
+    assert primeira["videos"][0]["video_id"] == "a"
+
+    if ordem == "resultado":
+        # Atualiza só o Analytics após expirar seu cache. O catálogo fica intacto.
+        with client.app.state.services.commands.db.transaction() as conn:
+            conn.execute("UPDATE leituras_canal SET proxima=0 WHERE tipo='relatorio'")
+        fonte.ranking = {"antigo": 100, "b": 20}
+        client.get(BASE+"/resumo", params=JANELA)
+    else:
+        fonte.visiveis = ("b", "novo")
+        client.post(BASE+"/sincronizacoes", params=JANELA)
+
+    antiga = client.get(BASE+"/videos", params={**params, "cursor": primeira["proximo_cursor"]})
+    assert antiga.status_code == 409
+    assert antiga.json()["error"]["code"] == "cursor_desatualizado"
+    atual = client.get(BASE+"/videos", params=params).json()
+    assert atual["videos"][0]["video_id"] == primeira_esperada
+
+
+def test_erro_do_ranking_preserva_resumo_e_atualizacao_recupera_ranking(client, fonte):
+    fonte.erro_ranking = YouTubeError("Ranking indisponível", status=503)
+    client.post(BASE+"/sincronizacoes", params=JANELA)
+
+    parcial = client.get(BASE+"/resumo", params=JANELA).json()
+    assert parcial["views"] == 120 and parcial["minutos"] == 0
+    assert parcial["serie"] == [{"dia": JANELA["inicio"], "views": 120, "minutos": 0}]
+    assert parcial["estado"] == "atualizado"
+    assert parcial["estado_ranking"] == "falha_temporaria"
+    assert parcial["contribuicoes"] == []
+
+    fonte.erro_ranking = None
+    client.post(BASE+"/sincronizacoes", params=JANELA)
+    atual = client.get(BASE+"/resumo", params=JANELA).json()
+    assert atual["estado_ranking"] == "atualizado"
+    assert atual["contribuicoes"][0]["views"] == 70
+
+
 def test_revogacao_limita_cache_e_recusa_preserva_catalogo(client, fonte, services):
     client.post(BASE+"/sincronizacoes", params=JANELA)
     client.get(BASE+"/videos/a", params=JANELA)
-    fonte.revogado = True
+    fonte.erro_ranking = YouTubeAuthError("Revogado")
     client.post(BASE+"/sincronizacoes", params=JANELA)
     assert client.get(BASE+"/resumo", params=JANELA).json()["views"] is None
     assert client.get(BASE+"/videos/a", params=JANELA).json()["views"] is None

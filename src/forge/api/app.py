@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from forge.api.errors import ApiError, ApiErrorDetail, transition_error, not_found, validation_error
+from forge.api.routes.board import board_router
 from forge.api.routes import insights
 from forge.api.routes import runs
 from forge.api.routes import events
@@ -119,6 +120,7 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
             response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
+    app.include_router(board_router, prefix="/api")
     app.include_router(insights.insights_router, prefix="/api")
     app.include_router(runs.runs_router, prefix="/api")
     app.include_router(events.events_router, prefix="/api")

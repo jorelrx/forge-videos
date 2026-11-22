@@ -24,6 +24,8 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
   const parametros = new URLSearchParams(consulta);
   const resumo = useLeitura<Resumo>(comConsulta(api+"/resumo",somentePeriodo(consulta)),versao);
   const lista = useLeitura<ListaVideos>(comConsulta(api+"/videos",consulta),versao);
+  const cursorDesatualizado = lista.codigoErro === "cursor_desatualizado";
+  const erroLeitura = resumo.erro || (cursorDesatualizado ? "" : lista.erro);
   const dados = resumo.dados;
   const inicio = parametros.get("inicio") || dados?.inicio || "";
   const fim = parametros.get("fim") || dados?.fim || "";
@@ -36,8 +38,10 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
 
   const primeira = new URLSearchParams(persistidos);
   primeira.delete("cursor");
+  const linkPrimeira = comConsulta(base, primeira.toString());
   const top = dados?.contribuicoes.filter(video => video.views != null)
     .sort((a,b) => b.views! - a.views!).slice(0,5) ?? [];
+  const rankingIndisponivel = dados?.estado_ranking === "falha_temporaria";
 
   return <main className="channel-page">
     <header className="insight-heading">
@@ -53,7 +57,7 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
     </Form>
     <Atualizacao canal={canal} consulta={query} estado={dados?.estado} estadoCatalogo={dados?.estado_catalogo} ultima={dados?.ultima_atualizacao} atualizar={atualizar}/>
     </div>
-    {(resumo.erro || lista.erro) && <div className="insight-alert" role="alert">{resumo.erro || lista.erro} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
+    {erroLeitura && <div className="insight-alert" role="alert">{erroLeitura} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
     {dados && <>
       <section className="panel insight-summary" aria-label="Resumo do período">
         <div className="insight-section-header"><h2>Resumo do período</h2>
@@ -65,15 +69,17 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
           </div>)}
         </div>
       </section>
-      <div className={top.length ? "insight-analysis with-ranking" : "insight-analysis"}>
+      <div className={top.length || rankingIndisponivel ? "insight-analysis with-ranking" : "insight-analysis"}>
         <SerieDiaria serie={dados.serie} inicio={dados.inicio} fim={dados.fim}/>
-        {top.length > 0 && <section className="panel insight-ranking">
+        {(top.length > 0 || rankingIndisponivel) && <section className="panel insight-ranking">
           <div className="insight-section-header"><h2>Mais vistos no período</h2></div>
-          <ol>{top.map(video => <li key={video.video_id}>
-            <Link href={comConsulta(base+"/videos/"+encodeURIComponent(video.video_id),query)}>{video.titulo || "Vídeo " + video.video_id}</Link>
-            <span>{numero(video.views)} <small>visualizações</small></span>
-          </li>)}</ol>
-          {dados.amostra != null && <p>Amostra de {dados.amostra} vídeos</p>}
+          {rankingIndisponivel ? <p role="status">Ranking temporariamente indisponível. Use Atualizar histórico para tentar novamente.</p> : <>
+            <ol>{top.map(video => <li key={video.video_id}>
+              <Link href={comConsulta(base+"/videos/"+encodeURIComponent(video.video_id),query)}>{video.titulo || "Vídeo " + video.video_id}</Link>
+              <span>{numero(video.views)} <small>visualizações</small></span>
+            </li>)}</ol>
+            {dados.amostra != null && <p>Amostra de {dados.amostra} vídeos</p>}
+          </>}
         </section>}
       </div>
     </>}
@@ -93,6 +99,9 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
         </select></label>
         <button className="btn btn-primary" type="submit">Filtrar vídeos</button>
       </Form>
+      {cursorDesatualizado && <div className="insight-alert" role="alert">
+        {lista.erro} <Link className="btn" href={linkPrimeira} replace>Primeira página</Link>
+      </div>}
       {lista.dados ? lista.dados.videos.length ? <div className="catalog-results">
         <div className="catalog-columns" aria-hidden="true"><span>Vídeo</span><span>Visualizações</span></div>
         <ul className="catalog-items">{lista.dados.videos.map(v=>
@@ -105,7 +114,7 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
           <span className="catalog-number"><b>{numero(v.views)}</b><small>no período</small></span>
         </li>)}</ul></div> : <p className="insight-empty">Nenhum vídeo encontrado.</p> : !lista.erro && <p className="insight-empty" role="status">Carregando catálogo…</p>}
       <div className="catalog-pagination">
-        {parametros.has("cursor") && <Link className="btn" href={comConsulta(base,primeira.toString())}>Primeira página</Link>}
+        {parametros.has("cursor") && !cursorDesatualizado && <Link className="btn" href={linkPrimeira}>Primeira página</Link>}
         {lista.dados?.proximo_cursor && <Link className="btn" href={comConsulta(base,seguinte.toString())}>Próxima página</Link>}
       </div>
     </section>

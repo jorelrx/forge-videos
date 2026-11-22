@@ -270,7 +270,17 @@ Crie também um cliente OAuth do tipo **Aplicação web** para identificar a pes
 3. Para conferir uma integração, use um vídeo publicado pelo Forge e outro publicado diretamente pelo canal. Abra o mesmo período no Studio e no YouTube Studio e compare visualizações, tempo de exibição, origem e cobertura. Abra o detalhe de cada vídeo, volte à lista e confira os filtros. Registre se a janela desde a publicação pública já fechou.
 4. Verifique a troca de canal com uma leitura em andamento, a navegação por teclado em tela estreita e o logout. Após sair, reabrir o endereço de um vídeo exige login. Para restaurar o acesso ao YouTube com a sessão pessoal ainda válida, reconecte o canal.
 
+Se uma sincronização atualizar os resultados entre páginas, use **Primeira página** para retomar a lista com o mesmo período e filtros. Se o ranking estiver temporariamente indisponível, os totais e a série diária já recebidos continuam visíveis. **Atualizar histórico** tenta ler o ranking de novo. Na curva de retenção, um ponto ausente aparece como **Indisponível**.
+
 A interface consulta a API pela mesma origem, inclusive para eventos e downloads. Em produção local, rode `npm ci` e `npm run build` em `web/` antes de usar o launcher com `-WebMode production`. O worker continua processando a fila de todos os canais. O operador pode verificar a instalação com `uv run forge-studio-doctor`.
+
+### Escolher o próximo vídeo
+
+Abra **Próximo vídeo** na navegação do canal. Na primeira visita, o Studio usa o catálogo e as evidências autorizadas para propor uma continuação, uma pergunta e um experimento. Em um canal sem histórico, salve o posicionamento editorial para gerar três hipóteses. Abra **Justificativa e fontes** para conferir a medida, o episódio ou o comentário usado.
+
+Use **Desenvolver** para iniciar a pauta, **Guardar** para conservar uma ideia e **Descartar** para removê-la da análise atual. Marque duas ideias e escolha **Combinar ideias** para revisar uma candidata. Se já houver pauta, confira as mudanças antes de aplicar. Use **Salvar pauta** para persistir edições. Quando a análise estiver indisponível, **Abrir pauta manual** mantém o trabalho disponível.
+
+O rascunho pertence à conta e ao canal. **Atualizar histórico** sincroniza o YouTube. **Gerar novas propostas** solicita outra análise e conserva a pauta e as ideias guardadas. A geração usa o provider de texto configurado no Studio. Veja o [plano da Fase 1](docs/superpowers/plans/2026-11-22-board-criativo-fase-1.md).
 
 Parâmetros do launcher:
 

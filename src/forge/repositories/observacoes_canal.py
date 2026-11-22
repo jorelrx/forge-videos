@@ -11,9 +11,24 @@ log = get_logger(__name__)
 DIA = 86400
 
 
+def _chave(canal, tipo, identidade):
+    return json.dumps([canal, tipo, *identidade], separators=(",", ":"))
+
+
+def _resultado(row, estado):
+    data = datetime.fromtimestamp(row["sucesso"], UTC).isoformat() if row["sucesso"] else None
+    return estado, data, json.loads(row["dados"]) if row["dados"] else None
+
+
+def consultar_cache(db, canal, tipo, identidade):
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM leituras_canal WHERE chave=?", (_chave(canal, tipo, identidade),)).fetchone()
+    return _resultado(row, row["erro"] or "atualizado") if row else ("sem_dados", None, None)
+
+
 def leitura(db, canal, tipo, identidade, buscar, agendar, *, forcar=False, publicar=None,
             credencial=None):
-    chave = json.dumps([canal, tipo, *identidade], separators=(",", ":"))
+    chave = _chave(canal, tipo, identidade)
     agora = time.time()
     dono = secrets.token_hex(16)
     with db.transaction(immediate=True) as conn:
@@ -60,8 +75,7 @@ def leitura(db, canal, tipo, identidade, buscar, agendar, *, forcar=False, publi
     if iniciar:
         agendar(executar)
     estado = "sincronizando" if iniciar or ativa else row["erro"] or "atualizado"
-    data = datetime.fromtimestamp(row["sucesso"], UTC).isoformat() if row["sucesso"] else None
-    return estado, data, json.loads(row["dados"]) if row["dados"] else None
+    return _resultado(row, estado)
 
 
 def invalidar_catalogo(db, canal):

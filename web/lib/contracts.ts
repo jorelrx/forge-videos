@@ -198,6 +198,13 @@ export interface CreateVideoRequest {
   referencias_editoriais?: string;
 }
 
+export interface DecisaoConflitoPauta {
+  artefato_id: string;
+  acao: "aceitar" | "editar" | "cancelar";
+  promessa?: string;
+  recorte?: string;
+}
+
 export interface EscolhaEditorial {
   artefato_id: string;
   indice: number;

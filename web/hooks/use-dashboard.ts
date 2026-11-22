@@ -27,6 +27,7 @@ export interface DashboardState {
   resume(): Promise<void>;
   retry(stage: StageName): Promise<void>;
   escolherProposta?(input: import("../lib/contracts").EscolhaEditorial): Promise<void>;
+  decidirConflitoPauta?(input: import("../lib/contracts").DecisaoConflitoPauta): Promise<void>;
   decidirAbertura?(input: import("../lib/contracts").DecisaoAbertura): Promise<void>;
 }
 
@@ -215,6 +216,11 @@ export function useDashboard(
     decidirAbertura: api.decidirAbertura && (async (input) => {
       if (!focusRun) return;
       await api.decidirAbertura?.(focusRun.run.id, input);
+      await refresh();
+    }),
+    decidirConflitoPauta: api.decidirConflitoPauta && (async (input) => {
+      if (!focusRun) return;
+      await api.decidirConflitoPauta?.(focusRun.run.id, input);
       await refresh();
     }),
   };

@@ -2,6 +2,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BoardCriativo } from "./board-criativo";
 
+vi.mock("next/navigation", () => ({useRouter: () => ({push: vi.fn()})}));
+
 afterEach(() => vi.unstubAllGlobals());
 
 const pauta = {titulo: "Da ideia ao vídeo", tema: "Escolhas", pergunta: "Por quê?", recorte: "O cotidiano", promessa: "Uma reflexão"};

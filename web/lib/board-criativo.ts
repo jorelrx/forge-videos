@@ -135,6 +135,7 @@ export interface Board {
   conversa: MensagemBoard[];
   fluxos: FluxoBoard[];
   pendencias: Pendencia[];
+  ultima_aprovacao?: {id: string; run_id: string; revisao: number; titulo: string} | null;
   contexto: {
     precisa_posicionamento: boolean;
     aguardando: boolean;

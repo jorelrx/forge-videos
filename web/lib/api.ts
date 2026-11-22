@@ -64,6 +64,7 @@ export interface StudioApi {
   retryStage(id: string, stage: StageName, key: string): Promise<CommandResponse>;
   escolherProposta?(id: string, input: EscolhaEditorial): Promise<unknown>;
   decidirAbertura?(id: string, input: DecisaoAbertura): Promise<unknown>;
+  decidirConflitoPauta?(id: string, input: import("./contracts").DecisaoConflitoPauta): Promise<unknown>;
 }
 
 interface ApiErrorEnvelope {
@@ -205,6 +206,11 @@ export function createStudioApi(baseUrl = DEFAULT_API_BASE): StudioApi {
       body: JSON.stringify(input),
     }),
     decidirAbertura: (id, input) => request(baseUrl, "/api/runs/" + encodeURIComponent(id) + "/previa-abertura", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+    decidirConflitoPauta: (id, input) => request(baseUrl, "/api/runs/" + encodeURIComponent(id) + "/conflito-pauta", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),

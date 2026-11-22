@@ -10,7 +10,7 @@ export function useBoardCriativo(canal: string) {
   const api = "/api/canais/" + encodeURIComponent(canal) + "/board";
   const [board, setBoard] = useState<Board | null>(null);
   const [falhaLeitura, setFalhaLeitura] = useState("");
-  const [falhaAcao, setFalhaAcao] = useState<{mensagem: string; conflito: boolean} | null>(null);
+  const [falhaAcao, setFalhaAcao] = useState<{mensagem: string; conflito: boolean; repetir?: boolean} | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const ativo = useRef<AbortController | null>(null);
   const gravando = useRef(false);
@@ -114,10 +114,36 @@ export function useBoardCriativo(canal: string) {
     }).catch(() => undefined);
   }, [api]);
 
+  /** Repetir com a mesma revisão devolve a mesma execução: é seguro tentar de novo após falha de rede. */
+  const aprovar = useCallback(async (revisao: number, fluxoId: string): Promise<string | null> => {
+    if (gravando.current) return null;
+    gravando.current = true;
+    setFalhaAcao(null);
+    setOcupado(true);
+    try {
+      const resposta = await studioRequest<{run_id: string; board: Board}>(api + "/aprovacoes", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({revisao, fluxo_id: fluxoId}),
+      });
+      setBoard(resposta.board);
+      return resposta.run_id;
+    } catch (erro) {
+      const conflito = erro instanceof ApiError && erro.failure.code === "revisao_board";
+      setFalhaAcao({
+        mensagem: erro instanceof Error ? erro.message : "O Studio não conseguiu criar o roteiro.",
+        conflito, repetir: !conflito && !(erro instanceof ApiError && erro.failure.status === 422),
+      });
+      return null;
+    } finally {
+      gravando.current = false;
+      setOcupado(false);
+    }
+  }, [api]);
+
   async function recarregarRevisao() {
     setFalhaAcao(null);
     await carregar();
   }
 
-  return {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao, salvarPauta, salvarAoSair};
+  return {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao, salvarPauta, salvarAoSair, aprovar};
 }

@@ -8,6 +8,7 @@ import { Queue } from "./queue";
 import { RecentRuns } from "./history";
 import { RunOutputs } from "./run-outputs";
 import { EditorialReview } from "./editorial-review";
+import { PautaExecucao } from "./pauta-execucao";
 import { Publication } from "./publication";
 import { Sidebar } from "./sidebar";
 import { useSharedDashboard } from "./dashboard-provider";
@@ -214,6 +215,15 @@ export function DashboardView({ state, loadArtifacts, fluxosApi, channelBase }: 
   React.useEffect(() => {
     if (window.location.hash === "#/producao?novo=1") setFocusFormPending(true);
   }, []);
+  const { selectRun } = state;
+  const runDoLink = React.useRef(true);
+  React.useEffect(() => {
+    // O Board abre a execução criada pela aprovação com #/producao?run=<id>, uma vez.
+    if (!runDoLink.current) return;
+    runDoLink.current = false;
+    const run = /[?&]run=([^&]+)/.exec(window.location.hash)?.[1];
+    if (run) void selectRun(decodeURIComponent(run));
+  }, [selectRun]);
   const services = state.services ?? {};
   const events = state.events ?? [];
   const queue = state.queue ?? [];
@@ -407,6 +417,8 @@ export function DashboardView({ state, loadArtifacts, fluxosApi, channelBase }: 
                 )}
               </section>
 
+              <PautaExecucao key={focusRun.run.id + "-pauta"} run={focusRun}
+                decidir={state.decidirConflitoPauta} />
               <EditorialReview key={focusRun.run.id + "-editorial"} run={focusRun}
                 escolher={state.escolherProposta} decidir={state.decidirAbertura} />
               <RunOutputs key={focusRun.run.id} run={focusRun} />

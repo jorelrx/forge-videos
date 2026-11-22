@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useBoardCriativo } from "../hooks/use-board-criativo";
 import {
@@ -55,8 +56,10 @@ function DescartarIdeia({salvar, ocupado}: {salvar: (motivo: string) => void; oc
 }
 
 function BoardCanal({canal}: {canal: string}) {
-  const {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao, salvarPauta, salvarAoSair}
+  const {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao, salvarPauta, salvarAoSair, aprovar}
     = useBoardCriativo(canal);
+  const router = useRouter();
+  const pedidoAprovacao = useRef<{revisao: number; fluxo: string} | null>(null);
   const [manual, setManual] = useState(false);
   const [editando, setEditando] = useState<PautaBoard | null>(null);
   const [conflito, setConflito] = useState(false);
@@ -171,6 +174,18 @@ function BoardCanal({canal}: {canal: string}) {
     }
   }
 
+  async function criarRoteiro(revisao: number, fluxo: string) {
+    pedidoAprovacao.current = {revisao, fluxo};
+    const runId = await aprovar(revisao, fluxo);
+    if (!runId) return;
+    // O rascunho novo não dispara sugestões agora: a pesquisa da execução criada usa o mesmo modelo.
+    tentouInicial.current = true;
+    pedidoAprovacao.current = null;
+    aceitarServidor();
+    setManual(false);
+    router.push(`${baseUrl}/producao#/producao?run=${encodeURIComponent(runId)}`);
+  }
+
   function marcar(id: string) {
     setSelecao(selecionadas.includes(id) ? selecionadas.filter(item => item !== id) : [...selecionadas, id]);
   }
@@ -202,7 +217,15 @@ function BoardCanal({canal}: {canal: string}) {
     {(falhaAcao || falhaLeitura) && <div className="insight-alert" role="alert">
       {falhaAcao?.mensagem || falhaLeitura}
       {falhaAcao?.conflito && <button type="button" className="btn" onClick={recarregarRevisao}>Carregar revisão atual</button>}
+      {falhaAcao?.repetir && pedidoAprovacao.current && <button type="button" className="btn" disabled={ocupado}
+        onClick={() => { const pedido = pedidoAprovacao.current; if (pedido) void criarRoteiro(pedido.revisao, pedido.fluxo); }}>
+        Tentar de novo
+      </button>}
     </div>}
+    {board.ultima_aprovacao && <p className="insight-alert board-approved" role="status">
+      Roteiro criado a partir da pauta “{board.ultima_aprovacao.titulo}” (revisão {board.ultima_aprovacao.revisao}).{" "}
+      <Link href={`${baseUrl}/producao#/producao?run=${encodeURIComponent(board.ultima_aprovacao.run_id)}`}>Abrir execução</Link>
+    </p>}
     <FormPosicionamento key={board.posicionamento} atual={board.posicionamento} aberto={contexto.precisa_posicionamento && !board.posicionamento}
       ocupado={ocupado} salvar={texto => void enviar({acao: "posicionamento", texto}, board.revisao)}/>
 
@@ -288,7 +311,8 @@ function BoardCanal({canal}: {canal: string}) {
     </div>
 
     {(manual || pauta) && <DecisaoPauta board={board} pauta={salva ?? pautaVazia} pendenteLocal={pendente}
-      ocupado={ocupado} escolherFluxo={fluxoId => void enviar({acao: "fluxo", fluxo_id: fluxoId}, board.revisao)}/>}
+      ocupado={ocupado} escolherFluxo={fluxoId => void enviar({acao: "fluxo", fluxo_id: fluxoId}, board.revisao)}
+      criar={board.fluxo_id ? () => void criarRoteiro(board.revisao, board.fluxo_id!) : undefined}/>}
 
     <section className="panel board-saved" aria-labelledby="board-saved-title">
       <h2 id="board-saved-title">Ideias guardadas</h2>

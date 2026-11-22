@@ -2,6 +2,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BoardCriativo } from "./board-criativo";
 
+vi.mock("next/navigation", () => ({useRouter: () => ({push: vi.fn()})}));
+
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const pauta = {

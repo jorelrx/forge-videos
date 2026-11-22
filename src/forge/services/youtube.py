@@ -48,6 +48,10 @@ class YouTubeQuotaError(YouTubeError):
     codigo = "youtube_quota"
 
 
+class YouTubeApiDesativada(YouTubeError):
+    codigo = "api_desativada"
+
+
 class YouTubeSessaoExpirada(YouTubeError):
     """A sessão de upload retomável não existe mais; o envio recomeça do zero."""
 
@@ -230,7 +234,7 @@ class YouTubeClient:
             novos = [i for i in ids if i not in vistos]
             vistos.update(novos)
             if novos:
-                detalhes = buscar("videos", part="snippet,status", id=",".join(novos))
+                detalhes = buscar("videos", part="snippet,status,statistics", id=",".join(novos))
                 for item in detalhes["items"]:
                     snippet = item["snippet"]
                     if (item["id"] not in novos or snippet["channelId"] != canal_id
@@ -242,8 +246,12 @@ class YouTubeClient:
                     fotos = snippet.get("thumbnails", {})
                     foto = next((fotos[k]["url"] for k in ("medium", "high", "default")
                                  if k in fotos), None)
+                    estatisticas = item.get("statistics", {})
                     yield dict(video_id=item["id"], titulo=snippet["title"], thumbnail=foto,
-                               publicado_em=data.astimezone(timezone.utc).isoformat())
+                               publicado_em=data.astimezone(timezone.utc).isoformat(),
+                               views_total=int(estatisticas["viewCount"]) if "viewCount" in estatisticas else None,
+                               comentarios_total=int(estatisticas["commentCount"]) if "commentCount" in estatisticas else None,
+                               curtidas_total=int(estatisticas["likeCount"]) if "likeCount" in estatisticas else None)
             token = pagina.get("nextPageToken")
             if not token:
                 return

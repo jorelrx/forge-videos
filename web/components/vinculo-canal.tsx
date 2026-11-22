@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { YouTubeLogin } from "../lib/contracts";
 import { studioRequest } from "../lib/api";
 
@@ -11,13 +11,16 @@ export function VinculoCanal({ canalId, analytics = false, onComplete }: {
   const [tentativa, setTentativa] = useState<Tentativa | null>(null);
   const [erro, setErro] = useState("");
   const [iniciando, setIniciando] = useState(false);
+  const concluida = useRef<string | null>(null);
   const id = tentativa?.tentativa_id;
   const status = tentativa?.login.status;
   useEffect(() => {
     if (!id || status === "falhou") return;
     if (status === "concluido") {
-      if (onComplete) onComplete();
-      else window.location.reload();
+      if (concluida.current !== id) {
+        concluida.current = id;
+        onComplete?.();
+      }
       return;
     }
     const controller = new AbortController();

@@ -2,6 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SessaoStudio, destinoInicial } from "./sessao-studio";
 
+vi.mock("next/navigation", () => ({
+  usePathname: () => location.pathname,
+  useRouter: () => ({push: vi.fn()}),
+}));
+
 const conta = { id: "p", nome: "Joana", avatar: null };
 const canal = (id: string) => ({ id, titulo: "Canal " + id, conectado: true });
 afterEach(() => vi.unstubAllGlobals());
@@ -50,4 +55,23 @@ it("abre o único canal, restaura a última seleção válida e ignora preferên
   expect(destinoInicial([canal("A")], null)).toBe("A");
   expect(destinoInicial([canal("A"),canal("B")], "B")).toBe("B");
   expect(destinoInicial([canal("A"),canal("B")], "C")).toBeUndefined();
+});
+
+it("atualiza os canais ao recuperar foco sem desmontar a página", async () => {
+  let titulo = "Canal A";
+  let consultas = 0;
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url === "/api/sessao") return Response.json(conta);
+    consultas++;
+    return Response.json({canais:[{...canal("A"), titulo}]});
+  }));
+  render(<SessaoStudio canalId="A"><input aria-label="Edição" defaultValue="Rascunho"/></SessaoStudio>);
+  const campo = await screen.findByRole("textbox", {name:"Edição"});
+  fireEvent.change(campo, {target:{value:"Trabalho em andamento"}});
+  titulo = "Nome atualizado";
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(consultas).toBe(2));
+  await screen.findByRole("option", {name:titulo});
+  expect(screen.getByRole("textbox", {name:"Edição"})).toBe(campo);
+  expect((campo as HTMLInputElement).value).toBe("Trabalho em andamento");
 });

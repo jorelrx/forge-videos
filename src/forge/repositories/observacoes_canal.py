@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 
 from forge.infrastructure.logging import get_logger
-from forge.services.youtube import YouTubeAuthError
+from forge.services.youtube import YouTubeApiDesativada, YouTubeAuthError
 
 log = get_logger(__name__)
 DIA = 86400
@@ -43,7 +43,8 @@ def leitura(db, canal, tipo, identidade, buscar, agendar, *, forcar=False, publi
                              (json.dumps(dados), fim, fim + DIA, chave))
         except Exception as exc:
             auth = isinstance(exc, YouTubeAuthError)
-            estado = "reconectar" if auth else "falha_temporaria"
+            estado = "api_desativada" if isinstance(exc, YouTubeApiDesativada) else (
+                "reconectar" if auth else "falha_temporaria")
             log.warning("leitura_youtube_falhou", canal=canal, tipo=tipo, erro=type(exc).__name__)
             with db.transaction(immediate=True) as conn:
                 atualizado = conn.execute("""UPDATE leituras_canal SET erro=?, dono=NULL, proxima=?,

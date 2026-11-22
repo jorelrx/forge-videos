@@ -3,6 +3,8 @@ import { useCallback, useState } from "react";
 import { Atualizacao, Observacoes, SerieDiaria, useLeitura } from "./leitura-insights";
 import { comConsulta, dataCivil, dataPublicacao, numero, somentePeriodo, type ListaVideos, type Resumo } from "../lib/insights";
 import { IconArrowRight, IconProduction } from "./icons";
+import Link from "next/link";
+import Form from "next/form";
 
 const medidas = [{id:"views", nome:"Visualizações"}, {id:"minutos", nome:"Minutos assistidos"}] as const;
 
@@ -40,15 +42,15 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
   return <main className="channel-page">
     <header className="insight-heading">
       <div><h1>Vídeos e insights</h1><p>Desempenho do canal e vídeos publicados.</p></div>
-      <a className="btn" href={base + "/producao"}>Abrir produção <IconArrowRight size={15}/></a>
+      <Link className="btn" href={base + "/producao"}>Abrir produção <IconArrowRight size={15}/></Link>
     </header>
     <div className="insight-toolbar">
-    <form className="catalog-filters period-filters" action={base}>
+    <Form className="catalog-filters period-filters" action={base}>
       {["busca","ordem","publicado_de","publicado_ate"].map(k=>parametros.has(k) && <input key={k} type="hidden" name={k} value={parametros.get(k)!}/>)}
       <label>Início do período<input key={inicio} type="date" name="inicio" defaultValue={inicio} required/></label>
       <label>Fim do período<input key={fim} type="date" name="fim" defaultValue={fim} required/></label>
       <button className="btn" type="submit">Aplicar período</button>
-    </form>
+    </Form>
     <Atualizacao canal={canal} consulta={query} estado={dados?.estado} estadoCatalogo={dados?.estado_catalogo} ultima={dados?.ultima_atualizacao} atualizar={atualizar}/>
     </div>
     {(resumo.erro || lista.erro) && <div className="insight-alert" role="alert">{resumo.erro || lista.erro} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
@@ -68,7 +70,7 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
         {top.length > 0 && <section className="panel insight-ranking">
           <div className="insight-section-header"><h2>Mais vistos no período</h2></div>
           <ol>{top.map(video => <li key={video.video_id}>
-            <a href={comConsulta(base+"/videos/"+encodeURIComponent(video.video_id),query)}>{video.titulo || "Vídeo " + video.video_id}</a>
+            <Link href={comConsulta(base+"/videos/"+encodeURIComponent(video.video_id),query)}>{video.titulo || "Vídeo " + video.video_id}</Link>
             <span>{numero(video.views)} <small>visualizações</small></span>
           </li>)}</ol>
           {dados.amostra != null && <p>Amostra de {dados.amostra} vídeos</p>}
@@ -79,7 +81,8 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
       <div className="insight-section-header"><h2>Catálogo de vídeos</h2>
         {dados?.ultima_atualizacao_catalogo && <span>Catálogo atualizado em {new Date(dados.ultima_atualizacao_catalogo).toLocaleString("pt-BR")}</span>}
       </div>
-      <form action={base} className="catalog-filters">
+      <p className="catalog-definition">As visualizações do período dependem do Analytics. Os totais públicos de visualizações, comentários e curtidas são acumulados até a última atualização do catálogo.</p>
+      <Form action={base} className="catalog-filters">
         {inicio && <input type="hidden" name="inicio" value={inicio}/>}
         {fim && <input type="hidden" name="fim" value={fim}/>}
         <label>Buscar título<input type="search" name="busca" defaultValue={parametros.get("busca") ?? ""}/></label>
@@ -89,20 +92,21 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
           <option value="data">Publicação recente</option><option value="resultado">Visualizações</option><option value="titulo">Título</option>
         </select></label>
         <button className="btn btn-primary" type="submit">Filtrar vídeos</button>
-      </form>
+      </Form>
       {lista.dados ? lista.dados.videos.length ? <div className="catalog-results">
         <div className="catalog-columns" aria-hidden="true"><span>Vídeo</span><span>Visualizações</span></div>
         <ul className="catalog-items">{lista.dados.videos.map(v=>
         <li key={v.video_id}>
-          <a className="catalog-video" href={comConsulta(base+"/videos/"+encodeURIComponent(v.video_id),query)} aria-label={v.titulo}>
+          <Link className="catalog-video" href={comConsulta(base+"/videos/"+encodeURIComponent(v.video_id),query)} aria-label={v.titulo}>
             {v.thumbnail ? <img alt="" loading="lazy" src={v.thumbnail}/> : <span className="catalog-placeholder" aria-hidden="true"><IconProduction size={22}/></span>}
-            <span><b>{v.titulo}</b><small>{dataPublicacao(v.publicado_em)} · {v.run_id ? "Publicado pelo Forge" : "YouTube"}</small></span>
-          </a>
-          <span className="catalog-number"><b>{numero(v.views)}</b><small>visualizações</small></span>
+            <span><b>{v.titulo}</b><small>Publicado em {dataPublicacao(v.publicado_em)} · {v.run_id ? "Publicado pelo Forge" : "YouTube"}</small>
+              <small>{numero(v.views_total)} visualizações totais · {numero(v.comentarios_total)} comentários · {numero(v.curtidas_total)} curtidas</small></span>
+          </Link>
+          <span className="catalog-number"><b>{numero(v.views)}</b><small>no período</small></span>
         </li>)}</ul></div> : <p className="insight-empty">Nenhum vídeo encontrado.</p> : !lista.erro && <p className="insight-empty" role="status">Carregando catálogo…</p>}
       <div className="catalog-pagination">
-        {parametros.has("cursor") && <a className="btn" href={comConsulta(base,primeira.toString())}>Primeira página</a>}
-        {lista.dados?.proximo_cursor && <a className="btn" href={comConsulta(base,seguinte.toString())}>Próxima página</a>}
+        {parametros.has("cursor") && <Link className="btn" href={comConsulta(base,primeira.toString())}>Primeira página</Link>}
+        {lista.dados?.proximo_cursor && <Link className="btn" href={comConsulta(base,seguinte.toString())}>Próxima página</Link>}
       </div>
     </section>
     {dados && <section className="panel evidence-list"><h2>Fontes e cobertura</h2>

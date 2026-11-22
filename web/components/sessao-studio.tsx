@@ -1,5 +1,5 @@
 "use client";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { IconArrowRight } from "./icons";
 import { Sidebar } from "./sidebar";
@@ -22,14 +22,13 @@ export function SessaoStudio({canalId, children}: {canalId?: string; children?: 
 
 function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}) {
   const pathname = usePathname();
+  const router = useRouter();
   const [acesso, setAcesso] = useState<Acesso | null>(null);
   const [anonimo, setAnonimo] = useState(false);
   const [erro, setErro] = useState("");
   const [versao, setVersao] = useState(0);
   const [ocupado, setOcupado] = useState(false);
   const revalidar = useCallback(() => {
-    cancelarRequisicoes();
-    setAcesso(null);
     setAnonimo(false);
     setErro("");
     setVersao(n => n + 1);
@@ -80,9 +79,9 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
     async function verificar() {
       try {
         const conta = await studioRequest<Conta>("/api/sessao", {signal:controller.signal});
-        if (conta.id !== acesso!.conta.id) {revalidar();return;}
+        if (conta.id !== acesso!.conta.id) {cancelarRequisicoes();setAcesso(null);revalidar();return;}
         const lista = await studioRequest<Omit<Acesso,"conta">>("/api/canais", {signal:controller.signal});
-        if (JSON.stringify(lista.canais) !== JSON.stringify(acesso!.canais)) revalidar();
+        if (!controller.signal.aborted) setAcesso({conta, ...lista});
       } catch { /* 401 é tratado pelo evento de sessão. Falhas de rede mantêm o estado atual. */ }
     }
     window.addEventListener("focus", verificar);
@@ -94,9 +93,7 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
     setOcupado(true);
     try {
       await studioRequest("/api/sessao/canal", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({canal_id:id})});
-      cancelarRequisicoes();
-      setAcesso(null);
-      window.location.assign(caminhoCanal(id));
+      router.push(caminhoCanal(id));
     } catch { setErro("Falha ao selecionar canal."); }
     finally { setOcupado(false); }
   }

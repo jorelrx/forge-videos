@@ -7,6 +7,16 @@ from forge.services.insights_canal import atividade, detalhe, resumo
 from forge.services.youtube_analytics import YouTubeAnalytics
 
 
+def test_api_desativada_preserva_autorizacao_e_informa_ativacao():
+    from forge.services.youtube import YouTubeApiDesativada
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
+        403, json={"error": {"errors": [{"reason": "accessNotConfigured"}]}}
+    ))) as client:
+        api = YouTubeAnalytics(lambda: "teste", client=client)
+        with pytest.raises(YouTubeApiDesativada):
+            api.consultar("A", date(2026, 1, 1), date(2026, 1, 28), ("views",))
+
+
 class Relatorios:
     def __init__(self, dias=28):
         self.dias = dias

@@ -26,9 +26,12 @@ def confirmar(conn, raiz, canal, videos):
             runs[estado.video_id] = run_id
             conn.execute("UPDATE runs SET canal_id=? WHERE id=? AND canal_id IS NULL", (canal, run_id))
     conn.execute("DELETE FROM catalogo_canal WHERE canal_id=?", (canal,))
-    conn.executemany("""INSERT INTO catalogo_canal VALUES
-        (:canal,:video_id,:titulo,:thumbnail,:publicado_em,:run_id)""",
-        ({**v, "canal": canal, "run_id": runs.get(v["video_id"])} for v in por_id.values()))
+    conn.executemany("""INSERT INTO catalogo_canal
+        (canal_id,video_id,titulo,thumbnail,publicado_em,run_id,views_total,comentarios_total,curtidas_total)
+        VALUES (:canal,:video_id,:titulo,:thumbnail,:publicado_em,:run_id,
+                :views_total,:comentarios_total,:curtidas_total)""",
+        ({"views_total": None, "comentarios_total": None, "curtidas_total": None,
+          **v, "canal": canal, "run_id": runs.get(v["video_id"])} for v in por_id.values()))
 
 
 def obter(db, canal, video):

@@ -21,14 +21,19 @@ def test_catalogo_duas_paginas_confirma_canal_visibilidade_e_duplicatas():
             itens = [
                 {"id": i, "snippet": {"channelId": "B" if i == "3" else "A",
                  "title": i, "publishedAt": "2026-01-01T01:00:00Z"},
-                 "status": {"privacyStatus": "private" if i == "2" else "public"}}
+                 "status": {"privacyStatus": "private" if i == "2" else "public"},
+                 "statistics": {"viewCount": "120", "commentCount": "3"}}
                 for i in p["id"].split(",") if i != "4"
             ]
         return httpx.Response(200, json={"items": itens})
 
     with httpx.Client(transport=httpx.MockTransport(responder)) as http:
         yt = YouTubeClient(lambda: "teste", client=http)
-        assert [v["video_id"] for v in yt.catalogo_publico("A")] == ["1"]
+        videos = list(yt.catalogo_publico("A"))
+        assert [v["video_id"] for v in videos] == ["1"]
+        assert videos[0]["views_total"] == 120
+        assert videos[0]["comentarios_total"] == 3
+        assert videos[0]["curtidas_total"] is None
         with pytest.raises(Exception, match="canal"):
             list(yt.catalogo_publico("B"))
     assert sum(path.endswith("/playlistItems") for path, _ in chamadas) == 2

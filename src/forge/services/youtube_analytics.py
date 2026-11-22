@@ -4,7 +4,7 @@ from datetime import date
 
 import httpx
 
-from forge.services.youtube import YouTubeAuthError, YouTubeError, YouTubeQuotaError
+from forge.services.youtube import YouTubeApiDesativada, YouTubeAuthError, YouTubeError, YouTubeQuotaError
 
 URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 UNIDADES = {
@@ -34,6 +34,8 @@ class YouTubeAnalytics:
         resposta = get(URL, params=params, headers={"Authorization": f"Bearer {self.token()}"}, timeout=30)
         if resposta.status_code in (401, 403):
             motivos = resposta.json().get("error", {}).get("errors", [])
+            if any(m.get("reason") in {"accessNotConfigured", "serviceDisabled"} for m in motivos):
+                raise YouTubeApiDesativada("Ative a YouTube Analytics API no projeto Google Cloud")
             if any(m.get("reason") in {"quotaExceeded", "rateLimitExceeded", "dailyLimitExceeded"}
                    for m in motivos):
                 raise YouTubeQuotaError("Cota excedida")

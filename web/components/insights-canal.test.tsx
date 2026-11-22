@@ -13,6 +13,7 @@ it("preserva busca, cursor e período no link do vídeo externo; zero é observa
  expect(link.getAttribute("href")).toBe("/canais/A/videos/ext?"+parametros);
  expect(screen.getByText("120")).toBeTruthy();
  expect(screen.getByText("0")).toBeTruthy();
+ expect(screen.getByText(/Publicado em/)).toBeTruthy();
 });
 
 

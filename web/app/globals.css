@@ -1528,6 +1528,7 @@ a { color: inherit; }
 .evidence-panel dd { margin: var(--s-1) 0; }
 .evidence-panel a + a { margin-left: var(--s-4); }
 .catalog-results { margin-top: var(--s-5); border-top: 1px solid var(--border); }
+.catalog-definition { color: var(--muted); font-size: var(--text-sm); max-width: 80ch; }
 .catalog-columns, .catalog-items li {
   display: grid; grid-template-columns: minmax(0,1fr) minmax(8.5rem,auto); gap: var(--s-3); align-items: center;
 }

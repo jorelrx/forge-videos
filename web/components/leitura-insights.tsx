@@ -26,6 +26,7 @@ const estados: Record<string,string> = {
   sincronizando:"Sincronização em andamento.",sem_autorizacao:"Autorize o acesso aos indicadores do YouTube.",
   sem_dados:"Sem dados no período.",canal_vazio:"Nenhum vídeo público neste canal.",atrasado:"A fonte ainda não cobriu todo o período.",
   falha_temporaria:"Falha temporária ao atualizar o histórico.",reconectar:"A conexão com o YouTube precisa ser renovada.",
+  api_desativada:"Ative a YouTube Analytics API no projeto Google Cloud para carregar os indicadores do período.",
 };
 
 export function Atualizacao({canal,consulta,estado,estadoCatalogo,ultima,atualizar,videoId}:{
@@ -53,8 +54,9 @@ export function Atualizacao({canal,consulta,estado,estadoCatalogo,ultima,atualiz
     <span>{ultima ? "Última atualização válida · "+new Date(ultima).toLocaleString("pt-BR") : "Ainda sem leitura confirmada"}</span>
     <button className="btn" onClick={sincronizar} disabled={enviando || pendente}><IconRefresh size={15}/>{enviando || pendente ? "Atualizando…" : "Atualizar histórico"}</button>
     {[...new Set([estado,estadoCatalogo])].map(s=>s && estados[s] && <span key={s} role="status">{estados[s]}</span>)}
-    {estado === "sem_autorizacao" && <VinculoCanal canalId={canal} analytics/>}
-    {(estado === "reconectar" || estadoCatalogo === "reconectar") && <VinculoCanal canalId={canal}/>}
+    {estado === "sem_autorizacao" && <VinculoCanal canalId={canal} analytics onComplete={atualizar}/>}
+    {estado === "api_desativada" && <a href="https://console.cloud.google.com/apis/library/youtubeanalytics.googleapis.com" target="_blank" rel="noreferrer">Abrir configuração no Google Cloud</a>}
+    {(estado === "reconectar" || estadoCatalogo === "reconectar") && <VinculoCanal canalId={canal} onComplete={atualizar}/>}
     {erro && <span role="alert">{erro}</span>}
   </div>;
 }

@@ -1,6 +1,7 @@
 export interface VideoCatalogo {
   video_id: string; titulo: string; thumbnail: string | null;
   publicado_em: string | null; views: number | null; run_id: string | null;
+  views_total?: number | null; comentarios_total?: number | null; curtidas_total?: number | null;
 }
 export interface Observacao {
   medida: string; valor: number | null; unidade: string; origem: string;

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { screenHref, type Screen } from "../hooks/use-screen";
 import { IconHistory, IconPlus } from "./icons";
 import { SCREEN_META } from "./screen-meta";
+import Link from "next/link";
 
 const NAV = SCREEN_META;
 
@@ -55,24 +56,24 @@ export function Sidebar({
           <span>Novo vídeo</span>
         </button>
       ) : channelBase && (
-        <a className="new-run-btn" href={production + "#/producao?novo=1"}>
+        <Link className="new-run-btn" href={production + "#/producao?novo=1"}>
           <IconPlus size={16} />
           <span>Novo vídeo</span>
-        </a>
+        </Link>
       )}
 
       <nav ref={nav} id="studio-navigation" className={`nav${open ? " nav-open" : ""}`}
         aria-label={channelBase ? "Canal" : "Telas"}>
         {channelBase && (
-          <a href={channelBase} className={`nav-item${!screen ? " active" : ""}`}
+          <Link href={channelBase} className={`nav-item${!screen ? " active" : ""}`}
             data-screen="insights" aria-current={!screen ? "page" : undefined} title="Vídeos e insights">
             <IconHistory size={17} /><span className="nav-label">Vídeos e insights</span>
-          </a>
+          </Link>
         )}
         {NAV.map(({ screen: target, label, Icon }) => {
           const active = target === screen;
           return (
-            <a
+            <Link
               key={target}
               href={onNavigate ? screenHref(target) : production + screenHref(target)}
               className={`nav-item${active ? " active" : ""}`}
@@ -95,7 +96,7 @@ export function Sidebar({
               {target === "fila" && queueCount > 0 && (
                 <span className="nav-count" aria-label={`${queueCount} na fila`}>{queueCount}</span>
               )}
-            </a>
+            </Link>
           );
         })}
       </nav>

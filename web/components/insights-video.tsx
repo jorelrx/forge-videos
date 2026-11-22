@@ -2,6 +2,7 @@
 import { useCallback, useState } from "react";
 import { Atualizacao, nomes, Observacoes, SerieDiaria, useLeitura } from "./leitura-insights";
 import { comConsulta, dataCivil, dataPublicacao, numero, somentePeriodo, type Detalhe } from "../lib/insights";
+import Link from "next/link";
 
 export function InsightsVideo({canal,videoId,consulta}:{canal:string;videoId:string;consulta:string}) {
   const [versao,setVersao] = useState(0);
@@ -10,13 +11,14 @@ export function InsightsVideo({canal,videoId,consulta}:{canal:string;videoId:str
   const caminho = base+"/videos/"+encodeURIComponent(videoId);
   const {dados,erro} = useLeitura<Detalhe>(comConsulta("/api"+caminho,somentePeriodo(consulta)),versao);
   return <main className="channel-page">
-    <a className="insight-back" href={comConsulta(base,consulta)}>Voltar ao catálogo</a>
+    <Link className="insight-back" href={comConsulta(base,consulta)}>Voltar ao catálogo</Link>
     {erro && <div className="insight-alert" role="alert">{erro} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
     {dados ? <>
       <header className="episode-header">
         {dados.video.thumbnail && <img alt="" src={dados.video.thumbnail}/>}
         <div><h1>{dados.video.titulo}</h1>
           <p>Publicado em {dataPublicacao(dados.video.publicado_em)}</p>
+          <p>{numero(dados.video.views_total)} visualizações totais · {numero(dados.video.comentarios_total)} comentários · {numero(dados.video.curtidas_total)} curtidas</p>
           <a className="btn" href={"https://www.youtube.com/watch?v=" + encodeURIComponent(videoId)} target="_blank" rel="noreferrer">Ver no YouTube</a>
         </div>
       </header>

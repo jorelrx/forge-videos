@@ -7,7 +7,7 @@ from forge.repositories.connection import Database
 
 from forge.repositories import migracao_insights, migracao_producao_canal
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 SCHEMA_SQL = (
     """
@@ -274,12 +274,19 @@ def _upgrade_v3_to_v4(conn: sqlite3.Connection) -> None:
         PRIMARY KEY(conta_id,canal_id))""")
 
 
+def _upgrade_v6_to_v7(conn: sqlite3.Connection) -> None:
+    for coluna in ("views_total", "comentarios_total", "curtidas_total"):
+        conn.execute(f"ALTER TABLE catalogo_canal ADD COLUMN {coluna} INTEGER")
+    conn.execute("UPDATE leituras_canal SET proxima=0 WHERE tipo='catalogo'")
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _upgrade_v1_to_v2,
     2: _upgrade_v2_to_v3,
     3: _upgrade_v3_to_v4,
     4: migracao_producao_canal.migrar,
     5: migracao_insights.migrar,
+    6: _upgrade_v6_to_v7,
 }
 
 

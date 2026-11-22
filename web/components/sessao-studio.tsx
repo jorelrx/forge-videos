@@ -3,6 +3,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { IconArrowRight } from "./icons";
 import { Sidebar } from "./sidebar";
+import { DashboardProvider } from "./dashboard-provider";
 import { ApiError, cancelarRequisicoes, SESSAO_EXPIRADA, studioRequest } from "../lib/api";
 import { VinculoCanal } from "./vinculo-canal";
 
@@ -152,13 +153,13 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
       <button type="button" className="btn" onClick={sair} disabled={ocupado}>Sair</button>
     </header>
     {erro && <p className="app-alert" role="alert">{erro}</p>}
-    {atual && base ? <div className={producao ? "channel-production" : "channel-body"} key={atual.id}>
+    {atual && base ? <DashboardProvider key={atual.id}><div className={producao ? "channel-production" : "channel-body"}>
       {producao ? null : <Sidebar channelBase={base}/>}
       <div className="channel-content">
         {!atual.conectado && <aside className="channel-notice">Conexão do YouTube expirada. <VinculoCanal canalId={atual.id} onComplete={revalidar}/></aside>}
         {children}
       </div>
-    </div> : <main className="studio-entry"><div className="entry-card">
+    </div></DashboardProvider> : <main className="studio-entry"><div className="entry-card">
       <h1>{canalId ? "Canal sem acesso" : acesso.canais.length ? "Escolha um canal" : "Vincule seu canal do YouTube"}</h1>
       {canalId && <a href="/">Voltar aos canais autorizados</a>}
       <VinculoCanal onComplete={revalidar}/>

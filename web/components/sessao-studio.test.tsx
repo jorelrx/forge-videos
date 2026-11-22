@@ -62,6 +62,7 @@ it("atualiza os canais ao recuperar foco sem desmontar a página", async () => {
   let consultas = 0;
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (url === "/api/sessao") return Response.json(conta);
+    if (url !== "/api/canais") return Response.json([]);
     consultas++;
     return Response.json({canais:[{...canal("A"), titulo}]});
   }));

@@ -10,6 +10,7 @@ import { RunOutputs } from "./run-outputs";
 import { EditorialReview } from "./editorial-review";
 import { Publication } from "./publication";
 import { Sidebar } from "./sidebar";
+import { useSharedDashboard } from "./dashboard-provider";
 import {
   GPU_SERVICES,
   PageHeader,
@@ -548,7 +549,15 @@ function progressPercent(progress: number): number {
   return Math.round(Math.min(1, Math.max(0, progress)) * 100);
 }
 
-export function Dashboard({ api, eventSource, channelBase }: DashboardProps) {
+export function Dashboard(props: DashboardProps) {
+  const shared = useSharedDashboard();
+  if (shared) {
+    return <DashboardView state={shared.state} fluxosApi={shared.api} channelBase={props.channelBase} />;
+  }
+  return <StandaloneDashboard {...props} />;
+}
+
+function StandaloneDashboard({ api, eventSource, channelBase }: DashboardProps) {
   const state = useDashboard(api ?? defaultApi, {
     EventSource: eventSource,
   });

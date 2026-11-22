@@ -1661,6 +1661,14 @@ a { color: inherit; }
 .board-saved li { display: grid; gap: var(--s-2); overflow-wrap: anywhere; }
 .board-saved li > details > :not(summary) { margin-inline: var(--s-3); }
 .board-saved li > details > summary { color: var(--text); font-weight: 650; }
+.board-episodes, .board-origin { display: grid; gap: var(--s-3); }
+.board-episodes h2 { margin: 0; }
+.board-episodes > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-3); }
+.board-episodes > ul > li { display: grid; gap: var(--s-2); padding-top: var(--s-3); border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.board-episodes p { margin: 0; color: var(--text-2); }
+.board-episodes small { color: var(--muted); }
+.board-windows { margin: 0; padding-left: var(--s-5); color: var(--text-2); }
+.board-approved a { color: var(--accent); }
 .board-discard summary { display: inline-flex; align-items: center; min-height: 32px; padding-inline: var(--s-1); }
 
 .board-workspace { display: grid; gap: var(--s-4); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }

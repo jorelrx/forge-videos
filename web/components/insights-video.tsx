@@ -49,7 +49,21 @@ export function InsightsVideo({canal,videoId,consulta}:{canal:string;videoId:str
             </tr>)}</tbody>
           </table></details> : <p className="insight-empty">A fonte ainda não disponibilizou a curva de retenção.</p>}
       </section>
-      <section className="panel insight-windows">
+      {dados.episodio_board && <section className="panel board-origin" aria-labelledby="board-origin-title">
+        <div className="insight-section-header"><h2 id="board-origin-title">Pauta de origem</h2>
+          <span>Revisão {dados.episodio_board.revisao} do Board</span></div>
+        <dl className="board-angle">
+          <div><dt>Promessa</dt><dd>{dados.episodio_board.promessa || "Sem promessa"}</dd></div>
+          <div><dt>Recorte</dt><dd>{dados.episodio_board.recorte || "Sem recorte"}</dd></div>
+          <div><dt>Abertura aprovada</dt><dd>{dados.episodio_board.abertura || "Sem abertura registrada"}</dd></div>
+          {dados.episodio_board.decisao && <div><dt>Decisão após a pesquisa</dt><dd>{
+            dados.episodio_board.decisao === "aceitar" ? "Recorte proposto pelas fontes aceito" :
+              dados.episodio_board.decisao === "editar" ? "Pauta editada à luz das fontes" : "Encaminhamento cancelado"}</dd></div>}
+          {dados.episodio_board.abertura_sha256 && <div><dt>Versão da abertura</dt>
+            <dd><code>{dados.episodio_board.abertura_sha256.slice(0, 12)}</code></dd></div>}
+        </dl>
+      </section>}
+      <section id="janelas" className="panel insight-windows">
         <div className="insight-section-header"><h2>Desde a publicação</h2></div>
         <div className="episode-windows">{(["d7","d28"] as const).map(j=><div key={j}>
           <h3>{j === "d7" ? "Primeiros 7 dias" : "Primeiros 28 dias"}</h3>

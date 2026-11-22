@@ -9,6 +9,7 @@ import {
   type PautaBoard,
 } from "../lib/board-criativo";
 import { ConversaBoard } from "./board-conversa";
+import { EpisodiosBoard } from "./board-episodios";
 import { DecisaoPauta } from "./board-decisao";
 import { CorpoIdeia, FonteEditorial } from "./board-ideia";
 import { ConflitoPauta, EditorPauta, RevisarPauta } from "./board-pauta";
@@ -313,6 +314,8 @@ function BoardCanal({canal}: {canal: string}) {
     {(manual || pauta) && <DecisaoPauta board={board} pauta={salva ?? pautaVazia} pendenteLocal={pendente}
       ocupado={ocupado} escolherFluxo={fluxoId => void enviar({acao: "fluxo", fluxo_id: fluxoId}, board.revisao)}
       criar={board.fluxo_id ? () => void criarRoteiro(board.revisao, board.fluxo_id!) : undefined}/>}
+
+    <EpisodiosBoard canal={canal} episodios={board.episodios ?? []}/>
 
     <section className="panel board-saved" aria-labelledby="board-saved-title">
       <h2 id="board-saved-title">Ideias guardadas</h2>

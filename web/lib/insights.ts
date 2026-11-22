@@ -26,6 +26,10 @@ export interface Detalhe extends Leitura {
   video: VideoCatalogo;
   retencao: {posicao:number | null;proporcao:number | null}[];
   janelas: {d7: Observacao[]; d28: Observacao[]};
+  episodio_board?: {
+    aprovacao_id: string; revisao: number; titulo: string; promessa: string; recorte: string;
+    abertura: string; decisao: string | null; abertura_sha256: string | null;
+  } | null;
 }
 export interface ListaVideos { videos: VideoCatalogo[]; proximo_cursor: string | null }
 

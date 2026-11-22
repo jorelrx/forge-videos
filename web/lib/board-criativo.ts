@@ -93,6 +93,28 @@ export interface FluxoBoard {
   motivo: string | null;
 }
 
+export interface JanelaEpisodio {
+  completa: boolean;
+  fim: string;
+  observacoes: Observacao[];
+}
+
+export interface EpisodioBoard {
+  aprovacao_id: string;
+  revisao: number;
+  titulo: string;
+  run_id: string;
+  run_status: string | null;
+  momento: "em_producao" | "cancelado" | "enviado" | "agendado" | "publico" | "janela_completa";
+  publicar_em: string | null;
+  video_id: string | null;
+  publicado_em: string | null;
+  janelas: {d7: JanelaEpisodio; d28: JanelaEpisodio} | null;
+  abertura: string;
+  promessa: string;
+  url: string | null;
+}
+
 export interface Pendencia {
   campo: string;
   mensagem: string;
@@ -100,7 +122,7 @@ export interface Pendencia {
 
 export interface FonteBoard {
   id: string;
-  tipo: "catalogo" | "desempenho" | "comentario";
+  tipo: "catalogo" | "desempenho" | "comentario" | "episodio";
   titulo: string;
   url: string;
   texto: string | null;
@@ -136,6 +158,7 @@ export interface Board {
   fluxos: FluxoBoard[];
   pendencias: Pendencia[];
   ultima_aprovacao?: {id: string; run_id: string; revisao: number; titulo: string} | null;
+  episodios?: EpisodioBoard[];
   contexto: {
     precisa_posicionamento: boolean;
     aguardando: boolean;

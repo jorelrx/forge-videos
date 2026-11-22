@@ -135,15 +135,13 @@ Configuração, uma vez:
 2. Configure a tela de consentimento OAuth (público **Externo**) e adicione a
    conta Google dona do canal como usuária de teste.
 3. Crie um cliente OAuth do tipo **App para computador** e baixe o JSON.
-4. Na aba **Publicação**, bloco *Conta do YouTube*: envie esse JSON e clique
-   em **Conectar conta Google**. Na tela do Google, escolha o canal — conta com
-   mais de um canal mostra a lista ali. *Adicionar canal* conecta outro; o
-   canal marcado é o padrão das próximas publicações. Pelo terminal, o mesmo é
-   `uv run forge auth youtube login` (com o JSON salvo em
-   `%USERPROFILE%\.forge\youtube\client_secret.json`), `uv run forge auth
-   youtube status` lista os canais e `uv run forge publicar ... --canal UC...`
-   escolhe um. Os tokens ficam em `%USERPROFILE%\.forge\youtube\canais\`, um
-   por canal, fora do repositório.
+4. Como operador local, salve o JSON no caminho de `FORGE_YOUTUBE_CLIENT_SECRETS`
+   (padrão `%USERPROFILE%\.forge\youtube\client_secret.json`). No Studio, entre e
+   use **Vincular canal**. O Google confirma qual canal será associado à conta
+   do Studio. Para operar diretamente pelo CLI, use `uv run forge auth youtube
+   login`, `uv run forge auth youtube status` e `uv run forge publicar ...
+   --canal UC...`. Credenciais do CLI e os vínculos pessoais do Studio têm
+   ciclos de vida próprios.
 5. Verifique o canal por telefone (youtube.com/verify) para a thumbnail
    personalizada ser aceita.
 
@@ -263,12 +261,23 @@ uv run forge-studio-doctor --migrate
 uv run forge-import-runs C:\caminho\output\runs --children
 ```
 
+### Entrar no Studio e consultar um canal
+
+Crie também um cliente OAuth do tipo **Aplicação web** para identificar a pessoa. Registre a URI de retorno exata `http://127.0.0.1:3100/api/sessao/google/callback`. Configure `FORGE_STUDIO_GOOGLE_CLIENT_ID` e `FORGE_STUDIO_GOOGLE_CLIENT_SECRET` no ambiente local do servidor. A origem padrão é `http://127.0.0.1:3100`. Com domínio próprio, configure `FORGE_STUDIO_PUBLIC_ORIGIN` para a origem HTTPS e registre o callback correspondente. Use a mesma origem no navegador. Reinicie a API após alterar essas variáveis.
+
+1. Na entrada do Studio, use **Entrar com Google**. No primeiro acesso, vincule o canal usando o cliente para computador configurado acima. Uma conexão prévia no CLI exige nova confirmação do canal. Quando houver vários canais, o seletor permite alternar entre os autorizados.
+2. Abra **Vídeos e insights**. Habilite a YouTube Analytics API no projeto Google Cloud e conceda permissão de leitura de indicadores quando solicitada. Sem essa permissão, a consulta ao catálogo continua disponível quando o vínculo permite a leitura dos vídeos.
+3. Para conferir uma integração, use um vídeo publicado pelo Forge e outro publicado diretamente pelo canal. Abra o mesmo período no Studio e no YouTube Studio e compare visualizações, tempo de exibição, origem e cobertura. Abra o detalhe de cada vídeo, volte à lista e confira os filtros. Registre se a janela desde a publicação pública já fechou.
+4. Verifique a troca de canal com uma leitura em andamento, a navegação por teclado em tela estreita e o logout. Após sair, reabrir o endereço de um vídeo exige login. Para restaurar o acesso ao YouTube com a sessão pessoal ainda válida, reconecte o canal.
+
+A interface consulta a API pela mesma origem, inclusive para eventos e downloads. Em produção local, rode `npm ci` e `npm run build` em `web/` antes de usar o launcher com `-WebMode production`. O worker continua processando a fila de todos os canais. O operador pode verificar a instalação com `uv run forge-studio-doctor`.
+
 Parâmetros do launcher:
 
 | Parâmetro | Efeito |
 |---|---|
 | `-NoBrowser` | não abre o dashboard |
-| `-WebMode production` | usa `next start` em vez de `next dev` |
+| `-WebMode production` | usa o build standalone do Next |
 | `-Force` | ignora um estado vivo e reinicia (a validação de linha de comando continua valendo) |
 | `-GraceSeconds <1..300>` | prazo da pausa cooperativa no stop |
 
@@ -281,7 +290,7 @@ Parâmetros do launcher:
 ### Triagem quando o painel mostra vermelho ou a fila não anda
 
 1. `uv run forge-studio-doctor` — o check reprovado diz qual path falta e onde configurar.
-2. `curl http://127.0.0.1:8765/api/services` — é exatamente o que a faixa de serviços do painel mostra.
+2. Abra a faixa de serviços em **Produção** com uma sessão e um canal selecionado. Ela consulta `/api/services` no contexto do canal.
 3. `uv run forge-worker --once` — prova se o worker reivindica e executa uma etapa. **Sem worker, a fila fica `queued` para sempre**: criar um vídeo no painel "não faz nada" sem erro visível.
 4. `POST /api/runs/{id}/resume` (com `Idempotency-Key`) — uma run cuja lease expirou vira `interrupted` e não volta sozinha; `claim_next` só reivindica `queued`.
 

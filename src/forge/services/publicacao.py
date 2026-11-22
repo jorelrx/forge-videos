@@ -85,7 +85,7 @@ class EstadoPublicacao(BaseModel):
         return f"https://studio.youtube.com/video/{self.video_id}/edit" if self.video_id else None
 
     def para_api(self) -> dict:
-        return {**self.model_dump(), "url": self.url}
+        return {**self.model_dump(exclude={"upload_uri"}), "url": self.url}
 
 
 def _caminho(run_dir: Path) -> Path:
@@ -257,6 +257,16 @@ def _publicar(run_dir, cliente, settings, titulo, publicar_em, agora, ao_progred
                 video / "legendas.srt", "legenda_recusada", estado)
         estado.etapa = "concluida"
         salvar()
+        db_path = getattr(settings, "studio_db_path", None)
+        if estado.canal_id and db_path and Path(db_path).is_file():
+            from sqlite3 import Error as DatabaseError
+            from forge.repositories.connection import Database
+            from forge.repositories.observacoes_canal import invalidar_catalogo
+            try:
+                invalidar_catalogo(Database(db_path), estado.canal_id)
+            except DatabaseError as erro:
+                # Upload já confirmado. O prazo normal do cache permite recuperação.
+                log.warning("catalogo_invalidacao_falhou", canal=estado.canal_id, erro=type(erro).__name__)
         log.info("publicacao_concluida", run=run_dir.name, video_id=estado.video_id)
         return estado
     except YouTubeError as erro:
@@ -383,7 +393,8 @@ class Publicador:
             return str(Path(run_dir).resolve()) in self._ativos
 
     def iniciar(self, run_dir: Path, *, titulo: str | None, publicar_em: datetime | None,
-                canal_id: str | None = None) -> None:
+                canal_id: str | None = None, canais=None) -> None:
+        canais = self.canais if canais is None else canais
         run_dir = Path(run_dir)
         chave = str(run_dir.resolve())
         with self._trava:
@@ -391,19 +402,25 @@ class Publicador:
                 raise PublicacaoEmAndamento("Publicação desta run já está em andamento")
             verificar_pedido(run_dir, titulo=titulo, publicar_em=publicar_em,
                              agora=datetime.now(timezone.utc))
-            if not self.conectado():
+            if not canais.listar():
                 raise YouTubeAuthError(
                     "Nenhum canal do YouTube conectado. Conecte uma conta Google na aba "
                     "Publicação ou rode forge auth youtube login")
             # O que já subiu pertence ao canal gravado; o pedido só vale do zero.
-            canal = canal_da_retomada(run_dir) or canal_id or self.canais.padrao()
+            canal = canal_da_retomada(run_dir) or canal_id or canais.padrao()
             try:
-                credenciais = self.canais.credenciais(canal)
+                credenciais = canais.credenciais(canal)
             except KeyError:
                 raise CanalDesconhecido(
                     f"Canal {canal} não está conectado; conecte-o de novo") from None
-            canal_titulo = self.canais.titulo(canal)
+            canal_titulo = canais.titulo(canal)
             self._ativos.add(chave)
+
+        def liberar():
+            with self._trava:
+                self._ativos.discard(chave)
+            if fechar := getattr(credenciais, "liberar", None):
+                fechar()
 
         def alvo():
             try:
@@ -416,10 +433,13 @@ class Publicador:
                 log.exception("publicacao_erro_inesperado", run=run_dir.name)
                 registrar_falha_inesperada(run_dir, erro)
             finally:
-                with self._trava:
-                    self._ativos.discard(chave)
+                liberar()
 
-        self._iniciar_thread(alvo)
+        try:
+            self._iniciar_thread(alvo)
+        except Exception:
+            liberar()
+            raise
 
 
 __all__ = [

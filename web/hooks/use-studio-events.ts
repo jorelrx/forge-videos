@@ -45,7 +45,15 @@ export function useStudioEvents(
         // Malformed public data is ignored; connection remains observable.
       }
     };
-    return () => source.close();
+    const fechar = () => source.close();
+    window.addEventListener("pagehide", fechar);
+    return () => {
+      window.removeEventListener("pagehide", fechar);
+      source.onmessage = null;
+      source.onerror = null;
+      source.onopen = null;
+      fechar();
+    };
   }, [runId, dependencies.EventSource]);
 
   return { connection, events };

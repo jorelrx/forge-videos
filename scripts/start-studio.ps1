@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Inicia API, worker e web do Forge Studio localmente.
 
@@ -96,7 +96,7 @@ $worker = Start-Process -FilePath 'uv' -ArgumentList @('run', 'forge-worker') `
     -WorkingDirectory $StudioRoot -WindowStyle Hidden `
     -RedirectStandardOutput $workerLog -RedirectStandardError $workerErrLog -PassThru
 $web = Start-Process -FilePath 'npm.cmd' `
-    -ArgumentList @('--prefix', 'web', 'run', $webScript, '--', '-H', '127.0.0.1', '-p', "$WebPort") `
+    -ArgumentList @('--prefix', 'web', 'run', $webScript) `
     -WorkingDirectory $StudioRoot -WindowStyle Hidden `
     -RedirectStandardOutput $webLog -RedirectStandardError $webErrLog -PassThru
 

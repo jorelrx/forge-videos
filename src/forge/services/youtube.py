@@ -207,6 +207,51 @@ class YouTubeClient:
         return {"id": str(itens[0].get("id") or ""), "titulo": str(snippet.get("title") or ""),
                 "thumbnail": foto}
 
+    def catalogo_publico(self, canal_id: str):
+        """Só entrega vídeos públicos confirmados pela lista de detalhes."""
+        from datetime import datetime, timezone
+
+        def buscar(recurso, **params):
+            resposta = self._com_tentativas(lambda: self._pedir(
+                "GET", f"https://www.googleapis.com/youtube/v3/{recurso}",
+                params=params, headers=self._cabecalhos()))
+            return resposta.json()
+
+        canais = buscar("channels", part="contentDetails", mine="true")["items"]
+        canal = next((item for item in canais if item["id"] == canal_id), None)
+        if not canal:
+            raise YouTubeAuthError("A credencial pertence a outro canal")
+        playlist = canal["contentDetails"]["relatedPlaylists"]["uploads"]
+        params = dict(part="contentDetails", playlistId=playlist, maxResults=50)
+        vistos, paginas = set(), set()
+        while True:
+            pagina = buscar("playlistItems", **params)
+            ids = dict.fromkeys(i["contentDetails"]["videoId"] for i in pagina["items"])
+            novos = [i for i in ids if i not in vistos]
+            vistos.update(novos)
+            if novos:
+                detalhes = buscar("videos", part="snippet,status", id=",".join(novos))
+                for item in detalhes["items"]:
+                    snippet = item["snippet"]
+                    if (item["id"] not in novos or snippet["channelId"] != canal_id
+                            or item["status"]["privacyStatus"] != "public"):
+                        continue
+                    data = datetime.fromisoformat(snippet["publishedAt"])
+                    if data.tzinfo is None:
+                        raise ValueError("Publicação sem fuso horário")
+                    fotos = snippet.get("thumbnails", {})
+                    foto = next((fotos[k]["url"] for k in ("medium", "high", "default")
+                                 if k in fotos), None)
+                    yield dict(video_id=item["id"], titulo=snippet["title"], thumbnail=foto,
+                               publicado_em=data.astimezone(timezone.utc).isoformat())
+            token = pagina.get("nextPageToken")
+            if not token:
+                return
+            if token in paginas:
+                raise YouTubeError("Paginação repetida no catálogo")
+            paginas.add(token)
+            params["pageToken"] = token
+
     def definir_thumbnail(self, video_id: str, caminho: Path) -> None:
         dados = Path(caminho).read_bytes()
         self._com_tentativas(lambda: self._pedir(

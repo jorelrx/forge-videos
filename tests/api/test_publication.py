@@ -59,7 +59,7 @@ class FakeCanais:
         return f"credenciais-{canal_id}"
 
 
-def cliente_api(services, settings, *, conectado=True, cliente=None, sincrono=True, canais=None):
+def cliente_api(services, settings, *, conectado=True, cliente=None, sincrono=True, canais=None, destino="UC1"):
     from forge.services.publicacao import Publicador
     canais = canais or FakeCanais(ids=("UC1", "UC2") if conectado else ())
     publicador = Publicador(
@@ -67,7 +67,15 @@ def cliente_api(services, settings, *, conectado=True, cliente=None, sincrono=Tr
         cliente_factory=lambda credenciais: cliente or FakeCliente(),
         iniciar_thread=(lambda alvo: alvo()) if sincrono else (lambda alvo: None),
     )
-    return TestClient(create_app(replace(services, publicador=publicador)))
+    from .conftest import autenticar
+    from forge.repositories.operacao import OperacaoRepository
+    with services.commands.db.transaction() as conn:
+        OperacaoRepository(conn).create_imported_video_and_run(
+            tema="Publicação", tese=None, config_snapshot={}, git_commit="teste",
+            run_id="run-1", canal_id=destino,
+        )
+    return autenticar(TestClient(create_app(replace(services, publicador=publicador))),
+                      services, canais=(destino,))
 
 
 def test_get_sem_publicacao(services, settings):
@@ -162,18 +170,17 @@ def test_publica_no_canal_padrao_e_grava_o_canal(services, settings):
 def test_publica_no_canal_escolhido(services, settings):
     run_pronta(settings)
     canais = FakeCanais()
-    api = cliente_api(services, settings, canais=canais)
+    api = cliente_api(services, settings, canais=canais, destino="UC2")
     api.post("/api/runs/run-1/publication", json={"titulo": "Título A", "canal_id": "UC2"})
     assert api.get("/api/runs/run-1/publication").json()["estado"]["canal_id"] == "UC2"
     assert canais.pedidos == ["UC2"]
 
 
-def test_canal_desconhecido_e_409(services, settings):
+def test_destino_diferente_do_canal_da_run_e_404(services, settings):
     run_pronta(settings)
     resposta = cliente_api(services, settings).post(
         "/api/runs/run-1/publication", json={"titulo": "Título A", "canal_id": "UC9"})
-    assert resposta.status_code == 409
-    assert resposta.json()["error"]["code"] == "youtube_channel_unknown"
+    assert resposta.status_code == 404
 
 
 def test_retomada_usa_o_canal_gravado_e_nao_o_pedido(services, settings):
@@ -182,7 +189,8 @@ def test_retomada_usa_o_canal_gravado_e_nao_o_pedido(services, settings):
     _gravar(run, EstadoPublicacao(etapa="falhou", titulo="Título A", upload_uri="https://s",
                                   total_bytes=10, canal_id="UC2", canal_titulo="Canal Dois"))
     canais = FakeCanais()
-    api = cliente_api(services, settings, canais=canais)
-    api.post("/api/runs/run-1/publication", json={"titulo": "Título A", "canal_id": "UC1"})
+    api = cliente_api(services, settings, canais=canais, destino="UC2")
+    assert api.post("/api/runs/run-1/publication", json={"titulo": "Título A", "canal_id": "UC1"}).status_code == 404
+    api.post("/api/runs/run-1/publication", json={"titulo": "Título A", "canal_id": "UC2"})
     assert canais.pedidos == ["UC2"]
     assert api.get("/api/runs/run-1/publication").json()["estado"]["canal_id"] == "UC2"

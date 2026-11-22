@@ -3,7 +3,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from urllib.parse import urlsplit
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from forge.domain.operacao import StageName
@@ -52,6 +53,20 @@ class Settings(BaseSettings):
     output_dir: Path = Path("output/roteiros")
     studio_runs_dir: Path = Path("output/runs")
     studio_db_path: Path = Path("data/forge.db")
+    studio_public_origin: str = "http://127.0.0.1:3100"
+    studio_google_client_id: str = ""
+    studio_google_client_secret: SecretStr = SecretStr("")
+
+    @field_validator("studio_public_origin")
+    @classmethod
+    def validar_origem_studio(cls, valor: str) -> str:
+        origem = urlsplit(valor)
+        local = origem.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (not origem.hostname or origem.username is not None or origem.password is not None
+                or origem.query or origem.fragment or origem.path not in {"", "/"}
+                or not (origem.scheme == "https" or origem.scheme == "http" and local)):
+            raise ValueError("Origem do Studio requer HTTPS ou HTTP em loopback")
+        return valor.rstrip("/")
     worker_lease_seconds: int = Field(default=15, gt=0)
     worker_heartbeat_seconds: int = Field(default=5, gt=0)
     log_level: str = "INFO"
@@ -314,6 +329,7 @@ class Settings(BaseSettings):
                     self.api_key,
                     self.anthropic_api_key,
                     self.openai_api_key,
+                    self.studio_google_client_secret.get_secret_value(),
                 )
                 if value
             )

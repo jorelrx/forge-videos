@@ -3,7 +3,7 @@
 /* eslint-disable jsx-a11y/media-has-caption -- O áudio mostra a transcrição do trecho ao lado; a API ainda não fornece VTT, e o vídeo final expõe o roteiro na aba própria. */
 
 import React from "react";
-import { artifactContentUrl } from "../lib/api";
+import { studioFetch,  artifactContentUrl } from "../lib/api";
 import type { Artifact, RunView, StageName, WorkItem } from "../lib/contracts";
 
 type OutputTab = "roteiro" | "audios" | "imagens" | "video";
@@ -115,7 +115,7 @@ function ScriptView({ run, artifact }: { run: RunView; artifact?: Artifact }) {
     const controller = new AbortController();
     setLoading(true);
     setError(false);
-    fetch(artifactContentUrl(artifactId), { cache: "no-store", signal: controller.signal })
+    studioFetch(artifactContentUrl(artifactId), { cache: "no-store", signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("artifact_unavailable");
         return response.text();

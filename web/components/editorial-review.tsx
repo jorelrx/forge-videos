@@ -92,7 +92,7 @@ export function EditorialReview({
             <div className="editorial-packaging">
               {thumbnail && (
                 // Os artefatos são servidos pelo Studio local.
-                // eslint-disable-next-line @next/next/no-img-element
+
                 <img src={artifactContentUrl(thumbnail.id)} alt="Thumbnail proposta" />
               )}
               {!thumbnail && <p className="field-hint">Thumbnail indisponível nesta prévia.</p>}
@@ -132,7 +132,7 @@ export function EditorialReview({
                       }));
                     }}>
                       {imagem && (
-                        // eslint-disable-next-line @next/next/no-img-element
+
                         <img src={artifactContentUrl(imagem.id)} alt={"Cena " + (index + 1)} />
                       )}
                       <div className="field">

@@ -9,7 +9,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from forge.api.acesso import autorizar_producao, canal_da_run
+from fastapi import Depends, APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -19,7 +20,7 @@ from forge.services.desempenho import Medicao, ler_desempenho, salvar_medicao
 from forge.services.publicacao import Publicador, ler_estado
 from forge.services.youtube import YouTubeAuthError, YouTubeError
 
-publication_router = APIRouter()
+publication_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
 # Id de run vira caminho em disco: só o alfabeto dos ids, nunca ".." ou "/".
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -53,23 +54,38 @@ def _run_dir(request: Request, run_id: str) -> Path:
     return run_dir
 
 
-def _visao(publicador: Publicador, run_dir: Path) -> dict:
+def _canais(request: Request):
+    if request.app.state.services.publicador is not None:
+        return request.app.state.services.publicador.canais
+    from forge.api.routes.youtube import canais_da_conta
+    return canais_da_conta(request)
+
+
+def _visao(request: Request, publicador: Publicador, run_dir: Path) -> dict:
     estado = ler_estado(run_dir)
+    canal = canal_da_run(request, run_dir.name)
+    if estado and estado.canal_id and estado.canal_id != canal:
+        not_found("run", run_dir.name)
+    canais = _canais(request)
     return {
         "estado": estado.para_api() if estado is not None else None,
         "em_andamento": publicador.em_andamento(run_dir),
-        "conectado": publicador.conectado(),
+        "conectado": any(getattr(item, "id", item) == canal for item in canais.listar()),
     }
 
 
 @publication_router.get("/runs/{run_id}/publication")
 async def get_publication(run_id: str, request: Request) -> dict:
-    return _visao(_publicador(request), _run_dir(request, run_id))
+    return _visao(request, _publicador(request), _run_dir(request, run_id))
 
 
 @publication_router.post("/runs/{run_id}/publication", status_code=202)
 async def publish(run_id: str, payload: PublishRequest, request: Request):
     run_dir = _run_dir(request, run_id)
+    canal = canal_da_run(request, run_id)
+    estado = ler_estado(run_dir)
+    if (payload.canal_id and payload.canal_id != canal) or (estado and estado.canal_id and estado.canal_id != canal):
+        not_found("canal", payload.canal_id or canal)
     try:
         run = request.app.state.services.commands.get_run(run_id).run
     except KeyError:
@@ -79,13 +95,13 @@ async def publish(run_id: str, payload: PublishRequest, request: Request):
     publicador = _publicador(request)
     try:
         publicador.iniciar(run_dir, titulo=payload.titulo, publicar_em=payload.publicar_em,
-                           canal_id=payload.canal_id)
+                           canal_id=canal, canais=_canais(request))
     except YouTubeError as erro:
         # Envelope no topo, como os handlers de app.py; o painel decide pelo código.
         codigo = "youtube_auth_missing" if isinstance(erro, YouTubeAuthError) else erro.codigo
         return JSONResponse(status_code=409, content={
             "error": {"code": codigo, "message": str(erro)}})
-    return JSONResponse(status_code=202, content=_visao(publicador, run_dir))
+    return JSONResponse(status_code=202, content=_visao(request, publicador, run_dir))
 
 
 def _publicacao_concluida(run_dir):

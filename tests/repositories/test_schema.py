@@ -6,6 +6,8 @@ from forge.repositories.connection import Database
 from forge.repositories.schema import SCHEMA_VERSION, TABLES, init_db
 
 APP_INDEXES = {
+    "idx_runs_canal": [("canal_id", "ASC"), ("created_at", "DESC"), ("id", "DESC")],
+    "leituras_por_canal": [("canal_id", "ASC"), ("tipo", "ASC")],
     "idx_runs_queue": [
         ("status", "ASC"),
         ("priority", "DESC"),
@@ -86,7 +88,7 @@ def test_init_db_cria_exatamente_todas_as_tabelas_do_app(tmp_path):
     assert names == TABLES
 
 
-def test_init_db_cria_exatamente_os_cinco_indices_explicitos_do_app(tmp_path):
+def test_init_db_cria_exatamente_os_indices_explicitos_do_app(tmp_path):
     db = Database(tmp_path / "forge.db")
     init_db(db)
 

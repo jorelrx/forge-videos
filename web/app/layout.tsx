@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Forge Studio",
-  description: "Produção, fila e publicação dos vídeos do Conquistas Cósmicas.",
+  description: "Catálogo, indicadores, produção e publicação dos seus canais.",
 };
 
 export const viewport: Viewport = {

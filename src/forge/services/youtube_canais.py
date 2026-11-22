@@ -143,18 +143,22 @@ class CanaisYouTube:
         info = self._ler_indice()["canais"].get(canal_id)
         return info.get("titulo") if info else None
 
-    def registrar(self, token_temporario: Path) -> Canal:
-        """Identifica o canal do token recém-obtido e o guarda como padrão."""
+    def identificar(self, token_temporario: Path) -> Canal:
         credenciais = GoogleCredentials(token_temporario, self.settings.youtube_client_secrets)
         info = self._identificar(credenciais)
         canal_id = str(info.get("id") or "")
-        if not _ID_CANAL.match(canal_id):
-            raise YouTubeError(f"YouTube devolveu um id de canal inesperado: {canal_id!r}")
+        if not _ID_CANAL.fullmatch(canal_id):
+            raise YouTubeError("YouTube devolveu um id de canal inesperado")
+        return Canal(canal_id, str(info.get("titulo") or canal_id), info.get("thumbnail"), True)
+
+    def registrar(self, token_temporario: Path) -> Canal:
+        """Identifica o canal do token recém-obtido e o guarda como padrão."""
+        canal = self.identificar(token_temporario)
+        canal_id = canal.id
         with self._trava():
             os.replace(token_temporario, self._token_path(canal_id))
             indice = self._ler_indice()
-            indice["canais"][canal_id] = {"titulo": str(info.get("titulo") or canal_id),
-                                          "thumbnail": info.get("thumbnail")}
+            indice["canais"][canal_id] = {"titulo": canal.titulo, "thumbnail": canal.thumbnail}
             indice["padrao"] = canal_id
             self._gravar_indice(indice)
         log.info("youtube_canal_conectado", canal=canal_id)
@@ -218,7 +222,10 @@ class LoginGoogle:
     def aguardar(self, timeout: float) -> bool:
         return self._fim.wait(timeout)
 
-    def iniciar(self) -> EstadoLogin:
+    def nova_tentativa(self) -> "LoginGoogle":
+        return LoginGoogle(self.canais, fabrica=self._fabrica)
+
+    def iniciar(self, *, registrar=None, escopos=None, retorno_studio=None) -> EstadoLogin:
         if not self.canais.cliente_configurado():
             raise ClienteAusente(
                 "Cliente OAuth do Google não configurado; envie o JSON do cliente desktop")
@@ -239,17 +246,21 @@ class LoginGoogle:
 
         def alvo():
             try:
-                self._fabrica(temporario).login(timeout=self.PRAZO, open_browser=entregar_url)
-                canal = self.canais.registrar(temporario)
+                opcoes = {"escopos": escopos} if escopos else {}
+                if retorno_studio:
+                    opcoes["retorno_studio"] = retorno_studio
+                self._fabrica(temporario).login(timeout=self.PRAZO, open_browser=entregar_url, **opcoes)
+                canal = (registrar or self.canais.registrar)(temporario)
                 with self._trava:
                     self._estado.status, self._estado.canal_id = "concluido", canal.id
+                    self._estado.url = None
             except Exception as erro:  # noqa: BLE001 — a thread não tem quem a ouça
                 if not isinstance(erro, YouTubeError):
-                    log.exception("youtube_login_erro_inesperado")
+                    log.error("youtube_login_erro_inesperado", tipo=type(erro).__name__)
                 with self._trava:
                     self._estado.status = "falhou"
-                    self._estado.erro = str(erro) if isinstance(erro, YouTubeError) else (
-                        f"Erro inesperado no login: {type(erro).__name__}")
+                    self._estado.url = None
+                    self._estado.erro = "Login recusado, expirado ou incompatível com o canal."
             finally:
                 temporario.unlink(missing_ok=True)
                 url_pronta.set()

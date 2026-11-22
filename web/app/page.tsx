@@ -1,5 +1,5 @@
-import { Dashboard } from "../components/dashboard";
+import { SessaoStudio } from "../components/sessao-studio";
 
 export default function HomePage() {
-  return <Dashboard />;
+  return <SessaoStudio />;
 }

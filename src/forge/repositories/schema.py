@@ -15,6 +15,8 @@ TABLES = {
     "events",
     "commands",
     "fluxos_geracao",
+    "contas", "sessoes", "tentativas_oidc", "acesso_canais",
+    "catalogo_canal", "leituras_canal",
 }
 
 

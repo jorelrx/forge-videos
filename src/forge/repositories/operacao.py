@@ -48,6 +48,7 @@ class OperacaoRepository:
         config_snapshot: dict,
         workflow_version: int,
         git_commit: str,
+        canal_id: str | None = None,
     ) -> tuple[Video, Run]:
         now = _now()
         video = Video(
@@ -83,8 +84,8 @@ class OperacaoRepository:
             """
             INSERT INTO runs (
                 id, video_id, status, priority, queue_position, config_snapshot_json,
-                workflow_version, git_commit, created_at, is_read_only
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                workflow_version, git_commit, created_at, is_read_only, canal_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.id,
@@ -97,6 +98,7 @@ class OperacaoRepository:
                 run.git_commit,
                 _iso(run.created_at),
                 int(run.is_read_only),
+                canal_id,
             ),
         )
         self.conn.executemany(
@@ -127,6 +129,7 @@ class OperacaoRepository:
         git_commit: str,
         run_id: str | None = None,
         video_id: str | None = None,
+        canal_id: str | None = None,
     ) -> tuple[Video, Run]:
         now = _now()
         video = Video(
@@ -163,8 +166,8 @@ class OperacaoRepository:
             """
             INSERT INTO runs (
                 id, video_id, status, priority, queue_position, config_snapshot_json,
-                workflow_version, git_commit, created_at, finished_at, is_read_only
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                workflow_version, git_commit, created_at, finished_at, is_read_only, canal_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.id,
@@ -178,6 +181,7 @@ class OperacaoRepository:
                 _iso(run.created_at),
                 _iso(run.finished_at),
                 int(run.is_read_only),
+                canal_id,
             ),
         )
         self.conn.executemany(
@@ -203,23 +207,23 @@ class OperacaoRepository:
         row = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return _run_from_row(row) if row is not None else None
 
-    def list_queue(self) -> list[Run]:
+    def list_queue(self, *, canal_id: str | None = None) -> list[Run]:
         rows = self.conn.execute(
             """
             SELECT * FROM runs
-            WHERE status = ?
+            WHERE status = ? AND (? IS NULL OR canal_id = ?)
             ORDER BY priority DESC, queue_position ASC, created_at ASC
             """,
-            (RunStatus.QUEUED.value,),
+            (RunStatus.QUEUED.value, canal_id, canal_id),
         ).fetchall()
         return [_run_from_row(row) for row in rows]
 
-    def list_runs(self, *, limit: int = 50, offset: int = 0) -> list[Run]:
+    def list_runs(self, *, limit: int = 50, offset: int = 0, canal_id: str | None = None) -> list[Run]:
         if limit < 0 or offset < 0:
             raise ValueError("limit and offset must be nonnegative")
         rows = self.conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT * FROM runs WHERE (? IS NULL OR canal_id = ?) ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (canal_id, canal_id, limit, offset),
         ).fetchall()
         return [_run_from_row(row) for row in rows]
 
@@ -566,8 +570,10 @@ class OperacaoRepository:
         return [_artifact_from_row(row) for row in rows]
 
 
-    def count_runs(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()
+    def count_runs(self, *, canal_id: str | None = None) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE (? IS NULL OR canal_id = ?)", (canal_id, canal_id)
+        ).fetchone()
         return int(row[0]) if row else 0
 
     def get_artifact(self, artifact_id: str) -> Artifact | None:

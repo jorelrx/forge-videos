@@ -39,7 +39,8 @@ def test_sse_no_data_uses_none() -> None:
     assert ev.data is None
 
 
-def test_idle_sse_does_not_block_the_event_loop() -> None:
+def test_idle_sse_does_not_block_the_event_loop(monkeypatch) -> None:
+    monkeypatch.setattr("forge.api.routes.events.exigir_canal", lambda request, canal: canal)
     class IdleQueries:
         def events_after(self, *_args, **_kwargs):
             return []
@@ -59,7 +60,7 @@ def test_idle_sse_does_not_block_the_event_loop() -> None:
     )
 
     async def exercise() -> None:
-        body = _sse_body(request, last_event_id=0, run_id=None)
+        body = _sse_body(request, last_event_id=0, run_id=None, canal_id="UC1")
         next_event = asyncio.create_task(anext(body))
         await asyncio.sleep(0.01)
         assert not next_event.done()

@@ -17,11 +17,22 @@ import type {
   StageName,
   PublicacaoRequest,
   PublicacaoView,
-  YouTubeView,
 } from "./contracts";
 
-const DEFAULT_API_BASE =
-  process.env.NEXT_PUBLIC_FORGE_API_URL ?? "http://127.0.0.1:8765";
+const DEFAULT_API_BASE = "";
+export const SESSAO_EXPIRADA = "forge:sessao-expirada";
+let requisicoes = new AbortController();
+
+export function cancelarRequisicoes() {
+  requisicoes.abort();
+  requisicoes = new AbortController();
+}
+
+export function canalDaAba(): string | null {
+  if (typeof window === "undefined") return null;
+  const segmento = /^\/canais\/([^/]+)/.exec(window.location.pathname)?.[1];
+  return segmento ? decodeURIComponent(segmento) : null;
+}
 
 export interface ApiFailure {
   readonly status: number;
@@ -113,7 +124,9 @@ function normalizedBase(baseUrl: string): string {
 }
 
 function endpoint(baseUrl: string, path: string): string {
-  return `${normalizedBase(baseUrl)}${path}`;
+  const canal = canalDaAba();
+  const query = canal ? (path.includes("?") ? "&" : "?") + "canal_id=" + encodeURIComponent(canal) : "";
+  return normalizedBase(baseUrl) + path + query;
 }
 
 async function request<T>(
@@ -121,17 +134,28 @@ async function request<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(endpoint(baseUrl, path), {
+  return studioRequest<T>(endpoint(baseUrl, path), init);
+}
+
+export async function studioRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await studioFetch(url, init);
+  const payload = (await response.json().catch(() => null)) as T | ApiErrorBody | null;
+  if (!response.ok) throw new ApiError(decodeFailure(response.status, payload));
+  return payload as T;
+}
+
+export async function studioFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const signal = init.signal ? AbortSignal.any([init.signal, requisicoes.signal]) : requisicoes.signal;
+  const response = await fetch(url, {
     cache: "no-store",
     ...init,
+    signal,
   });
-  const payload = (await response.json().catch(() => null)) as T | ApiErrorBody | null;
-
-  if (!response.ok) {
-    throw new ApiError(decodeFailure(response.status, payload));
+  signal.throwIfAborted();
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(SESSAO_EXPIRADA));
   }
-
-  return payload as T;
+  return response;
 }
 
 function commandRequest(
@@ -208,7 +232,7 @@ export function artifactContentUrl(id: string, baseUrl = DEFAULT_API_BASE): stri
  * manda salvar é o `Content-Disposition` que a API devolve com `download=1`.
  */
 export function artifactDownloadUrl(id: string, baseUrl = DEFAULT_API_BASE): string {
-  return `${artifactContentUrl(id, baseUrl)}?download=1`;
+  return endpoint(baseUrl, `/api/artifacts/${encodeURIComponent(id)}/content?download=1`);
 }
 
 /** Artefatos correntes de uma run (`GET /api/runs/{run_id}/artifacts`). */
@@ -244,33 +268,6 @@ export function publishRun(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-/** Contas e canais do YouTube (`GET /api/youtube`). */
-export function getYouTube(baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
-  return request<YouTubeView>(baseUrl, "/api/youtube");
-}
-
-/** Envia o conteúdo do client_secret.json (`POST /api/youtube/client`). */
-export function uploadYouTubeClient(conteudo: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
-  return request<YouTubeView>(baseUrl, "/api/youtube/client", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ conteudo }),
-  });
-}
-
-/** Inicia o login do Google (`POST /api/youtube/login`, 202). */
-export function startYouTubeLogin(baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
-  return request<YouTubeView>(baseUrl, "/api/youtube/login", { method: "POST" });
-}
-
-export function setDefaultChannel(id: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
-  return request<YouTubeView>(baseUrl, `/api/youtube/channels/${encodeURIComponent(id)}/default`, { method: "POST" });
-}
-
-export function disconnectChannel(id: string, baseUrl = DEFAULT_API_BASE): Promise<YouTubeView> {
-  return request<YouTubeView>(baseUrl, `/api/youtube/channels/${encodeURIComponent(id)}/disconnect`, { method: "POST" });
 }
 
 export function studioEventsUrl(runId: string | null, baseUrl = DEFAULT_API_BASE): string {

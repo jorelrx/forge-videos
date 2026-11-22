@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import httpx
 from filelock import FileLock
 
-from forge.services.youtube import YouTubeAuthError
+from forge.services.youtube import YouTubeAuthError, YouTubeError
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -97,6 +97,8 @@ class GoogleCredentials:
         try:
             store = json.loads(self.path.read_text(encoding="utf-8"))
             tokens = store["tokens"]
+            if store.get("revogado"):
+                raise ValueError("credencial revogada")
             if not all(isinstance(tokens.get(k), str) and tokens[k].strip()
                        for k in ("access_token", "refresh_token")):
                 raise ValueError("tokens ausentes")
@@ -117,6 +119,9 @@ class GoogleCredentials:
         finally:
             Path(nome).unlink(missing_ok=True)
 
+    def escopos(self) -> set[str]:
+        return set(self._ler()["tokens"].get("scope", "").split())
+
     def disponivel(self) -> bool:
         """Há login gravado. Sem rede: não prova que o refresh ainda vale."""
         try:
@@ -125,7 +130,8 @@ class GoogleCredentials:
         except YouTubeAuthError:
             return False
 
-    def login(self, *, timeout: float = 180, open_browser=webbrowser.open, show_url=None) -> None:
+    def login(self, *, timeout: float = 180, open_browser=webbrowser.open, show_url=None,
+              escopos=ESCOPOS, retorno_studio=None) -> None:
         cliente = ler_cliente(self.client_secrets_path)
         verifier = secrets.token_urlsafe(64)
         challenge = base64.urlsafe_b64encode(
@@ -145,10 +151,15 @@ class GoogleCredentials:
                 try:
                     resultado["code"] = validar_callback(self.path, state)
                     status, corpo = 200, "Login recebido. Pode fechar esta janela.".encode()
+                    if retorno_studio:
+                        status, corpo = 303, b""
                 except YouTubeAuthError:
                     resultado["erro"] = True
                     status, corpo = 400, b"Retorno OAuth invalido."
                 self.send_response(status)
+                if status == 303:
+                    self.send_header("Location", retorno_studio)
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(corpo)))
@@ -162,7 +173,7 @@ class GoogleCredentials:
             "response_type": "code",
             "client_id": cliente.client_id,
             "redirect_uri": redirect,
-            "scope": " ".join(ESCOPOS),
+            "scope": " ".join(escopos),
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             # Sem os dois, o Google não devolve refresh token e o login dura 1 h.
@@ -204,6 +215,8 @@ class GoogleCredentials:
             ) from None
         tokens = {k: tokens[k] for k in ("access_token", "refresh_token", "scope", "expires_in")
                   if k in tokens}
+        # RFC 6749: scope omitido na resposta significa os mesmos escopos pedidos.
+        tokens.setdefault("scope", " ".join(escopos))
         if isinstance(tokens.get("expires_in"), (int, float)):
             tokens["expires_at"] = time.time() + tokens.pop("expires_in")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,11 +246,21 @@ class GoogleCredentials:
                 token = novo["access_token"]
                 if not isinstance(token, str) or not token.strip():
                     raise ValueError("access token ausente")
-            except (httpx.HTTPError, ValueError, KeyError, TypeError):
-                # invalid_grant: refresh revogado ou vencido (app em modo Teste
-                # no Google Cloud expira o refresh em 7 dias).
-                raise YouTubeAuthError(_LOGIN) from None
+            except httpx.HTTPStatusError as erro:
+                try:
+                    motivo = erro.response.json().get("error")
+                except (ValueError, AttributeError):
+                    motivo = None
+                if motivo == "invalid_grant":
+                    store["revogado"] = True
+                    self._gravar(store)
+                    raise YouTubeAuthError(_LOGIN) from None
+                raise YouTubeError("Renovação indisponível no Google", status=erro.response.status_code) from None
+            except (httpx.RequestError, ValueError, KeyError, TypeError):
+                raise YouTubeError("Falha temporária na renovação do Google") from None
             tokens["access_token"] = token.strip()
+            if isinstance(novo.get("scope"), str):
+                tokens["scope"] = novo["scope"]
             if isinstance(novo.get("refresh_token"), str) and novo["refresh_token"].strip():
                 tokens["refresh_token"] = novo["refresh_token"].strip()
             if isinstance(novo.get("expires_in"), (int, float)):

@@ -16,7 +16,7 @@ describe("ArtifactPreview", () => {
     );
 
     expect(document.querySelector("video")?.getAttribute("src")).toBe(
-      "http://127.0.0.1:8765/api/artifacts/artifact-1/content",
+      "/api/artifacts/artifact-1/content",
     );
   });
 });

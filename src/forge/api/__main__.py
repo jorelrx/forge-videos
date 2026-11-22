@@ -8,5 +8,6 @@ def main() -> None:
         factory=True,
         host="127.0.0.1",
         port=settings.studio_api_port,
+        access_log=False,  # A URL de callback OIDC contém código e state de uso único.
         log_level=settings.log_level.lower(),
     )

@@ -19,6 +19,8 @@ dependencies = [
     "uvicorn>=0.52,<0.53",
     "filelock>=3.13",
     "Pillow>=11",
+    "authlib>=1.6,<2",
+    "tzdata>=2026.6",
 ]
 
 [project.scripts]

@@ -64,20 +64,20 @@ class StudioQueryService:
             run=run, video=video, progress=progress, current_stage=current
         )
 
-    def list_queue(self) -> list[RunSummary]:
+    def list_queue(self, *, canal_id: str | None = None) -> list[RunSummary]:
         with self.db.connection() as conn:
             repo = OperacaoRepository(conn)
-            return [self._summary(repo, run) for run in repo.list_queue()]
+            return [self._summary(repo, run) for run in repo.list_queue(canal_id=canal_id)]
 
-    def list_runs(self, *, limit: int = 50, offset: int = 0) -> RunPage:
+    def list_runs(self, *, limit: int = 50, offset: int = 0, canal_id: str | None = None) -> RunPage:
         with self.db.connection() as conn:
             repo = OperacaoRepository(conn)
             items = [
                 self._summary(repo, run)
-                for run in repo.list_runs(limit=limit, offset=offset)
+                for run in repo.list_runs(limit=limit, offset=offset, canal_id=canal_id)
             ]
             return RunPage(
-                items=items, total=repo.count_runs(), limit=limit, offset=offset
+                items=items, total=repo.count_runs(canal_id=canal_id), limit=limit, offset=offset
             )
 
     def get_run(self, run_id: str) -> RunView:
@@ -126,10 +126,10 @@ class StudioQueryService:
             )
 
     def events_after(
-        self, cursor: int, *, run_id: str | None = None, limit: int = 200
+        self, cursor: int, *, run_id: str | None = None, limit: int = 200, canal_id: str | None = None
     ) -> list[Event]:
         with self.db.connection() as conn:
-            return EventosRepository(conn).after(cursor, run_id=run_id, limit=limit)
+            return EventosRepository(conn).after(cursor, run_id=run_id, limit=limit, canal_id=canal_id)
 
     def list_artifacts(
         self, run_id: str, *, current_only: bool = True

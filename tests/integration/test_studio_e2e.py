@@ -44,7 +44,7 @@ def test_studio_completes_real_video(real_settings, tmp_path: Path) -> None:
         priority=50,
         config_snapshot=StudioPreset().model_dump(mode="json"),
         workflow_version=1,
-        git_commit="integration",
+        git_commit="integration", canal_id="integracao",
     )
     worker = build_worker(settings, worker_id="integration-worker")
 
@@ -81,7 +81,11 @@ def test_studio_completes_real_video(real_settings, tmp_path: Path) -> None:
 
     # O dashboard precisa enxergar a MESMA run pelo control plane, sem inferir
     # estado do disco.
-    with TestClient(create_app(build_api_services(settings))) as client:
+    from forge.services.sessao_studio import SessaoStudio
+    token = SessaoStudio(control.db).criar("teste", "Teste")
+    with control.db.transaction() as conn:
+        conn.execute("INSERT INTO acesso_canais(conta_id,canal_id,titulo) VALUES ('teste','integracao','Teste')")
+    with TestClient(create_app(build_api_services(settings)), cookies={"forge_sessao": token}) as client:
         resposta = client.get(f"/api/runs/{run.id}")
         assert resposta.status_code == 200
         corpo = resposta.json()

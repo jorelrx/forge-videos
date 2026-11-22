@@ -91,7 +91,7 @@ class EventosRepository:
         return metrics
 
     def after(
-        self, cursor: int, *, limit: int = 200, run_id: str | None = None
+        self, cursor: int, *, limit: int = 200, run_id: str | None = None, canal_id: str | None = None
     ) -> list[Event]:
         if cursor < 0:
             raise ValueError("cursor must be nonnegative")
@@ -100,6 +100,9 @@ class EventosRepository:
 
         query = "SELECT * FROM events WHERE id > ?"
         params: tuple[object, ...] = (cursor,)
+        if canal_id is not None:
+            query += " AND run_id IN (SELECT id FROM runs WHERE canal_id = ?)"
+            params += (canal_id,)
         if run_id is not None:
             query += " AND run_id = ?"
             params += (run_id,)

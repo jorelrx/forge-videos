@@ -91,6 +91,24 @@ def test_publica_privado_com_metadados_thumbnail_e_legenda(tmp_path):
     assert gravado["etapa"] == "concluida" and gravado["thumbnail"] == "ok"
 
 
+def test_upload_privado_invalida_apenas_o_canal_publicado(tmp_path):
+    from forge.repositories.connection import Database
+    from forge.repositories.schema import init_db
+    from forge.services.publicacao import publicar
+
+    s = Settings(_env_file=None, studio_db_path=tmp_path / "studio.db")
+    db = Database(s.studio_db_path)
+    init_db(db)
+    with db.transaction() as conn:
+        conn.executemany("""INSERT INTO leituras_canal(chave,canal_id,tipo,proxima)
+                            VALUES(?,?,'catalogo',99)""", [("a","A"), ("b","B")])
+    publicar(run_aprovada(tmp_path), cliente=FakeCliente(), settings=s, titulo=None,
+             publicar_em=None, canal_id="A")
+    with db.connection() as conn:
+        assert dict(conn.execute("SELECT canal_id,proxima FROM leituras_canal")) == {"A": 0, "B": 99}
+        assert conn.execute("SELECT COUNT(*) FROM catalogo_canal").fetchone()[0] == 0
+
+
 def test_titulo_escolhido_e_agendamento_em_utc(tmp_path):
     run = run_aprovada(tmp_path)
     cliente = FakeCliente()

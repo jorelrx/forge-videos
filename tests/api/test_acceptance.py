@@ -58,7 +58,7 @@ def test_continuity_after_api_restart(
         workflow_version=1,
     )
     app2 = create_app(services2)
-    client2 = TestClient(app2)
+    client2 = TestClient(app2, cookies=client.cookies)
 
     resp = client2.get(f"/api/runs/{rid}")
     assert resp.status_code == 200, resp.text

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException, Request, Header
+from forge.api.acesso import autorizar_producao, canal_da_consulta, canal_da_run
+from forge.api.routes.sessao import exigir_canal
+from fastapi import Depends, APIRouter, HTTPException, Request, Header
 from fastapi.responses import StreamingResponse
 
 from forge.api.contracts import EventPage
@@ -11,7 +13,7 @@ from forge.api.errors import not_found
 from forge.api.sse import ServerSentEvent, event_payload
 from forge.services.studio_query import StudioQueryService
 
-events_router = APIRouter()
+events_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
 
 def _queries(request: Request) -> StudioQueryService:
@@ -59,7 +61,7 @@ def _encode_event(event: ServerSentEvent) -> bytes:
     return body.encode(_ENCODE)
 
 
-async def _sse_body(request: Request, last_event_id: int, run_id: str | None):
+async def _sse_body(request: Request, last_event_id: int, run_id: str | None, canal_id: str):
     services = request.app.state.services
     cursor = last_event_id
     idle_for = 0.0
@@ -67,10 +69,15 @@ async def _sse_body(request: Request, last_event_id: int, run_id: str | None):
     keepalive_seconds = services.settings.studio_sse_keepalive_seconds
 
     while True:
+        try:
+            await asyncio.to_thread(exigir_canal, request, canal_id)
+        except HTTPException:
+            return
         events = await asyncio.to_thread(
             services.queries.events_after,
             cursor,
             run_id=run_id,
+            canal_id=canal_id,
             limit=200,
         )
         if events:
@@ -108,8 +115,9 @@ async def events_stream(
             cursor = int(last_event_id_header)
         except ValueError:
             cursor = 0
+    canal = canal_da_run(request, run_id) if run_id else canal_da_consulta(request)
     return StreamingResponse(
-        _sse_body(request, cursor, run_id),
+        _sse_body(request, max(0, cursor), run_id, canal),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

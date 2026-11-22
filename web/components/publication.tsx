@@ -4,11 +4,11 @@ import { DesempenhoPublicacao } from "./desempenho";
 
 import React from "react";
 import {
-  artifactContentUrl, artifactDownloadUrl, disconnectChannel, getPublication, getYouTube, listRunArtifacts,
-  publishRun, setDefaultChannel, startYouTubeLogin, uploadYouTubeClient,
+  artifactContentUrl, artifactDownloadUrl, canalDaAba, getPublication, listRunArtifacts, publishRun, studioFetch,
 } from "../lib/api";
-import type { Artifact, PublicacaoView, RunSummary, YouTubeView } from "../lib/contracts";
+import type { Artifact, PublicacaoView, RunSummary } from "../lib/contracts";
 import { serviceStatusLabel } from "../lib/stage-map";
+import { VinculoCanal } from "./vinculo-canal";
 import { PageHeader } from "./screens";
 
 /**
@@ -150,7 +150,7 @@ function useEmbalagem(artifact: Artifact | undefined) {
     }
     const controller = new AbortController();
     setState({ data: null, loading: true, failed: false });
-    fetch(artifactContentUrl(id), { cache: "no-store", signal: controller.signal })
+    studioFetch(artifactContentUrl(id), { cache: "no-store", signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("embalagem_indisponivel");
         return response.text();
@@ -178,166 +178,6 @@ function parseView(value: unknown): PublicacaoView | null {
 }
 
 const POLL_MS = 3000;
-const LOGIN_POLL_MS = 2000;
-
-/** Resposta fora do contrato vira `null` (painel some), nunca exceção de render. */
-function parseYt(value: unknown): YouTubeView | null {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value as Partial<YouTubeView>;
-  if (typeof v.cliente_configurado !== "boolean" || !Array.isArray(v.canais)) return null;
-  const login = v.login ?? { status: "inativo", url: null, erro: null, canal_id: null };
-  return { cliente_configurado: v.cliente_configurado, canais: v.canais, login };
-}
-
-function mensagem(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
-}
-
-/**
- * Conta do YouTube: cliente OAuth, login no Google (janela aberta no clique,
- * para o bloqueador de pop-up não barrar) e lista de canais conectados.
- */
-function YouTubeAccount({
-  view, onView, error, setError, loginUrl, setLoginUrl,
-}: {
-  view: YouTubeView | null;
-  onView: (view: YouTubeView) => void;
-  error: string | null;
-  setError: (message: string | null) => void;
-  loginUrl: string | null;
-  setLoginUrl: (url: string | null) => void;
-}) {
-  const [busy, setBusy] = React.useState(false);
-  const aguardando = view?.login.status === "aguardando";
-
-  React.useEffect(() => {
-    if (!aguardando) return;
-    let active = true;
-    const timer = setInterval(() => {
-      getYouTube()
-        .then((next) => { if (active) { const parsed = parseYt(next); if (parsed) onView(parsed); } })
-        .catch(() => undefined);
-    }, LOGIN_POLL_MS);
-    return () => { active = false; clearInterval(timer); };
-  }, [aguardando, onView]);
-
-  async function run(action: () => Promise<YouTubeView>, fallback: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      { const parsed = parseYt(await action()); if (parsed) onView(parsed); }
-    } catch (err) {
-      setError(mensagem(err, fallback));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function enviarCliente(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      { const parsed = parseYt(await uploadYouTubeClient(await file.text())); if (parsed) onView(parsed); }
-    } catch (err) {
-      setError(mensagem(err, "Não foi possível enviar o cliente OAuth."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function conectar() {
-    // Abre a janela já, dentro do clique; a URL do Google só chega depois.
-    const popup = window.open("", "_blank");
-    // A página do Google não precisa alcançar o painel que a abriu.
-    if (popup) popup.opener = null;
-    setBusy(true);
-    setError(null);
-    setLoginUrl(null);
-    try {
-      const next = await startYouTubeLogin();
-      const url = next.login.url;
-      if (url) {
-        if (popup) popup.location.href = url;
-        else setLoginUrl(url);
-      }
-      const parsed = parseYt(next);
-      if (parsed) onView(parsed);
-    } catch (err) {
-      popup?.close();
-      setError(mensagem(err, "Não foi possível iniciar o login do Google."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function desconectar(id: string, titulo: string) {
-    if (!window.confirm(`Desconectar o canal ${titulo}? O token local será apagado.`)) return;
-    void run(() => disconnectChannel(id), "Não foi possível desconectar o canal.");
-  }
-
-  if (!view) return null;
-  const selecionado = view.canais.find((c) => c.padrao)?.id ?? view.canais[0]?.id ?? null;
-  const falhou = view.login.status === "falhou" && view.login.erro;
-
-  return (
-    <fieldset className="pub-publish-form">
-      <legend className="pub-muted">Conta do YouTube</legend>
-      {!view.cliente_configurado ? (
-        <>
-          <p className="pub-muted">
-            Crie um cliente OAuth do tipo App para computador no Google Cloud (YouTube Data API v3 ativada) e envie o JSON baixado.
-          </p>
-          <label>
-            Arquivo do cliente OAuth
-            <input type="file" accept=".json,application/json" disabled={busy} onChange={(e) => void enviarCliente(e)} />
-          </label>
-        </>
-      ) : (
-        <>
-          {view.canais.map((canal) => (
-            <div key={canal.id} className="pub-canal">
-              <label>
-                <input
-                  type="radio"
-                  name="pub-canal"
-                  checked={canal.id === selecionado}
-                  disabled={busy}
-                  onChange={() => void run(() => setDefaultChannel(canal.id), "Não foi possível trocar o canal.")}
-                />
-                {canal.thumbnail && (
-                  <img src={canal.thumbnail} alt="" width={24} height={24} />
-                )}
-                {canal.titulo}
-              </label>
-              <button
-                className="btn"
-                type="button"
-                aria-label={`Desconectar ${canal.titulo}`}
-                disabled={busy}
-                onClick={() => desconectar(canal.id, canal.titulo)}
-              >
-                Desconectar
-              </button>
-            </div>
-          ))}
-          <button className="btn" type="button" disabled={busy || aguardando} onClick={() => void conectar()}>
-            {view.canais.length === 0 ? "Conectar conta Google" : "Adicionar canal"}
-          </button>
-          <p className="pub-muted">Contas com mais de um canal: o Google pede para escolher o canal no login.</p>
-        </>
-      )}
-      {aguardando && <p role="status">Aguardando o login no Google… escolha o canal na tela do Google.</p>}
-      {loginUrl && aguardando && (
-        <a href={loginUrl} target="_blank" rel="noopener noreferrer">Abrir login do Google</a>
-      )}
-      {falhou && <p className="pub-warning" role="alert">{view.login.erro}</p>}
-      {error && <p className="pub-warning" role="alert">{error}</p>}
-    </fieldset>
-  );
-}
-
 function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) {
   const [view, setView] = React.useState<PublicacaoView | null>(null);
   const [loaded, setLoaded] = React.useState(false);
@@ -346,30 +186,6 @@ function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) 
   const [chosen, setChosen] = React.useState<string | null>(null);
   const [agendar, setAgendar] = React.useState(false);
   const [quando, setQuando] = React.useState("");
-  const [yt, setYt] = React.useState<YouTubeView | null>(null);
-  const [ytError, setYtError] = React.useState<string | null>(null);
-  const [loginUrl, setLoginUrl] = React.useState<string | null>(null);
-  const loginAnterior = React.useRef<string | null>(null);
-
-  React.useEffect(() => {
-    let active = true;
-    getYouTube()
-      .then((value) => { if (active) setYt(parseYt(value)); })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, []);
-
-  const loginStatus = yt?.login.status ?? null;
-  React.useEffect(() => {
-    // Login terminou: o backend pode ter passado a `conectado`.
-    if (loginAnterior.current === "aguardando" && loginStatus !== "aguardando") {
-      setLoginUrl(null);
-      getPublication(runId)
-        .then((value) => { const next = parseView(value); if (next) setView(next); })
-        .catch(() => undefined);
-    }
-    loginAnterior.current = loginStatus;
-  }, [loginStatus, runId]);
 
   React.useEffect(() => {
     let active = true;
@@ -392,7 +208,7 @@ function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) 
     return () => { active = false; clearInterval(timer); };
   }, [runId, emAndamento]);
 
-  const canalId = yt?.canais.find((c) => c.padrao)?.id ?? yt?.canais[0]?.id ?? null;
+  const canalId = canalDaAba();
 
   async function enviar(titulo: string, publicarEm: string | null, canal: string | null = canalId) {
     setBusy(true);
@@ -409,12 +225,10 @@ function PublishPanel({ runId, titulos }: { runId: string; titulos: string[] }) 
   const estado = view?.estado ?? null;
   const titulo = chosen && titulos.includes(chosen) ? chosen : titulos[0] ?? "";
   const quandoIso = agendar && quando && !Number.isNaN(new Date(quando).getTime()) ? new Date(quando).toISOString() : null;
-  const podeEnviar = canalId !== null && !busy && titulo !== "" && (!agendar || quandoIso !== null);
+  const podeEnviar = view?.conectado && canalId !== null && !busy && titulo !== "" && (!agendar || quandoIso !== null);
   const alerta = error && <p className="pub-warning" role="alert">{error}</p>;
 
-  const accountBlock = (
-    <YouTubeAccount view={yt} onView={setYt} error={ytError} setError={setYtError} loginUrl={loginUrl} setLoginUrl={setLoginUrl} />
-  );
+  const accountBlock = !view?.conectado && canalId && <VinculoCanal canalId={canalId} />;
 
   let body: React.ReactNode;
   if (!loaded) {

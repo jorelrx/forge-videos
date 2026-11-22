@@ -32,8 +32,8 @@ def test_event_history_empty(client: TestClient, settings: Settings) -> None:
         )
         conn.execute(
             """INSERT INTO runs (id, video_id, status, priority, queue_position, config_snapshot_json,
-                workflow_version, git_commit, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                workflow_version, git_commit, created_at, canal_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'UC1')""",
             (run_id, video_id, "queued", 50, 1, "{}", 1, "test", now.isoformat()),
         )
 

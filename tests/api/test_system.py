@@ -69,7 +69,7 @@ def test_codex_services_and_effective_config_follow_selected_backends():
     config = asyncio.run(effective_config(request))
     assert config['generation']['llm_provider'] == 'codex'
     assert config['generation']['image_provider'] == 'codex'
-    assert config['services']['research_url'] == settings.acervo_url
+    assert 'services' not in config
 
 
 def test_claude_services_e_config_efetiva():

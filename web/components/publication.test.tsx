@@ -58,6 +58,7 @@ function stubClipboard() {
 }
 
 afterEach(() => {
+  history.replaceState(null,'','/');
   vi.unstubAllGlobals();
   Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
 });
@@ -238,32 +239,12 @@ function res(status: number, body: unknown) {
   return { ok: status < 400, status, text: async () => JSON.stringify(body), json: async () => body };
 }
 
-const SEM_LOGIN = { status: "inativo", url: null, erro: null, canal_id: null };
-const CANAL = { id: "UC1", titulo: "Conquistas Cósmicas", thumbnail: "https://img/1.jpg", padrao: true };
-const CANAL_2 = { id: "UC2", titulo: "Outro Canal", thumbnail: null, padrao: false };
-const AGUARDANDO = { status: "aguardando", url: "https://g/auth", erro: null, canal_id: null };
-
-function yt(overrides: Record<string, unknown> = {}) {
-  return { cliente_configurado: true, canais: [CANAL], login: SEM_LOGIN, ...overrides };
-}
-
-type YtStub = { get?: unknown[]; post?: Record<string, unknown> };
-
-/** GET/POST de publicação por filas; /api/youtube por fila de GET e mapa de POST; o resto (embalagem) devolve EMBALAGEM. */
-function stubPublication(get: unknown[], post: unknown[] = [], youtube: YtStub = {}) {
+function stubPublication(get: unknown[], post: unknown[] = []) {
+  history.replaceState(null,"","/canais/UC1/producao");
   const gets = [...get];
   const posts = [...post];
-  const ytGets = [...(youtube.get ?? [res(200, yt())])];
   const mock = vi.fn(async (url: string, init?: RequestInit) => {
-    const u = String(url);
-    if (u.includes("/api/youtube")) {
-      if (init?.method === "POST") {
-        const key = Object.keys(youtube.post ?? {}).find((k) => u.endsWith(k));
-        return key ? (youtube.post as Record<string, unknown>)[key] : res(404, { error: { code: "nf", message: "?" } });
-      }
-      return ytGets.length > 1 ? ytGets.shift() : ytGets[0];
-    }
-    if (u.includes("/publication")) {
+    if (String(url).includes("/publication")) {
       const queue = init?.method === "POST" ? posts : gets;
       return queue.length > 1 ? queue.shift() : queue[0];
     }
@@ -279,209 +260,16 @@ function postCalls(mock: ReturnType<typeof vi.fn>) {
   );
 }
 
-function ytPosts(mock: ReturnType<typeof vi.fn>) {
-  return mock.mock.calls.filter(
-    ([url, init]) => (init as RequestInit | undefined)?.method === "POST" && String(url).includes("/api/youtube"),
-  );
-}
-
-function fileOf(text: string) {
-  const file = new File([text], "client_secret.json", { type: "application/json" });
-  Object.defineProperty(file, "text", { value: async () => text });
-  return file;
-}
-
 function postBody(mock: ReturnType<typeof vi.fn>) {
   return JSON.parse((postCalls(mock)[0][1] as RequestInit).body as string);
 }
 
 describe("Publicar no YouTube", () => {
-  it("sem canal conectado desabilita o botão e oferece conectar a conta", async () => {
-    stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      { get: [res(200, yt({ canais: [] }))] },
-    );
+  it("oferece reconexão e bloqueia envio até conectar o canal da aba", async () => {
+    stubPublication([res(200, {estado:null, em_andamento:false, conectado:false})]);
     render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    expect(await screen.findByRole("button", { name: "Conectar conta Google" })).not.toBeNull();
-    expect(screen.queryByText(/forge auth youtube login/)).toBeNull();
-    expect(screen.getByText(/mais de um canal/)).not.toBeNull();
-    expect((screen.getByRole("button", { name: "Enviar ao YouTube" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("sem cliente OAuth pede o arquivo e, após enviar, oferece conectar", async () => {
-    const mock = stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      {
-        get: [res(200, yt({ cliente_configurado: false, canais: [] }))],
-        post: { "/api/youtube/client": res(200, yt({ canais: [] })) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    expect(await screen.findByText(/cliente OAuth do tipo App para computador/)).not.toBeNull();
-    const input = screen.getByLabelText("Arquivo do cliente OAuth") as HTMLInputElement;
-    expect(input.getAttribute("accept")).toBe(".json,application/json");
-    fireEvent.change(input, { target: { files: [fileOf('{"installed":{}}')] } });
-    expect(await screen.findByRole("button", { name: "Conectar conta Google" })).not.toBeNull();
-    const post = ytPosts(mock)[0];
-    expect(String(post[0])).toContain("/api/youtube/client");
-    expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({ conteudo: '{"installed":{}}' });
-  });
-
-  it("cliente inválido (422) mostra o erro como alerta", async () => {
-    stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      {
-        get: [res(200, yt({ cliente_configurado: false, canais: [] }))],
-        post: { "/api/youtube/client": res(422, { error: { code: "youtube_client_invalid", message: "JSON de cliente inválido" } }) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    fireEvent.change(await screen.findByLabelText("Arquivo do cliente OAuth"), { target: { files: [fileOf("x")] } });
-    expect((await screen.findByText("JSON de cliente inválido")).getAttribute("role")).toBe("alert");
-  });
-
-  it("conectar abre janela, aponta para a url, consulta a cada 2 s e mostra o canal", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      const popup: { location: { href: string }; close: ReturnType<typeof vi.fn>; opener?: unknown } = { location: { href: "" }, close: vi.fn(), opener: window };
-      const open = vi.fn(() => popup);
-      vi.stubGlobal("open", open);
-      const mock = stubPublication(
-        [res(200, { estado: null, em_andamento: false, conectado: false })],
-        [],
-        {
-          get: [
-            res(200, yt({ canais: [] })),
-            res(200, yt({ login: { status: "concluido", url: null, erro: null, canal_id: "UC1" } })),
-          ],
-          post: { "/api/youtube/login": res(202, yt({ canais: [], login: AGUARDANDO })) },
-        },
-      );
-      render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Conectar conta Google" }));
-      expect(open).toHaveBeenCalledWith("", "_blank");
-      expect(await screen.findByText(/Aguardando o login no Google/)).not.toBeNull();
-      expect(popup.location.href).toBe("https://g/auth");
-      expect(popup.opener).toBeNull();
-      expect(ytPosts(mock)).toHaveLength(1);
-      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
-      expect(await screen.findByRole("radio", { name: /Conquistas Cósmicas/ })).not.toBeNull();
-      expect(screen.queryByText(/Aguardando o login no Google/)).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("sem janela disponível mostra o link para abrir o login", async () => {
-    vi.stubGlobal("open", vi.fn(() => null));
-    stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      {
-        get: [res(200, yt({ canais: [] }))],
-        post: { "/api/youtube/login": res(202, yt({ canais: [], login: AGUARDANDO })) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Conectar conta Google" }));
-    const link = await screen.findByRole("link", { name: "Abrir login do Google" });
-    expect(link.getAttribute("href")).toBe("https://g/auth");
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toContain("noopener");
-  });
-
-  it("erro ao iniciar o login fecha a janela e mostra alerta", async () => {
-    const popup = { location: { href: "" }, close: vi.fn() };
-    vi.stubGlobal("open", vi.fn(() => popup));
-    stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      {
-        get: [res(200, yt({ canais: [] }))],
-        post: { "/api/youtube/login": res(409, { error: { code: "youtube_client_missing", message: "Cliente OAuth ausente" } }) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Conectar conta Google" }));
-    expect((await screen.findByText("Cliente OAuth ausente")).getAttribute("role")).toBe("alert");
-    expect(popup.close).toHaveBeenCalled();
-  });
-
-  it("login falhou mostra o erro", async () => {
-    stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: false })],
-      [],
-      { get: [res(200, yt({ canais: [], login: { status: "falhou", url: null, erro: "acesso negado", canal_id: null } }))] },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    expect((await screen.findByText("acesso negado")).getAttribute("role")).toBe("alert");
-  });
-
-  it("lista canais com o padrão marcado e trocar chama default", async () => {
-    const mock = stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: true })],
-      [],
-      {
-        get: [res(200, yt({ canais: [CANAL, CANAL_2] }))],
-        post: { "/api/youtube/channels/UC2/default": res(200, yt({ canais: [{ ...CANAL, padrao: false }, { ...CANAL_2, padrao: true }] })) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    const um = (await screen.findByRole("radio", { name: /Conquistas Cósmicas/ })) as HTMLInputElement;
-    expect(um.checked).toBe(true);
-    fireEvent.click(screen.getByRole("radio", { name: /Outro Canal/ }));
-    await waitFor(() => expect(ytPosts(mock)).toHaveLength(1));
-    expect(String(ytPosts(mock)[0][0])).toContain("/api/youtube/channels/UC2/default");
-    await waitFor(() => expect((screen.getByRole("radio", { name: /Outro Canal/ }) as HTMLInputElement).checked).toBe(true));
-  });
-
-  it("desconectar confirma e chama disconnect", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
-    const mock = stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: true })],
-      [],
-      {
-        get: [res(200, yt({ canais: [CANAL, CANAL_2] }))],
-        post: { "/api/youtube/channels/UC2/disconnect": res(200, yt({ canais: [CANAL] })) },
-      },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    await screen.findByRole("radio", { name: /Outro Canal/ });
-    fireEvent.click(screen.getByRole("button", { name: "Desconectar Outro Canal" }));
-    expect(confirm).toHaveBeenCalledWith("Desconectar o canal Outro Canal? O token local será apagado.");
-    await waitFor(() => expect(ytPosts(mock)).toHaveLength(1));
-    expect(String(ytPosts(mock)[0][0])).toContain("/api/youtube/channels/UC2/disconnect");
-    await waitFor(() => expect(screen.queryByRole("radio", { name: /Outro Canal/ })).toBeNull());
-  });
-
-  it("desconectar sem confirmar não chama a API", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
-    const mock = stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: true })],
-      [],
-      { get: [res(200, yt({ canais: [CANAL, CANAL_2] }))] },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    await screen.findByRole("radio", { name: /Outro Canal/ });
-    fireEvent.click(screen.getByRole("button", { name: "Desconectar Outro Canal" }));
-    expect(ytPosts(mock)).toHaveLength(0);
-  });
-
-  it("publicar envia o canal_id do canal selecionado", async () => {
-    const mock = stubPublication(
-      [res(200, { estado: null, em_andamento: false, conectado: true })],
-      [res(202, { estado: estado(), em_andamento: true, conectado: true })],
-      { get: [res(200, yt({ canais: [{ ...CANAL, padrao: false }, { ...CANAL_2, padrao: true }] }))] },
-    );
-    render(<Publication runs={RUNS} loadArtifacts={async () => FULL} />);
-    await screen.findByRole("radio", { name: /Outro Canal/ });
-    fireEvent.click(screen.getByRole("button", { name: "Enviar ao YouTube" }));
-    await waitFor(() => expect(postCalls(mock)).toHaveLength(1));
-    expect(postBody(mock).canal_id).toBe("UC2");
+    await screen.findByRole("button", {name:"Reconectar YouTube"});
+    expect((screen.getByRole("button", {name:"Enviar ao YouTube"}) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("concluída mostra o canal", async () => {

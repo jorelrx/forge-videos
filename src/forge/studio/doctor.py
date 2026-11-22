@@ -8,7 +8,7 @@ from pathlib import Path
 
 from forge.infrastructure.config import get_settings
 from forge.repositories.connection import Database
-from forge.repositories.schema import init_db
+from forge.repositories.schema import SCHEMA_VERSION, init_db
 from forge.services.preflight import check_preflight
 from forge.services.redacao import Redactor
 
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.migrate:
         db = Database(settings.studio_db_path)
         init_db(db)
-        print("SQLite schema 2 applied")
+        print(f"SQLite schema {SCHEMA_VERSION} applied")
 
     report = check_preflight(settings)
 

@@ -53,6 +53,7 @@ class ControlPlaneService:
         config_snapshot: dict,
         workflow_version: int,
         git_commit: str,
+        canal_id: str | None = None,
     ) -> tuple[Video, Run]:
         with self.db.transaction(immediate=True) as conn:
             operacao = OperacaoRepository(conn)
@@ -64,6 +65,7 @@ class ControlPlaneService:
                 config_snapshot=config_snapshot,
                 workflow_version=workflow_version,
                 git_commit=git_commit,
+                canal_id=canal_id,
             )
             eventos.append(
                 kind="run.queued",

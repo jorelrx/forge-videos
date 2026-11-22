@@ -77,7 +77,21 @@ def api_factory() -> Callable[[ApiServices | None], Any]:
 
 @pytest.fixture
 def client(api_factory: Callable[[ApiServices | None], Any], services: ApiServices) -> TestClient:
-    return TestClient(api_factory(services))
+    return autenticar(TestClient(api_factory(services)), services)
+
+
+def autenticar(cliente, services, *, conta="pessoa", canais=("UC1",)):
+    from forge.services.sessao_studio import SessaoStudio
+
+    token = SessaoStudio(services.commands.db).criar(conta, conta)
+    cliente.cookies.set("forge_sessao", token)
+    cliente.headers["Origin"] = services.settings.studio_public_origin
+    with services.commands.db.transaction() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO acesso_canais(conta_id, canal_id, titulo) VALUES (?, ?, ?)",
+            [(conta, canal, canal) for canal in canais],
+        )
+    return cliente
 
 
 @pytest.fixture

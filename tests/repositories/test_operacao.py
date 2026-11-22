@@ -371,13 +371,17 @@ def test_artifact_tardio_de_etapa_invalidada_eh_persistido_como_nao_atual(db):
         repo.invalidate_from_stage(run.id, StageName.ROTEIRO)
 
         late_artifact = repo.register_artifact(
-            artifact_for(run.id, roteiro_attempt1.id, artifact_id="late-roteiro")
+            artifact_for(run.id, roteiro_attempt1.id, artifact_id="late-roteiro").model_copy(
+                update={"created_at": datetime(2026, 1, 1, tzinfo=UTC)}
+            )
         )
         roteiro_attempt2 = next(
             stage for stage in repo.current_stages(run.id) if stage.stage is StageName.ROTEIRO
         )
         current_artifact = repo.register_artifact(
-            artifact_for(run.id, roteiro_attempt2.id, artifact_id="current-roteiro")
+            artifact_for(run.id, roteiro_attempt2.id, artifact_id="current-roteiro").model_copy(
+                update={"created_at": datetime(2026, 1, 2, tzinfo=UTC)}
+            )
         )
 
         assert late_artifact.is_current is False

@@ -5,7 +5,9 @@ from collections.abc import Callable
 
 from forge.repositories.connection import Database
 
-LATEST_SCHEMA_VERSION = 3
+from forge.repositories import migracao_insights, migracao_producao_canal
+
+LATEST_SCHEMA_VERSION = 6
 
 SCHEMA_SQL = (
     """
@@ -257,9 +259,27 @@ def _upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _upgrade_v3_to_v4(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE contas (
+        id TEXT PRIMARY KEY, nome TEXT NOT NULL, avatar TEXT, ultimo_canal_id TEXT)""")
+    conn.execute("""CREATE TABLE sessoes (
+        digest TEXT PRIMARY KEY, conta_id TEXT NOT NULL REFERENCES contas(id),
+        expira REAL NOT NULL, revogada INTEGER NOT NULL DEFAULT 0)""")
+    conn.execute("""CREATE TABLE tentativas_oidc (
+        state TEXT PRIMARY KEY, navegador TEXT NOT NULL, nonce TEXT NOT NULL,
+        retorno TEXT NOT NULL, expira REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE acesso_canais (
+        conta_id TEXT NOT NULL REFERENCES contas(id), canal_id TEXT NOT NULL,
+        titulo TEXT NOT NULL, thumbnail TEXT, credencial TEXT, escopos TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(conta_id,canal_id))""")
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _upgrade_v1_to_v2,
     2: _upgrade_v2_to_v3,
+    3: _upgrade_v3_to_v4,
+    4: migracao_producao_canal.migrar,
+    5: migracao_insights.migrar,
 }
 
 

@@ -19,7 +19,7 @@ def _create_imported_run(services, *, tema: str = "legado") -> str:
             tese=None,
             config_snapshot={"legacy_import": True},
             git_commit="legacy-import",
-            run_id=str(uuid.uuid4()),
+            run_id=str(uuid.uuid4()), canal_id="UC1",
         )
     return run.id
 

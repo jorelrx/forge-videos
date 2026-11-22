@@ -180,3 +180,21 @@ def test_read_only_run_cannot_pause_resume_or_retry(v1_db):
         service.request_resume("run-1", idempotency_key="resume-legacy")
     with pytest.raises(HistoricoSomenteLeitura):
         service.request_retry_stage("run-1", StageName.ROTEIRO, idempotency_key="retry-legacy")
+
+def test_migrate_v3_preserva_artefato_e_fluxo_sem_atribuir_canal(v1_db):
+    from forge.repositories.migrations import MIGRATIONS
+
+    with v1_db.transaction(immediate=True) as conn:
+        MIGRATIONS[1](conn)
+        MIGRATIONS[2](conn)
+        conn.execute("UPDATE schema_version SET version=3")
+        conn.execute("INSERT INTO fluxos_geracao VALUES ('f','Nome','Descrição','Instruções')")
+        conn.execute("""INSERT INTO artifacts(id,run_id,kind,relative_path,sha256,size_bytes,
+                        mime_type,metadata_json,created_at) VALUES
+                        ('a','run-1','video','final.mp4','abc',1,'video/mp4','{}','2026-01-01')""")
+    assert migrate(v1_db) == LATEST_SCHEMA_VERSION
+    with v1_db.connection() as conn:
+        assert conn.execute("SELECT relative_path FROM artifacts WHERE id='a'").fetchone()[0] == "final.mp4"
+        assert conn.execute("SELECT nome FROM fluxos_geracao WHERE id='f'").fetchone()[0] == "Nome"
+        assert conn.execute("SELECT id FROM runs").fetchone()[0] == "run-1"
+        assert conn.execute("SELECT count(*) FROM acesso_canais").fetchone()[0] == 0

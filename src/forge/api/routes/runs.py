@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Header
+from forge.api.acesso import autorizar_producao, canal_da_consulta
+from fastapi import Depends, APIRouter, HTTPException, Request, Header
 from pydantic import ValidationError
 
 from forge.api.contracts import (
@@ -22,7 +23,7 @@ from forge.services.studio_query import StudioQueryService
 from forge.repositories.connection import Database
 from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
 
-runs_router = APIRouter()
+runs_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,12 +49,12 @@ def _settings(request: Request):
 
 @runs_router.get("/fluxos-geracao")
 def list_generation_flows(request: Request) -> list[FluxoGeracao]:
-    return FluxosGeracaoRepository(_control(request).db).listar()
+    return FluxosGeracaoRepository(_control(request).db).listar(canal_id=canal_da_consulta(request))
 
 
 @runs_router.post("/fluxos-geracao", status_code=201)
 def create_generation_flow(payload: NovoFluxoGeracao, request: Request) -> FluxoGeracao:
-    return FluxosGeracaoRepository(_control(request).db).criar(payload)
+    return FluxosGeracaoRepository(_control(request).db).criar(payload, canal_id=canal_da_consulta(request))
 
 
 @runs_router.post("/videos", status_code=201)
@@ -65,12 +66,13 @@ def create_video(payload: CreateVideoRequest, request: Request) -> CreateVideoRe
         if payload.referencias_editoriais and payload.referencias_editoriais.strip():
             snapshot["referencias_editoriais"] = payload.referencias_editoriais.strip()
     if payload.fluxo_geracao is not None:
-        fluxo = FluxosGeracaoRepository(commands.db).obter(payload.fluxo_geracao)
+        fluxo = FluxosGeracaoRepository(commands.db).obter(payload.fluxo_geracao, canal_id=canal_da_consulta(request))
         if fluxo is None:
             validation_error(f"Fluxo de geração desconhecido: {payload.fluxo_geracao}")
         snapshot["fluxo_geracao"] = fluxo.model_dump(mode="json")
     video, run = commands.enqueue_video(
         tema=payload.tema,
+        canal_id=canal_da_consulta(request),
         tese=payload.tese,
         priority=payload.priority,
         config_snapshot=snapshot,
@@ -116,7 +118,7 @@ def review_opening(run_id: str, payload: DecisaoAbertura, request: Request) -> R
 async def get_queue(request: Request) -> list[RunSummary]:
     return [
         RunSummary(**item.model_dump())
-        for item in _queries(request).list_queue()
+        for item in _queries(request).list_queue(canal_id=canal_da_consulta(request))
     ]
 
 
@@ -135,7 +137,7 @@ async def list_runs(
         limit = 1
     if limit > 100:
         limit = 100
-    page = _queries(request).list_runs(limit=limit, offset=offset)
+    page = _queries(request).list_runs(limit=limit, offset=offset, canal_id=canal_da_consulta(request))
     return RunPage(
         items=[RunSummary(**item.model_dump()) for item in page.items],
         total=page.total,

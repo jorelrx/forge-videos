@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Request
+from forge.api.acesso import autorizar_producao
+from fastapi import Depends, APIRouter, Request
 from forge.services.saude import StudioHealthService
 
 import asyncio
 
-system_router = APIRouter()
+system_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
 REQUIRED_SERVICES = frozenset({
     "research",
@@ -39,7 +40,7 @@ async def list_services(request: Request) -> dict:
         items.append({
             "name": item.name,
             "state": item.state,
-            "message": item.message,
+            "message": item.message if item.state == "available" else f"{item.name}: {item.state.value}",
         })
     return {
         "items": items,
@@ -71,9 +72,5 @@ async def effective_config(request: Request) -> dict:
             "codex_image_model": settings.codex_image_model,
             "codex_image_quality": settings.codex_image_quality,
         },
-        "services": {
-            "research_url": settings.acervo_url,
-            "lm_studio_url": settings.lm_studio_base_url,
-            "comfyui_url": settings.comfy_url,
-        },
+
     }

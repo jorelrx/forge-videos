@@ -43,7 +43,13 @@ def _proposta(titulo):
 
 
 def _request(services):
-    return Request({"type": "http", "app": SimpleNamespace(state=SimpleNamespace(services=services))})
+    from forge.services.sessao_studio import SessaoStudio
+    token = SessaoStudio(services.commands.db).criar("pessoa", "Pessoa")
+    with services.commands.db.transaction() as conn:
+        conn.execute("INSERT INTO acesso_canais(conta_id, canal_id, titulo) VALUES ('pessoa', 'UC1', 'Canal')")
+    return Request({"type": "http", "method": "GET", "query_string": b"", "path": "/",
+                    "headers": [(b"cookie", f"forge_sessao={token}".encode())],
+                    "app": SimpleNamespace(state=SimpleNamespace(services=services, sessoes=SessaoStudio(services.commands.db)))})
 
 
 def test_run_pausa_para_recorte_e_previa_e_so_reprocessa_ajuste(services, settings):

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from forge.api.acesso import autorizar_producao, canal_da_run
+from fastapi import Depends, APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from forge.api.contracts import ArtifactListItem
@@ -10,7 +11,7 @@ from forge.api.errors import not_found
 from forge.api.ranges import parse_range, RangeNotSatisfiable, iter_file_range
 from forge.services.studio_query import StudioQueryService
 
-artifacts_router = APIRouter()
+artifacts_router = APIRouter(dependencies=[Depends(autorizar_producao)])
 
 PREVIEW_MIME = frozenset({
     "text/markdown",
@@ -63,6 +64,7 @@ async def artifact_content(artifact_id: str, request: Request, download: bool = 
     except KeyError:
         not_found("artifact", artifact_id)
 
+    canal_da_run(request, artifact.run_id)
     mime = artifact.mime_type
     if mime not in PREVIEW_MIME:
         raise HTTPException(status_code=415, detail="unsupported mime type")

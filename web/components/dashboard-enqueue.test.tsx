@@ -253,7 +253,7 @@ describe("fluxo de enfileiramento do painel", () => {
     expect(screen.getByText("Comentários", { selector: "dd" })).not.toBeNull();
     expect(screen.getAllByText("25%").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Pesquisa 5/8")).not.toBeNull();
-    expect(FakeEventSource.current?.url).toBe(`${BASE}/api/events/stream`);
+    expect(FakeEventSource.current?.url).toBe("/api/events/stream");
 
     // Os chips do pipeline seguem o status real de cada etapa.
     const chips = Array.from(

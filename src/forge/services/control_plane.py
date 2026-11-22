@@ -56,25 +56,34 @@ class ControlPlaneService:
         canal_id: str | None = None,
     ) -> tuple[Video, Run]:
         with self.db.transaction(immediate=True) as conn:
-            operacao = OperacaoRepository(conn)
-            eventos = EventosRepository(conn)
-            video, run = operacao.create_video_and_run(
-                tema=tema,
-                tese=tese,
-                priority=priority,
-                config_snapshot=config_snapshot,
-                workflow_version=workflow_version,
-                git_commit=git_commit,
-                canal_id=canal_id,
+            return self.enfileirar(
+                conn, tema=tema, tese=tese, priority=priority, config_snapshot=config_snapshot,
+                workflow_version=workflow_version, git_commit=git_commit, canal_id=canal_id,
             )
-            eventos.append(
-                kind="run.queued",
-                level="info",
-                message="Run enfileirada",
-                payload={},
-                run_id=run.id,
-            )
-            return video, run
+
+    @staticmethod
+    def enfileirar(
+        conn, *, tema: str, tese: str | None, priority: int, config_snapshot: dict,
+        workflow_version: int, git_commit: str, canal_id: str | None = None,
+    ) -> tuple[Video, Run]:
+        """Cria vídeo e execução na transação do chamador (a aprovação do Board usa a dela)."""
+        video, run = OperacaoRepository(conn).create_video_and_run(
+            tema=tema,
+            tese=tese,
+            priority=priority,
+            config_snapshot=config_snapshot,
+            workflow_version=workflow_version,
+            git_commit=git_commit,
+            canal_id=canal_id,
+        )
+        EventosRepository(conn).append(
+            kind="run.queued",
+            level="info",
+            message="Run enfileirada",
+            payload={},
+            run_id=run.id,
+        )
+        return video, run
 
     def get_run(self, run_id: str) -> RunDetail:
         with self.db.transaction() as conn:

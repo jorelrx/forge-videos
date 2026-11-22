@@ -16,7 +16,7 @@ TABLES = {
     "commands",
     "fluxos_geracao",
     "contas", "sessoes", "tentativas_oidc", "acesso_canais",
-    "catalogo_canal", "leituras_canal", "boards_criativos",
+    "catalogo_canal", "leituras_canal", "boards_criativos", "aprovacoes_pauta",
 }
 
 

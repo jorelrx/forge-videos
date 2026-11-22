@@ -7,7 +7,7 @@ from forge.repositories.connection import Database
 
 from forge.repositories import migracao_insights, migracao_producao_canal
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 SCHEMA_SQL = (
     """
@@ -287,6 +287,17 @@ def _upgrade_v7_to_v8(conn: sqlite3.Connection) -> None:
         PRIMARY KEY(conta_id,canal_id))""")
 
 
+def _upgrade_v8_to_v9(conn: sqlite3.Connection) -> None:
+    # Uma aprovação por revisão do rascunho: a chave única é o que torna a
+    # aprovação idempotente quando a resposta se perde ou duas abas aprovam.
+    conn.execute("""CREATE TABLE aprovacoes_pauta (
+        id TEXT PRIMARY KEY, conta_id TEXT NOT NULL REFERENCES contas(id), canal_id TEXT NOT NULL,
+        revisao INTEGER NOT NULL, pauta TEXT NOT NULL, fluxo_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES runs(id), criada_em TEXT NOT NULL,
+        UNIQUE(conta_id, canal_id, revisao))""")
+    conn.execute("CREATE INDEX idx_aprovacoes_pauta_run ON aprovacoes_pauta(run_id)")
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _upgrade_v1_to_v2,
     2: _upgrade_v2_to_v3,
@@ -295,6 +306,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: migracao_insights.migrar,
     6: _upgrade_v6_to_v7,
     7: _upgrade_v7_to_v8,
+    8: _upgrade_v8_to_v9,
 }
 
 

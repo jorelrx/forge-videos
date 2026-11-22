@@ -6,6 +6,7 @@ from forge.repositories.connection import Database
 from forge.repositories.schema import SCHEMA_VERSION, TABLES, init_db
 
 APP_INDEXES = {
+    "idx_aprovacoes_pauta_run": [("run_id", "ASC")],
     "idx_runs_canal": [("canal_id", "ASC"), ("created_at", "DESC"), ("id", "DESC")],
     "leituras_por_canal": [("canal_id", "ASC"), ("tipo", "ASC")],
     "idx_runs_queue": [

@@ -105,6 +105,7 @@ class RascunhoBoard(BaseModel):
     origem_pauta: Ideia | None = None
     fluxo_id: str | None = None
     conversa: list[MensagemBoard] = Field(default_factory=list)
+    ultima_aprovacao: dict | None = None
     analisado_em: str | None = None
     erro: Literal["analise_indisponivel"] | None = None
 
@@ -171,6 +172,10 @@ class GerarSugestoes(Revisao):
 class CombinarIdeias(Revisao):
     tipo: Literal["combinacao"]
     ideias: tuple[Curto, Curto]
+
+
+class AprovarPauta(Revisao):
+    fluxo_id: Curto
 
 
 class Conversar(Revisao):

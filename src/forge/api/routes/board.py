@@ -6,11 +6,14 @@ from fastapi.responses import JSONResponse
 
 from forge.api.errors import validation_error
 from forge.api.routes.insights import contexto
-from forge.domain.board_criativo import Analise, Comando, EscolhaFluxo
+from forge.domain.board_criativo import Analise, AprovarPauta, Comando, EscolhaFluxo
+from forge.domain.fluxo_geracao import FluxoGeracao
+from forge.repositories.fluxos_geracao import FluxosGeracaoRepository
+from forge.services.control_plane import ControlPlaneService
 from forge.repositories.board_criativo import BoardRepository, ConflitoBoard
 from forge.services.board_contexto import ler_contexto
 from forge.services.board_criativo import (
-    aplicar_comando, executar_analise, expor_board, fluxos_compativeis, preparar_analise, validar_fluxo,
+    aplicar_comando, executar_analise, expor_board, fluxos_compativeis, pendencias, preparar_analise, validar_fluxo,
 )
 
 board_router = APIRouter(prefix="/canais/{canal_id}/board")
@@ -66,3 +69,46 @@ def analisar_board(canal_id: str, pedido: Analise, request: Request, tarefas: Ba
                          getattr(request.app.state, "modelo_board", None))
     board, operacao = repo.ler()
     return expor_board(board, operacao, editorial, fluxos_compativeis(ctx.db, ctx.canal))
+
+
+def _snapshot_aprovado(fluxo: FluxoGeracao, board, revisao: int, aprovacao_id: str) -> dict:
+    return {
+        "preset": "local-recomendado-v1",
+        "fluxo_geracao": fluxo.model_dump(mode="json"),
+        "pauta_aprovada": {"aprovacao_id": aprovacao_id, "revisao": revisao, **board.pauta.model_dump()},
+    }
+
+
+@board_router.post("/aprovacoes", status_code=201)
+def aprovar_pauta(canal_id: str, pedido: AprovarPauta, request: Request, tarefas: BackgroundTasks):
+    ctx = contexto(request, canal_id, tarefas)
+    services = request.app.state.services
+    repo = BoardRepository(ctx.db, ctx.conta, ctx.canal)
+    fluxos = fluxos_compativeis(ctx.db, ctx.canal)
+    fluxo = FluxosGeracaoRepository(ctx.db).obter(pedido.fluxo_id, canal_id=ctx.canal)
+
+    def validar(board):
+        validar_fluxo(fluxos, pedido.fluxo_id)
+        board.fluxo_id = pedido.fluxo_id
+        faltas = pendencias(board, fluxos)
+        if faltas:
+            raise ValueError(" ".join(item["mensagem"] for item in faltas))
+
+    def criar_run(conn, board, aprovacao_id):
+        _, run = ControlPlaneService.enfileirar(
+            conn, tema=board.pauta.tema, tese=board.pauta.promessa, priority=50,
+            config_snapshot=_snapshot_aprovado(fluxo, board, pedido.revisao, aprovacao_id),
+            workflow_version=services.workflow_version, git_commit=services.git_commit, canal_id=ctx.canal,
+        )
+        return run.id
+
+    try:
+        aprovacao, criada = repo.aprovar(pedido.revisao, validar, criar_run)
+    except ConflitoBoard as erro:
+        return _conflito(erro, tarefas)
+    except ValueError as erro:
+        validation_error(str(erro))
+    board, operacao = repo.ler()
+    corpo = {"aprovacao": aprovacao, "run_id": aprovacao["run_id"],
+             "board": expor_board(board, operacao, ler_contexto(ctx), fluxos)}
+    return JSONResponse(status_code=201 if criada else 200, background=tarefas, content=corpo)

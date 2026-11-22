@@ -1,6 +1,8 @@
 """Persistência por conta e canal, com revisão otimista e uma análise por vez."""
+import json
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from forge.domain.board_criativo import RascunhoBoard
@@ -97,3 +99,48 @@ class BoardRepository:
                 self._gravar(conn, board)
             conn.execute("""UPDATE boards_criativos SET dono=NULL,operacao=NULL,expira=NULL
                 WHERE conta_id=? AND canal_id=?""", self.chave)
+
+    def aprovar(self, revisao: int, validar: Callable[[RascunhoBoard], None],
+                criar_run: Callable[[object, RascunhoBoard, str], str]) -> tuple[dict, bool]:
+        """Congela a revisão, cria a execução e abre o próximo rascunho numa só transação.
+
+        A chave (conta, canal, revisão) é procurada antes da revisão atual: quem repete
+        a aprovação depois que o rascunho já avançou recebe a mesma execução.
+        """
+        with self.db.transaction(immediate=True) as conn:
+            if not self._autorizado(conn):
+                raise KeyError("Canal indisponível")
+            existente = conn.execute("""SELECT * FROM aprovacoes_pauta
+                WHERE conta_id=? AND canal_id=? AND revisao=?""", (*self.chave, revisao)).fetchone()
+            if existente:
+                return _aprovacao(existente), False
+            row, board = self._obter_revisao(conn, revisao)
+            if self._operacao(row):
+                raise ValueError("Aguarde a IA terminar antes de criar o roteiro.")
+            validar(board)
+            aprovacao_id = uuid4().hex
+            run_id = criar_run(conn, board, aprovacao_id)
+            aprovacao = {"id": aprovacao_id, "revisao": revisao, "pauta": board.pauta.model_dump(),
+                         "fluxo_id": board.fluxo_id, "run_id": run_id, "criada_em": datetime.now(UTC).isoformat()}
+            conn.execute("""INSERT INTO aprovacoes_pauta
+                (id,conta_id,canal_id,revisao,pauta,fluxo_id,run_id,criada_em) VALUES (?,?,?,?,?,?,?,?)""",
+                         (aprovacao["id"], *self.chave, revisao, json.dumps(aprovacao["pauta"], ensure_ascii=False),
+                          aprovacao["fluxo_id"], run_id, aprovacao["criada_em"]))
+            self._gravar(conn, RascunhoBoard(
+                revisao=board.revisao + 1, posicionamento=board.posicionamento, guardadas=board.guardadas,
+                ultima_aprovacao={"id": aprovacao["id"], "run_id": run_id, "revisao": revisao,
+                                  "titulo": board.pauta.titulo or board.pauta.tema},
+            ))
+            return aprovacao, True
+
+
+def _aprovacao(row) -> dict:
+    return {"id": row["id"], "revisao": row["revisao"], "pauta": json.loads(row["pauta"]),
+            "fluxo_id": row["fluxo_id"], "run_id": row["run_id"], "criada_em": row["criada_em"]}
+
+
+def aprovacoes_do_canal(db, conta: str, canal: str, limite: int = 20) -> list[dict]:
+    with db.connection() as conn:
+        rows = conn.execute("""SELECT * FROM aprovacoes_pauta WHERE conta_id=? AND canal_id=?
+            ORDER BY criada_em DESC LIMIT ?""", (conta, canal, limite)).fetchall()
+    return [_aprovacao(row) for row in rows]

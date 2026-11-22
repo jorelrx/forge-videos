@@ -2,8 +2,9 @@ from fastapi.testclient import TestClient
 
 from forge.repositories.board_criativo import BoardRepository
 from forge.services.insights_canal import periodo
-from tests.api.conftest import autenticar
-from tests.api.test_insights import fonte
+
+from .conftest import autenticar
+from .test_insights import fonte
 
 
 API = "/api/canais/UC1/board"

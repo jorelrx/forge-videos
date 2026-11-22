@@ -16,10 +16,35 @@ class OIDC:
         return {"sub": "pessoa", "name": "Pessoa", "picture": "https://img.example/foto"}
 
 
-def test_oidc_vincula_navegador_consumo_unico_e_logout(services):
+def test_login_em_localhost_redireciona_para_origem_do_callback(services):
     app = create_app(replace(services, oidc=OIDC()))
     client = TestClient(app, follow_redirects=False)
-    outro = TestClient(app)
+    resposta = client.get("/api/sessao/google", params={"retorno": "/canais/A"},
+                           headers={"X-Forwarded-Host": "localhost:3100"})
+    assert resposta.status_code == 307
+    assert resposta.headers["location"] == (
+        "http://127.0.0.1:3100/api/sessao/google?retorno=%2Fcanais%2FA"
+    )
+    assert "set-cookie" not in resposta.headers
+
+
+def test_recusa_do_google_tem_mensagem_propria(services):
+    app = create_app(replace(services, oidc=OIDC()))
+    client = TestClient(app, base_url=services.settings.studio_public_origin,
+                        follow_redirects=False)
+    login = client.get("/api/sessao/google")
+    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+    resposta = client.get("/api/sessao/google/callback",
+                           params={"state": state, "error": "access_denied"})
+    assert resposta.status_code == 400
+    assert resposta.json()["detail"] == "O Google recusou ou cancelou a autorização."
+
+
+def test_oidc_vincula_navegador_consumo_unico_e_logout(services):
+    app = create_app(replace(services, oidc=OIDC()))
+    origem = services.settings.studio_public_origin
+    client = TestClient(app, base_url=origem, follow_redirects=False)
+    outro = TestClient(app, base_url=origem)
     assert client.get("/api/sessao").status_code == 401
     login = client.get("/api/sessao/google", params={"retorno": "/canais/A"})
     state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]

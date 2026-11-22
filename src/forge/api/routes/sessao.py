@@ -1,4 +1,4 @@
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -69,7 +69,13 @@ def sessao(request: Request):
 @sessao_router.get("/sessao/google")
 async def login(request: Request, retorno: str = "/"):
     origem = request.app.state.services.settings.studio_public_origin
-    state, navegador, nonce = request.app.state.sessoes.tentar(_retorno_interno(retorno))
+    retorno = _retorno_interno(retorno)
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    # O cookie de tentativa precisa ser emitido no mesmo endereço do callback.
+    if host.lower() != urlsplit(origem).netloc.lower():
+        consulta = urlencode({"retorno": retorno})
+        return RedirectResponse(f"{origem}/api/sessao/google?{consulta}", status_code=307)
+    state, navegador, nonce = request.app.state.sessoes.tentar(retorno)
     try:
         destino = await request.app.state.oidc.iniciar(origem + CALLBACK, state, nonce)
     except Exception:
@@ -86,8 +92,12 @@ async def callback(request: Request):
     estados = params.getlist("state")
     tentativa = (request.app.state.sessoes.consumir(estados[0], request.cookies.get(COOKIE_LOGIN, ""))
                  if len(estados) == 1 else None)
-    if not tentativa or "error" in params or len(params.getlist("code")) != 1:
+    if not tentativa:
         raise HTTPException(400, "Tentativa de login inválida ou expirada")
+    if params.get("error") == "access_denied":
+        raise HTTPException(400, "O Google recusou ou cancelou a autorização.")
+    if "error" in params or len(params.getlist("code")) != 1:
+        raise HTTPException(400, "O Google retornou sem um código de autorização.")
     try:
         info = await request.app.state.oidc.identificar(origem + CALLBACK, params["code"], tentativa["nonce"])
         sub = info["sub"]

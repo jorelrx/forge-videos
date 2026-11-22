@@ -282,3 +282,19 @@ def test_fora_de_uso_reusa_leitura_por_um_minuto():
     agora[0] = 61.0
     service.check_all()
     assert chamadas == {"lm_studio": 2, "research": 3}
+
+
+def test_worker_e_habilitado_sempre():
+    from forge.infrastructure.config import Settings
+    from forge.services.saude import usos_dos_servicos
+
+    assert usos_dos_servicos(Settings(_env_file=None))["worker"] == ("execução da fila",)
+
+
+def test_default_probes_le_batimento_do_worker(tmp_path):
+    from forge.infrastructure.config import Settings
+    from forge.services import saude
+
+    settings = Settings(_env_file=None, output_dir=tmp_path / "roteiros")
+    leitura = saude._default_probes(settings).worker()
+    assert leitura.state == ServiceState.UNAVAILABLE

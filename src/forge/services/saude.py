@@ -47,7 +47,7 @@ Sonda = Callable[[], "bool | Leitura"]
 
 # Ordem de exibição: pipeline primeiro, depois provedores de modelo.
 ORDEM = (
-    "research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu",
+    "worker", "research", "lm_studio", "comfyui", "tts", "ffmpeg", "gpu",
     "codex", "claude", "anthropic", "openai", "youtube",
 )
 
@@ -71,6 +71,7 @@ def usos_dos_servicos(settings: Settings) -> dict[str, tuple[str, ...]]:
     painel mostrar se trocar o provider funcionaria.
     """
     usos: dict[str, list[str]] = {
+        "worker": ["execução da fila"],
         "research": ["pesquisa"],
         "tts": ["narração"],
         "ffmpeg": ["montagem"],
@@ -99,6 +100,7 @@ class HealthProbes:
     anthropic: Sonda | None = None
     openai: Sonda | None = None
     youtube: Sonda | None = None
+    worker: Sonda | None = None
     # None: sem configuração conhecida, todo serviço sondado conta como habilitado.
     usos: Mapping[str, tuple[str, ...]] | None = None
 
@@ -298,6 +300,11 @@ def _default_probes(settings=None) -> HealthProbes:
             "1 canal vinculado" if vinculados == 1 else f"{vinculados} canais vinculados",
         )
 
+    def worker_probe() -> Leitura:
+        from forge.services.batimento_worker import caminho_batimento, ler_batimento
+
+        return ler_batimento(caminho_batimento(settings), intervalo=settings.worker_heartbeat_seconds)
+
     return HealthProbes(
         research=research_probe,
         lm_studio=lm_studio_probe,
@@ -310,5 +317,6 @@ def _default_probes(settings=None) -> HealthProbes:
         anthropic=chave_probe("anthropic", "FORGE_ANTHROPIC_API_KEY"),
         openai=chave_probe("openai", "FORGE_OPENAI_API_KEY"),
         youtube=youtube_probe,
+        worker=worker_probe,
         usos=usos_dos_servicos(settings),
     )

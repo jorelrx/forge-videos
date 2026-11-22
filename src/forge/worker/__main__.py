@@ -7,6 +7,7 @@ import sys
 from threading import Event
 
 from forge.infrastructure.config import get_settings
+from forge.services.batimento_worker import BatimentoWorker, caminho_batimento
 from forge.services.studio import build_worker
 
 
@@ -49,7 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         worker.run_once()
         return 0
 
-    run_loop(worker, poll_seconds=settings.studio_worker_poll_seconds, stopped=stopped)
+    with BatimentoWorker(
+        caminho_batimento(settings),
+        worker_id=args.worker_id,
+        intervalo=settings.worker_heartbeat_seconds,
+    ):
+        run_loop(worker, poll_seconds=settings.studio_worker_poll_seconds, stopped=stopped)
     return 0
 
 

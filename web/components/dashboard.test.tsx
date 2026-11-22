@@ -179,6 +179,7 @@ describe("dashboard — comportamento completo (REAL)", () => {
     const user = userEvent.setup();
     const state = fullState({
       services: {
+        worker: { name: "worker", state: "unavailable", message: "Worker não está rodando", enabled: true, usos: ["execução da fila"] },
         research: { name: "research", state: "available", message: "OK", enabled: true, usos: ["pesquisa"] },
         lm_studio: { name: "lm_studio", state: "available", message: "OK", enabled: false, usos: [] },
         claude: { name: "claude", state: "unavailable", message: "Claude não respondeu", enabled: true, usos: ["roteiro", "revisão"] },
@@ -191,19 +192,21 @@ describe("dashboard — comportamento completo (REAL)", () => {
     // A faixa da Produção mostra só o que a configuração usa.
     const strip = screen.getByLabelText("Status dos serviços");
     expect(strip.textContent).toContain("Acervo");
+    expect(strip.textContent).toContain("Worker não está rodando");
     expect(strip.textContent).toContain("Claude");
     expect(strip.textContent).toContain("YouTube");
     expect(strip.textContent).not.toContain("LM Studio");
     expect(strip.textContent).not.toContain("Anthropic");
 
     await user.click(screen.getByRole("link", { name: /Serviços/ }));
-    expect(screen.getByText("1 de 3 habilitados disponíveis · 2 fora de uso")).not.toBeNull();
+    expect(screen.getByText("1 de 4 habilitados disponíveis · 2 fora de uso")).not.toBeNull();
     const rows = screen.getAllByRole("row").slice(1);
     const linha = (nome: string) => rows.find((row) => row.textContent?.includes(nome))!;
     // Habilitados primeiro, na ordem da API.
     expect(rows.map((row) => row.querySelector(".svc-name")?.textContent)).toEqual([
-      "Acervo", "Claude", "YouTube", "LM Studio", "Anthropic",
+      "Worker", "Acervo", "Claude", "YouTube", "LM Studio", "Anthropic",
     ]);
+    expect(linha("Worker").textContent).toContain("Executa a fila de produção");
     expect(linha("Claude").textContent).toContain("Habilitado");
     expect(linha("Claude").textContent).toContain("roteiro · revisão");
     expect(linha("Claude").textContent).toContain("Indisponível");

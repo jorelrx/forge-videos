@@ -36,6 +36,7 @@ export function PageHeader({
 }
 
 const SERVICE_NAMES: Record<string, string> = {
+  worker: "Worker",
   research: "Acervo",
   lm_studio: "LM Studio",
   comfyui: "ComfyUI",
@@ -50,6 +51,7 @@ const SERVICE_NAMES: Record<string, string> = {
 };
 
 const SERVICE_ROLES: Record<string, string> = {
+  worker: "Executa a fila de produção",
   research: "Passagens citáveis para pesquisa e roteiro",
   lm_studio: "Modelo local de texto",
   comfyui: "Geração de imagens",

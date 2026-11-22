@@ -98,3 +98,22 @@ class TestWorkerCLI:
         sigs = [call[0] for call in signal_calls]
         assert signal.SIGINT in sigs
         assert signal.SIGTERM in sigs
+
+
+def test_main_em_laco_mantem_batimento_e_apaga_ao_sair(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+    s = s.model_copy(update={"output_dir": tmp_path / "roteiros"})
+    batimento = tmp_path / ".worker-batimento.json"
+    visto: list[bool] = []
+
+    def laco(worker, poll_seconds, stopped):
+        visto.append(batimento.exists())
+
+    with patch("forge.worker.__main__.build_worker", return_value=MagicMock()), \
+         patch("forge.worker.__main__.get_settings", return_value=s), \
+         patch("forge.worker.__main__.signal.signal"), \
+         patch("forge.worker.__main__.run_loop", side_effect=laco):
+        assert main([]) == 0
+
+    assert visto == [True]
+    assert not batimento.exists()

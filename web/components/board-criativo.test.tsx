@@ -70,3 +70,14 @@ it("oferece pauta manual e nova tentativa quando a análise falha", async () => 
   expect(screen.getByLabelText("Título provisório")).toBeTruthy();
   expect(screen.getByRole("button", {name: "Tentar análise novamente"})).toBeTruthy();
 });
+
+it("data da fonte segue o dia de publicação mostrado no catálogo", async () => {
+  const fonte = {...ideia.referencias[0], publicado_em: "2026-11-22T01:30:00Z"};
+  const tarde = {...base, propostas: [{...ideia, referencias: [fonte]}]};
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(tarde)));
+  render(<BoardCriativo canal="A"/>);
+
+  await screen.findByRole("heading", {name: "Da ideia ao vídeo"});
+  expect(screen.getByText("21/11/2026")).toBeTruthy();
+  expect(screen.queryByText("22/11/2026")).toBeNull();
+});

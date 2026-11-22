@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { FonteBoard, IdeiaBoard } from "../lib/board-criativo";
 import { nomes } from "./leitura-insights";
-import { dataCivil, numero } from "../lib/insights";
+import { dataCivil, dataPublicacao, numero } from "../lib/insights";
 
 export function FonteEditorial({fonte}: {fonte: FonteBoard}) {
   const obs = fonte.observacao;
@@ -10,7 +10,7 @@ export function FonteEditorial({fonte}: {fonte: FonteBoard}) {
     {externa ? <a href={fonte.url} target="_blank" rel="noreferrer">Comentário em {fonte.titulo}</a>
       : <Link href={fonte.url}>{fonte.titulo}</Link>}
     {fonte.texto && <blockquote>{fonte.texto}</blockquote>}
-    {!obs && fonte.publicado_em && <time dateTime={fonte.publicado_em}>{dataCivil(fonte.publicado_em)}</time>}
+    {!obs && fonte.publicado_em && <time dateTime={fonte.publicado_em}>{dataPublicacao(fonte.publicado_em)}</time>}
     {obs && <dl>
       <div><dt>Medida</dt><dd>{nomes[obs.medida] ?? obs.medida} · {numero(obs.valor)} {obs.unidade}</dd></div>
       <div><dt>Período</dt><dd>{dataCivil(obs.inicio)} a {dataCivil(obs.fim)}</dd></div>

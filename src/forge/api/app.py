@@ -18,6 +18,7 @@ from forge.api.routes import youtube
 from forge.api.routes import sessao
 from forge.services.sessao_studio import SessaoStudio, GoogleOIDC
 from forge.services.maquina_estados import TransicaoInvalida
+from forge.repositories.board_criativo import liberar_analises_orfas
 from forge.repositories.comandos import IdempotencyConflict
 from forge.repositories.connection import Database
 from forge.repositories.schema import init_db
@@ -64,6 +65,7 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
     app.state.services = resolved
     app.state.tentativas_youtube = {}
     app.state.sessoes = SessaoStudio(resolved.commands.db)
+    liberar_analises_orfas(resolved.commands.db)
     app.state.oidc = resolved.oidc or GoogleOIDC(resolved.settings)
 
     @app.exception_handler(KeyError)

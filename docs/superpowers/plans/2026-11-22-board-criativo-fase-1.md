@@ -9,7 +9,8 @@
 - [x] Migrar para o schema 8 e persistir o rascunho por conta e canal. Cobrir isolamento, recuperação e conflito de revisão na API.
 - [x] Reusar catálogo e relatórios em `services/board_contexto.py`. Amostrar perguntas de comentários públicos sem nomes de autores. Validar campos, categorias e referências no agente. Reusar o rascunho quando o histórico for sincronizado. Uma análise em voo por rascunho pode ser retomada após expiração. [Contrato de comentários do YouTube](https://developers.google.com/youtube/data/reference/rest/v3/commentThreads/list)
 - [x] Integrar `web/app/canais/[canal]/proximo-video/page.tsx` à navegação do canal. Mostrar fonte, comparação de campos, pauta manual e ações de desenvolvimento, guarda, descarte e combinação. Cobrir as transições na API e na interface.
-- [ ] Conferir a jornada visual em navegador com uma sessão autorizada no canal de teste.
+- [x] Conferir a jornada visual em navegador com uma sessão autorizada no canal de teste.
+- [x] Corrigir o que o aceite visual encontrou: a data das fontes do Board segue o fuso do catálogo (`dataPublicacao`), e a API libera ao subir as reservas de análise deixadas por um processo que parou.
 
 ## Contratos para as próximas fases
 
@@ -24,6 +25,7 @@ O rascunho expõe as primeiras decisões editoriais. Edição completa, conversa
 
 - Pytest aprovou 227 casos de API, repositórios e fontes do YouTube. Vitest aprovou 121 casos. Build standalone concluído e lint com zero erros e oito avisos preexistentes.
 - A chamada real ao Codex retornou três hipóteses válidas para um canal fictício. Os cenários com histórico, comentário de origem, revogação de Analytics, combinação e falha de geração foram exercitados com fontes simuladas.
-- O Studio local subiu com o schema SQLite 8 após backup. O permalink do Board respondeu com HTTP 200 e a API exigiu sessão também pelo endereço web. O aceite visual com um canal autorizado permanece pendente.
+- O Studio local subiu com o schema SQLite 8 após backup. O permalink do Board respondeu com HTTP 200 e a API exigiu sessão também pelo endereço web. Aceite visual em 22/11/2026 com o canal Conquistas Cósmicas: rascunho recuperado sem nova análise, justificativas com fonte, guardar, comparação antes de substituir a pauta, combinação real pelo modelo, recarga e nova leitura do histórico preservando o rascunho, e layout em 375 px sem rolagem horizontal.
+- Pendências conhecidas para a Fase 2: ideias guardadas ainda não podem ser removidas pela interface, e o controle Descartar tem 17 px de altura no celular.
 
 [Design do Board Criativo](../specs/2026-11-21-board-criativo-design.md)

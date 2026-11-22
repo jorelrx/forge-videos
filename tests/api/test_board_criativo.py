@@ -174,3 +174,18 @@ def test_reserva_unica_e_conclusao_nao_sobrescreve_edicao(client, services):
     assert atual["operacao"] is None
     assert atual["pauta"] == board["pauta"]
     assert atual["revisao"] == board["revisao"] + 1
+
+
+def test_reinicio_da_api_libera_analise_orfa(client, services, api_factory):
+    repo = BoardRepository(services.commands.db, "pessoa", "UC1")
+    dono, _ = repo.reservar(0, "sugestoes", 3600, lambda board: "entrada")
+    assert estado(client)["operacao"] == "sugestoes"
+
+    reiniciado = TestClient(api_factory(services))
+    reiniciado.cookies.update(client.cookies)
+    board = estado(reiniciado)
+    assert board["operacao"] is None
+
+    repo.concluir(dono, lambda atual: setattr(atual, "analisado_em", "resultado órfão"))
+    assert estado(reiniciado)["analisado_em"] is None
+    assert repo.reservar(board["revisao"], "sugestoes", 60, lambda atual: "entrada") is not None

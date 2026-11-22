@@ -10,6 +10,19 @@ class ConflitoBoard(ValueError):
     """Uma aba já gravou outra revisão."""
 
 
+def liberar_analises_orfas(db) -> int:
+    """Solta as reservas deixadas por um processo da API que parou.
+
+    A análise roda como tarefa de fundo do próprio processo da API (uvicorn sem
+    workers), então ao subir nenhuma reserva tem tarefa viva. Sem isso o Board
+    ficaria bloqueado até a reserva expirar, mais de meia hora. Uma conclusão
+    tardia do processo antigo não encontra mais o dono e é descartada.
+    """
+    with db.transaction(immediate=True) as conn:
+        return conn.execute("""UPDATE boards_criativos SET dono=NULL,operacao=NULL,expira=NULL
+            WHERE dono IS NOT NULL""").rowcount
+
+
 class BoardRepository:
     def __init__(self, db, conta: str, canal: str):
         self.db = db

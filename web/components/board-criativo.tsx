@@ -1,12 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useBoardCriativo } from "../hooks/use-board-criativo";
-import { pautaVazia, type IdeiaBoard, type PautaBoard } from "../lib/board-criativo";
+import {
+  completarPauta, mesmaPauta, normalizarPauta, pautaPreenchida, pautaVazia, type CampoPauta, type IdeiaBoard,
+  type PautaBoard,
+} from "../lib/board-criativo";
+import { ConversaBoard } from "./board-conversa";
+import { DecisaoPauta } from "./board-decisao";
 import { CorpoIdeia, FonteEditorial } from "./board-ideia";
-import { EditorPauta, RevisarPauta } from "./board-pauta";
+import { ConflitoPauta, EditorPauta, RevisarPauta } from "./board-pauta";
 import { Atualizacao } from "./leitura-insights";
+
+const ATRASO_AUTOSAVE = 1200;
 
 export function BoardCriativo({canal}: {canal: string}) {
   return <BoardCanal key={canal} canal={canal}/>;
@@ -48,13 +55,24 @@ function DescartarIdeia({salvar, ocupado}: {salvar: (motivo: string) => void; oc
 }
 
 function BoardCanal({canal}: {canal: string}) {
-  const {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao} = useBoardCriativo(canal);
+  const {board, falhaLeitura, falhaAcao, ocupado, enviar, carregar, recarregarRevisao, salvarPauta, salvarAoSair}
+    = useBoardCriativo(canal);
   const [manual, setManual] = useState(false);
   const [editando, setEditando] = useState<PautaBoard | null>(null);
+  const [conflito, setConflito] = useState(false);
+  const [situacao, setSituacao] = useState("");
   const [revisando, setRevisando] = useState<IdeiaBoard | null>(null);
   const [selecao, setSelecao] = useState<string[]>([]);
+  const [aba, setAba] = useState<"pauta" | "conversa">("pauta");
   const tentouInicial = useRef(false);
-  const base = "/canais/" + encodeURIComponent(canal);
+  const base = useRef<PautaBoard | null>(null);
+  const local = useRef<PautaBoard | null>(null);
+  local.current = editando;
+  const salva = board?.pauta ? completarPauta(board.pauta) : null;
+  const pendente = !!editando && !mesmaPauta(normalizarPauta(editando), salva);
+  const pendenteRef = useRef(false);
+  pendenteRef.current = pendente && !conflito;
+  const baseUrl = "/canais/" + encodeURIComponent(canal);
 
   useEffect(() => {
     if (!board || board.operacao || board.erro || ocupado || board.propostas.length || board.pauta
@@ -64,34 +82,93 @@ function BoardCanal({canal}: {canal: string}) {
     void enviar({tipo: "sugestoes"}, board.revisao);
   }, [board, ocupado, enviar]);
 
+  const salvar = useCallback(async () => {
+    const enviado = local.current;
+    if (!enviado) return "erro";
+    setSituacao("Salvando…");
+    const resultado = await salvarPauta(normalizarPauta(enviado), base.current);
+    if (resultado.estado === "salvo") {
+      base.current = completarPauta(resultado.board.pauta);
+      setSituacao("Alterações salvas");
+    } else if (resultado.estado === "conflito") {
+      setConflito(true);
+      setSituacao("");
+    } else {
+      setSituacao(resultado.estado === "ocupado" ? "Alterações não salvas" : "Falha ao salvar");
+    }
+    return resultado.estado;
+  }, [salvarPauta]);
+
+  useEffect(() => {
+    if (!pendente || conflito || ocupado) return;
+    const timer = window.setTimeout(() => void salvar(), ATRASO_AUTOSAVE);
+    return () => window.clearTimeout(timer);
+  }, [editando, pendente, conflito, ocupado, salvar]);
+
+  useEffect(() => {
+    function sair() {
+      if (pendenteRef.current && local.current) salvarAoSair(normalizarPauta(local.current), base.current);
+    }
+    const oculto = () => { if (document.visibilityState === "hidden") sair(); };
+    window.addEventListener("pagehide", sair);
+    document.addEventListener("visibilitychange", oculto);
+    return () => {
+      window.removeEventListener("pagehide", sair);
+      document.removeEventListener("visibilitychange", oculto);
+    };
+  }, [salvarAoSair]);
+
   if (!board) return <main className="channel-page board-page">
     <h1>Próximo vídeo</h1>
     {falhaLeitura ? <div role="alert" className="insight-alert">
-      {falhaLeitura} <button className="btn" type="button" onClick={carregar}>Tentar novamente</button>
+      {falhaLeitura} <button className="btn" type="button" onClick={() => void carregar()}>Tentar novamente</button>
     </div> : <p role="status">Carregando rascunho…</p>}
   </main>;
 
   const contexto = board.contexto;
+  const conversa = board.conversa ?? [];
   const candidatas = board.propostas.filter(ideia => ideia.motivo_descarte == null);
   const disponiveis = new Set([...candidatas, ...board.guardadas].map(ideia => ideia.id));
   const selecionadas = selecao.filter(id => disponiveis.has(id));
   const guardadas = new Set(board.guardadas.map(ideia => ideia.id));
   const podeAnalisar = !contexto.aguardando && (!contexto.precisa_posicionamento || !!board.posicionamento);
   const podeEditar = !ocupado;
-  const pauta = editando ?? board.pauta;
+  const pauta = editando ?? salva;
+  const pautaAtual = pauta ?? pautaVazia;
+
+  function mudarPauta(nova: PautaBoard) {
+    if (!local.current) base.current = salva;
+    setSituacao("");
+    setEditando(nova);
+  }
+
+  function aceitarServidor() {
+    setEditando(null);
+    setConflito(false);
+    setSituacao("");
+  }
 
   async function desenvolver(ideia: IdeiaBoard) {
     if (!board) return;
     if (await enviar({acao: "desenvolver", ideia_id: ideia.id}, board.revisao)) {
       setRevisando(null);
-      setEditando(null);
+      aceitarServidor();
       setManual(true);
     }
   }
 
   function escolher(ideia: IdeiaBoard) {
-    if (pauta && Object.values(pauta).some(valor => valor.trim())) setRevisando(ideia);
+    if (pauta && pautaPreenchida(pauta)) setRevisando(ideia);
     else void desenvolver(ideia);
+  }
+
+  async function aplicarSugestao(mensagemId: string, campos: CampoPauta[]) {
+    if (pendente && await salvar() !== "salvo") return;
+    const atual = await carregar() ?? board;
+    if (atual && await enviar({acao: "aplicar_sugestao", mensagem_id: mensagemId, campos}, atual.revisao)) {
+      aceitarServidor();
+      setManual(true);
+    }
   }
 
   function marcar(id: string) {
@@ -109,13 +186,13 @@ function BoardCanal({canal}: {canal: string}) {
 
   return <main className="channel-page board-page">
     <header className="insight-heading">
-      <div><h1>Próximo vídeo</h1><p>Escolha um recorte para começar a pauta do canal.</p></div>
-      <Link className="btn" href={base}>Vídeos e insights</Link>
+      <div><h1>Próximo vídeo</h1><p>Escolha um recorte e feche a pauta do canal.</p></div>
+      <Link className="btn" href={baseUrl}>Vídeos e insights</Link>
     </header>
     <section className="panel board-context" aria-label="Histórico do canal">
       <h2>Histórico do canal</h2>
       <Atualizacao canal={canal} consulta="" estado={contexto.estado_analytics}
-        estadoCatalogo={contexto.estado_catalogo} ultima={contexto.atualizado_em} atualizar={carregar}/>
+        estadoCatalogo={contexto.estado_catalogo} ultima={contexto.atualizado_em} atualizar={() => void carregar()}/>
       {contexto.observacoes.length > 0 && <details className="evidence-panel">
         <summary>Observações do período</summary>
         {contexto.observacoes.map(fonte => <FonteEditorial key={fonte.id} fonte={fonte}/>)}
@@ -138,7 +215,8 @@ function BoardCanal({canal}: {canal: string}) {
           {podeAnalisar &&
             <button className="btn" disabled={ocupado || !!board.operacao} type="button"
               onClick={() => void enviar({tipo: "sugestoes", atualizar: board.propostas.length > 0}, board.revisao)}>
-              {board.erro ? "Tentar análise novamente" : board.propostas.length ? "Gerar novas propostas" : "Gerar propostas"}
+              {board.erro && board.operacao == null && !conversa.length ? "Tentar análise novamente" :
+                board.propostas.length ? "Gerar novas propostas" : "Gerar propostas"}
             </button>}
           {selecionadas.length > 0 && <button className="btn" type="button"
             disabled={selecionadas.length !== 2 || ocupado || !!board.operacao}
@@ -147,8 +225,9 @@ function BoardCanal({canal}: {canal: string}) {
           </button>}
         </div>
       </div>
-      {board.operacao && <p role="status">{board.operacao === "combinacao" ? "Combinando ideias…" : "Preparando sugestões…"}</p>}
-      {board.erro && <p role="status">A IA não concluiu a análise. Você pode continuar com a pauta manual.</p>}
+      {board.operacao === "sugestoes" && <p role="status">Preparando sugestões…</p>}
+      {board.operacao === "combinacao" && <p role="status">Combinando ideias…</p>}
+      {board.erro && !conversa.length && <p role="status">A IA não concluiu a análise. Você pode continuar com a pauta manual.</p>}
       {contexto.aguardando && !board.propostas.length && <p role="status">Aguardando a primeira leitura do histórico…</p>}
       {contexto.precisa_posicionamento && !board.posicionamento && !contexto.aguardando &&
         <p>Informe o posicionamento para receber três hipóteses para o canal.</p>}
@@ -177,16 +256,39 @@ function BoardCanal({canal}: {canal: string}) {
     </article>}
     {revisando && pauta && <RevisarPauta atual={pauta} ideia={revisando} ocupado={ocupado}
       aplicar={() => void desenvolver(revisando)} cancelar={() => setRevisando(null)}/>}
+    {conflito && editando && salva && <ConflitoPauta salva={salva} revisao={board.revisao} local={editando}
+      ocupado={ocupado} descartar={aceitarServidor}
+      reaplicar={() => { base.current = salva; setConflito(false); void salvar(); }}/>}
 
-    <section className="panel board-pauta" aria-labelledby="board-pauta-title">
-      <div className="insight-section-header"><h2 id="board-pauta-title">Pauta inicial</h2>
-        {board.pauta && <small>Revisão {board.revisao}</small>}
+    <div className="board-workspace" data-aba={aba}>
+      <div className="board-tabs" role="tablist" aria-label="Área de edição">
+        {(["pauta", "conversa"] as const).map(item => <button key={item} type="button" role="tab"
+          id={`board-tab-${item}`} aria-controls={`board-panel-${item}`} aria-selected={aba === item}
+          className={aba === item ? "btn btn-primary" : "btn"} onClick={() => setAba(item)}>
+          {item === "pauta" ? "Pauta" : "Conversa"}
+        </button>)}
       </div>
-      {manual || pauta ? <EditorPauta pauta={pauta ?? pautaVazia} onChange={setEditando} ocupado={ocupado}
-        onSave={async () => {
-          if (await enviar({acao: "pauta", pauta: pauta ?? pautaVazia}, board.revisao)) setEditando(null);
-        }}/> : <button className="btn" type="button" onClick={() => setManual(true)}>Abrir pauta manual</button>}
-    </section>
+      <section id="board-panel-pauta" role="tabpanel" aria-labelledby="board-tab-pauta"
+        className="panel board-pauta board-pane-pauta">
+        <div className="insight-section-header"><h2 id="board-pauta-title">Pauta</h2>
+          {board.pauta && <small>Revisão {board.revisao}</small>}
+        </div>
+        {manual || pauta ? <EditorPauta pauta={pautaAtual} onChange={mudarPauta} ocupado={ocupado}
+          situacao={conflito ? "Conflito com outra aba" : situacao || (pendente ? "Alterações não salvas" : "")}
+          onSave={() => void salvar()}/> :
+          <button className="btn" type="button" onClick={() => setManual(true)}>Abrir pauta manual</button>}
+      </section>
+      <section id="board-panel-conversa" role="tabpanel" aria-labelledby="board-tab-conversa"
+        className="panel board-pane-conversa">
+        <ConversaBoard conversa={conversa} pauta={salva ?? pautaVazia} ocupado={ocupado} editando={pendente}
+          respondendo={board.operacao === "conversa"} falhou={!!board.erro}
+          enviar={texto => enviar({tipo: "conversa", mensagem: texto}, board.revisao)}
+          aplicar={(id, campos) => void aplicarSugestao(id, campos)}/>
+      </section>
+    </div>
+
+    {(manual || pauta) && <DecisaoPauta board={board} pauta={salva ?? pautaVazia} pendenteLocal={pendente}
+      ocupado={ocupado} escolherFluxo={fluxoId => void enviar({acao: "fluxo", fluxo_id: fluxoId}, board.revisao)}/>}
 
     <section className="panel board-saved" aria-labelledby="board-saved-title">
       <h2 id="board-saved-title">Ideias guardadas</h2>
@@ -197,6 +299,10 @@ function BoardCanal({canal}: {canal: string}) {
           </details>
           <div className="board-actions">
             <button className="btn" type="button" disabled={!podeEditar} onClick={() => escolher(ideia)}>Desenvolver ideia guardada</button>
+            <button className="btn" type="button" disabled={!podeEditar}
+              onClick={() => void enviar({acao: "remover_guardada", ideia_id: ideia.id}, board.revisao)}>
+              Remover <span className="sr-only">{ideia.pauta.titulo}</span>
+            </button>
             {!candidatas.some(candidata => candidata.id === ideia.id) && controleSelecao(ideia)}
           </div>
         </li>)}

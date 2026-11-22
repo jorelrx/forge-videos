@@ -12,7 +12,9 @@ const ideia = {
 };
 const base = {
   revisao: 1, propostas: [ideia], guardadas: [], candidata: null, origem_pauta: null,
-  pauta: null, operacao: null, erro: null, posicionamento: "",
+  pauta: null, operacao: null, erro: null, posicionamento: "", fluxo_id: null, conversa: [],
+  fluxos: [{id: "padrao", nome: "Padrão", descricao: "Roteiro atual", disponivel: true, motivo: null}],
+  pendencias: [],
   contexto: {precisa_posicionamento: false, aguardando: false, observacoes: [], estado_catalogo: "atualizado"},
 };
 

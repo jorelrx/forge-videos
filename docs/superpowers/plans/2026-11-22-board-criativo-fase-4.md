@@ -37,11 +37,11 @@
 - `fontes_de_episodios(lista, pode_exibir_analytics) -> list[FonteBoard]` — só episódios públicos; `id = "episodio:<video_id>"`, `texto` com promessa e abertura aprovadas, `observacao` = visualizações da janela completa mais longa.
 - `GET /board` expõe `episodios`; `GerarSugestoes` envia as fontes de episódio ao modelo; uma continuação que cita episódio conta como fundamentada.
 
-- [ ] Teste `test_percurso_do_episodio`: aprovar; sem publicação → `em_producao`; `publicacao.json` concluída com `publicar_em` → `agendado`; vídeo no catálogo com `publicado_em` de 10 dias → `janela_completa`, `d7.completa` e não `d28.completa`; `abertura` igual à da pauta aprovada.
-- [ ] Teste `test_publicacao_ilegivel_nao_derruba_board`.
-- [ ] Teste `test_episodio_publicado_vira_fonte_da_analise`: modelo fake registra as fontes; contém `episodio:<video_id>` com a abertura no texto; continuação que o cita tem `hipotese == False`.
-- [ ] Teste `test_publicacao_do_board_mantem_canal_aprovado`: publicar a run com `canal_id` de outro canal → 404.
-- [ ] Implementar, rodar, commit `feat(studio): acompanhar episódios do Board até a medição`.
+- [x] Teste `test_percurso_do_episodio`: aprovar; sem publicação → `em_producao`; `publicacao.json` concluída com `publicar_em` → `agendado`; vídeo no catálogo com `publicado_em` de 10 dias → `janela_completa`, `d7.completa` e não `d28.completa`; `abertura` igual à da pauta aprovada.
+- [x] Teste `test_publicacao_ilegivel_nao_derruba_board`.
+- [x] Teste `test_episodio_publicado_vira_fonte_da_analise`: modelo fake registra as fontes; contém `episodio:<video_id>` com a abertura no texto; continuação que o cita tem `hipotese == False`.
+- [x] Teste `test_publicacao_do_board_mantem_canal_aprovado`: publicar a run com `canal_id` de outro canal → 404.
+- [x] Implementar, rodar, commit `feat(studio): acompanhar episódios do Board até a medição`.
 
 ### Tarefa 2: Detalhe do vídeo mostra a pauta de origem; Board mostra episódios
 
@@ -52,13 +52,30 @@
 - `EpisodiosBoard`: lista com momento em texto, data pública, estado de D+7/D+28 e links para a execução e o detalhe do vídeo.
 - `FonteEditorial` mostra fonte `episodio` com o texto da abertura e a janela da observação.
 
-- [ ] Teste API: detalhe de vídeo do Board traz `episodio_board.abertura`; vídeo externo traz `null`.
-- [ ] Teste web: episódio `janela_completa` mostra "D+7 completa" e link "Ver resultado".
-- [ ] Implementar, rodar vitest/lint/pytest, commit `feat(studio): pauta de origem no vídeo e episódios no Board`.
+- [x] Teste API: detalhe de vídeo do Board traz `episodio_board.abertura`; vídeo externo traz `null`.
+- [x] Teste web: episódio `janela_completa` mostra "D+7 completa" e link "Ver resultado".
+- [x] Implementar, rodar vitest/lint/pytest, commit `feat(studio): pauta de origem no vídeo e episódios no Board`.
 
 ### Tarefa 3: Verificação final da spec
 
-- [ ] `uv run pytest -q`, `npx vitest run`, `npm run build`.
-- [ ] Revisão do ramo por um revisor independente; corrigir achados.
-- [ ] Navegador com o Studio desta árvore: jornada da pauta à execução.
-- [ ] Marcar caixas e registrar a verificação nos planos das Fases 2–4.
+- [x] `uv run pytest -q`, `npx vitest run`, `npm run build`.
+- [x] Revisão do ramo por um revisor independente; corrigir achados.
+- [x] Navegador com o Studio desta árvore: jornada da pauta à execução.
+- [x] Marcar caixas e registrar a verificação nos planos das Fases 2–4.
+
+## Verificação
+
+- Pytest cobre o percurso (em produção, agendado, janela completa), publicação ilegível, fonte de episódio na análise, destino da publicação e a pauta de origem no detalhe do vídeo; Vitest cobre a lista de episódios.
+- Navegador (cópia do banco): o episódio aprovado aparece como "em produção" no Board. Publicação real e janelas D+7/D+28 de um episódio do Board dependem de um vídeo publicado e não foram exercitadas ao vivo.
+
+## Revisão independente do ramo
+
+Um revisor leu `c3826b4..HEAD` e apontou oito problemas, todos corrigidos com teste:
+- Salvamento automático sem fim quando um texto terminava em espaço: a normalização do painel agora apara os textos como o servidor.
+- Edição comparada com a pauta salva atual, não com a base: uma gravação de outra aba parecia edição local e podia ser sobrescrita. A edição agora mede contra a sua base e, sem nada pendente, adota a versão salva.
+- Gravação com keepalive ao trocar de aba deixava revisão e base defasadas: só a saída da página usa keepalive; trocar de aba grava pelo caminho normal.
+- Mensagem da conversa perdida durante outra análise: o envio fica bloqueado e a API responde 409 `analise_em_andamento`.
+- Repetir uma etapa posterior pulava o conflito da pauta: a repetição exige refazer a pesquisa, que volta a conferir a pauta.
+- Cancelamento sem `finished_at`.
+- Medida de episódio chegava ao modelo com Analytics revogado.
+- Janelas D+7/D+28 só liam o cache de um período que muda a cada dia: o Board agora agenda a leitura deduplicada do detalhe.

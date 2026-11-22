@@ -69,14 +69,31 @@ function BoardCanal({canal}: {canal: string}) {
   const [selecao, setSelecao] = useState<string[]>([]);
   const [aba, setAba] = useState<"pauta" | "conversa">("pauta");
   const tentouInicial = useRef(false);
+  // A base é a pauta salva sobre a qual a edição local foi feita. "Pendente" compara com ela,
+  // nunca com a pauta salva atual: uma gravação de outra aba não é edição desta.
+  const [baseEdicao, setBaseEdicao] = useState<PautaBoard | null>(null);
   const base = useRef<PautaBoard | null>(null);
+  base.current = baseEdicao;
   const local = useRef<PautaBoard | null>(null);
   local.current = editando;
   const salva = board?.pauta ? completarPauta(board.pauta) : null;
-  const pendente = !!editando && !mesmaPauta(normalizarPauta(editando), salva);
+  const chaveSalva = JSON.stringify(salva);
+  const pendente = !!editando && !mesmaPauta(normalizarPauta(editando), baseEdicao);
   const pendenteRef = useRef(false);
   pendenteRef.current = pendente && !conflito;
   const baseUrl = "/canais/" + encodeURIComponent(canal);
+
+  function mudarBase(pauta: PautaBoard | null) {
+    base.current = pauta;
+    setBaseEdicao(pauta);
+  }
+
+  useEffect(() => {
+    // Sem edição pendente, a pauta salva por outra aba substitui a cópia local.
+    if (!editando || pendente || conflito || mesmaPauta(JSON.parse(chaveSalva), baseEdicao)) return;
+    setEditando(null);
+    mudarBase(null);
+  }, [chaveSalva, editando, pendente, conflito, baseEdicao]);
 
   useEffect(() => {
     if (!board || board.operacao || board.erro || ocupado || board.propostas.length || board.pauta
@@ -92,7 +109,7 @@ function BoardCanal({canal}: {canal: string}) {
     setSituacao("Salvando…");
     const resultado = await salvarPauta(normalizarPauta(enviado), base.current);
     if (resultado.estado === "salvo") {
-      base.current = completarPauta(resultado.board.pauta);
+      mudarBase(completarPauta(resultado.board.pauta));
       setSituacao("Alterações salvas");
     } else if (resultado.estado === "conflito") {
       setConflito(true);
@@ -110,17 +127,19 @@ function BoardCanal({canal}: {canal: string}) {
   }, [editando, pendente, conflito, ocupado, salvar]);
 
   useEffect(() => {
+    // Só a saída da página usa keepalive, cuja resposta ninguém lê. Ao trocar de aba, a
+    // gravação normal atualiza revisão e base, evitando um falso conflito na volta.
     function sair() {
       if (pendenteRef.current && local.current) salvarAoSair(normalizarPauta(local.current), base.current);
     }
-    const oculto = () => { if (document.visibilityState === "hidden") sair(); };
+    const oculto = () => { if (document.visibilityState === "hidden" && pendenteRef.current) void salvar(); };
     window.addEventListener("pagehide", sair);
     document.addEventListener("visibilitychange", oculto);
     return () => {
       window.removeEventListener("pagehide", sair);
       document.removeEventListener("visibilitychange", oculto);
     };
-  }, [salvarAoSair]);
+  }, [salvarAoSair, salvar]);
 
   if (!board) return <main className="channel-page board-page">
     <h1>Próximo vídeo</h1>
@@ -141,13 +160,14 @@ function BoardCanal({canal}: {canal: string}) {
   const pautaAtual = pauta ?? pautaVazia;
 
   function mudarPauta(nova: PautaBoard) {
-    if (!local.current) base.current = salva;
+    if (!local.current) mudarBase(salva);
     setSituacao("");
     setEditando(nova);
   }
 
   function aceitarServidor() {
     setEditando(null);
+    mudarBase(null);
     setConflito(false);
     setSituacao("");
   }
@@ -282,7 +302,7 @@ function BoardCanal({canal}: {canal: string}) {
       aplicar={() => void desenvolver(revisando)} cancelar={() => setRevisando(null)}/>}
     {conflito && editando && salva && <ConflitoPauta salva={salva} revisao={board.revisao} local={editando}
       ocupado={ocupado} descartar={aceitarServidor}
-      reaplicar={() => { base.current = salva; setConflito(false); void salvar(); }}/>}
+      reaplicar={() => { mudarBase(salva); setConflito(false); void salvar(); }}/>}
 
     <div className="board-workspace" data-aba={aba}>
       <div className="board-tabs" role="tablist" aria-label="Área de edição">
@@ -305,7 +325,8 @@ function BoardCanal({canal}: {canal: string}) {
       <section id="board-panel-conversa" role="tabpanel" aria-labelledby="board-tab-conversa"
         className="panel board-pane-conversa">
         <ConversaBoard conversa={conversa} pauta={salva ?? pautaVazia} ocupado={ocupado} editando={pendente}
-          respondendo={board.operacao === "conversa"} falhou={!!board.erro}
+          respondendo={board.operacao === "conversa"} outraAnalise={!!board.operacao && board.operacao !== "conversa"}
+          falhou={!!board.erro}
           enviar={texto => enviar({tipo: "conversa", mensagem: texto}, board.revisao)}
           aplicar={(id, campos) => void aplicarSugestao(id, campos)}/>
       </section>

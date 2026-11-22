@@ -40,11 +40,11 @@
 - `POST /api/canais/{canal}/board/aprovacoes` com `{"revisao", "fluxo_id"}` → 201 `{"aprovacao", "run_id", "board"}`; repetida → 200 com a mesma `run_id`.
 - Snapshot da execução: `preset`, `fluxo_geracao`, `pauta_aprovada` (`aprovacao_id`, `revisao`, campos da pauta). `tema = pauta.tema`, `tese = pauta.promessa`.
 
-- [ ] Teste `test_aprovar_cria_uma_execucao_e_abre_novo_rascunho`: pauta completa + fluxo → 201; run com `canal_id == "UC1"`, `config_snapshot["pauta_aprovada"]["revisao"]`; board novo sem pauta, com guardadas e `ultima_aprovacao.run_id`.
-- [ ] Teste `test_repetir_aprovacao_devolve_mesma_execucao`: segunda chamada com a mesma revisão → 200, mesma `run_id`, uma linha em `runs`.
-- [ ] Teste `test_aprovacao_com_revisao_vencida_ou_pendente`: revisão antiga sem aprovação → 409 `revisao_board`; pauta sem blocos → 422 com a pendência.
-- [ ] Teste `test_geracao_direta_continua`: `POST /api/videos` com tema cria run sem `pauta_aprovada`.
-- [ ] Implementar, rodar, commit `feat(studio): aprovar a pauta e criar uma execução`.
+- [x] Teste `test_aprovar_cria_uma_execucao_e_abre_novo_rascunho`: pauta completa + fluxo → 201; run com `canal_id == "UC1"`, `config_snapshot["pauta_aprovada"]["revisao"]`; board novo sem pauta, com guardadas e `ultima_aprovacao.run_id`.
+- [x] Teste `test_repetir_aprovacao_devolve_mesma_execucao`: segunda chamada com a mesma revisão → 200, mesma `run_id`, uma linha em `runs`.
+- [x] Teste `test_aprovacao_com_revisao_vencida_ou_pendente`: revisão antiga sem aprovação → 409 `revisao_board`; pauta sem blocos → 422 com a pendência.
+- [x] Teste `test_geracao_direta_continua`: `POST /api/videos` com tema cria run sem `pauta_aprovada`.
+- [x] Implementar, rodar, commit `feat(studio): aprovar a pauta e criar uma execução`.
 
 ### Tarefa 2: Briefing na pesquisa, conferência e pausa por contradição
 
@@ -60,10 +60,10 @@
 - `ControlPlaneService.decidir_conflito_pauta(run_id, decisao) -> Run`: grava `snapshot["decisao_pauta"]` e `snapshot["pauta_decidida"]` e enfileira; `cancelar` leva a run a `cancelled`. Rota `POST /api/runs/{run_id}/conflito-pauta`.
 - `RunSnapshot.pauta_episodio` = `pauta_decidida` ou `pauta_aprovada`.
 
-- [ ] Teste `test_conferir_pauta_recusa_caminho_inventado` e `test_conferir_pauta_devolve_contradicao`.
-- [ ] Teste `test_pesquisa_com_pauta_usa_briefing_e_pausa_em_contradicao` (executor com modelo e acervo fakes): `pedido` contém a pergunta de pesquisa; artefato `conflito_pauta` emitido.
-- [ ] Teste `test_decisoes_de_conflito`: aceitar grava `pauta_decidida.recorte == recorte_proposto` e volta a `queued`; editar usa o texto do criador; cancelar → `cancelled` e `pauta_aprovada` intacta; artefato de outra run → `TransicaoInvalida`.
-- [ ] Implementar, rodar, commit `feat(studio): confrontar a pauta com o acervo antes da escrita`.
+- [x] Teste `test_conferir_pauta_recusa_caminho_inventado` e `test_conferir_pauta_devolve_contradicao`.
+- [x] Teste `test_pesquisa_com_pauta_usa_briefing_e_pausa_em_contradicao` (executor com modelo e acervo fakes): `pedido` contém a pergunta de pesquisa; artefato `conflito_pauta` emitido.
+- [x] Teste `test_decisoes_de_conflito`: aceitar grava `pauta_decidida.recorte == recorte_proposto` e volta a `queued`; editar usa o texto do criador; cancelar → `cancelled` e `pauta_aprovada` intacta; artefato de outra run → `TransicaoInvalida`.
+- [x] Implementar, rodar, commit `feat(studio): confrontar a pauta com o acervo antes da escrita`.
 
 ### Tarefa 3: Roteiro recebe o recorte decidido
 
@@ -71,8 +71,8 @@
 
 **Interfaces:** `build_graph(..., pauta_episodio: PautaEpisodio | None = None)` inclui `pauta_episodio.diretrizes()` nas diretrizes de plan/write; o executor passa `context.pauta_episodio`.
 
-- [ ] Teste: diretrizes do grafo contêm o recorte decidido e a abertura da pauta; sem pauta, nada muda.
-- [ ] Implementar, rodar, commit `feat(studio): roteiro usa a pauta decidida`.
+- [x] Teste: diretrizes do grafo contêm o recorte decidido e a abertura da pauta; sem pauta, nada muda.
+- [x] Implementar, rodar, commit `feat(studio): roteiro usa a pauta decidida`.
 
 ### Tarefa 4: Interface de aprovação e de conflito
 
@@ -83,11 +83,17 @@
 - Dashboard: hash `#/producao?run=<id>` seleciona a execução.
 - `PautaExecucao`: mostra pauta aprovada (revisão), decisão posterior e recorte recebido; em `aguardando_editorial == "conflito_pauta"`, mostra promessa, evidências e recorte proposto com Aceitar, Editar (promessa e recorte) e Cancelar.
 
-- [ ] Teste `criar roteiro aprova e abre a execução`; `repetir após falha usa a mesma revisão`.
-- [ ] Teste `conflito oferece aceitar, editar e cancelar` (POST com o corpo certo para cada ação).
-- [ ] Rodar vitest e lint; commit `feat(studio): aprovar a pauta e decidir conflitos no painel`.
+- [x] Teste `criar roteiro aprova e abre a execução`; `repetir após falha usa a mesma revisão`.
+- [x] Teste `conflito oferece aceitar, editar e cancelar` (POST com o corpo certo para cada ação).
+- [x] Rodar vitest e lint; commit `feat(studio): aprovar a pauta e decidir conflitos no painel`.
 
 ## Contratos para a Fase 4
 
 - `aprovacoes_pauta` liga aprovação → `run_id`; `runs.canal_id` é o canal aprovado e a publicação já usa esse canal como destino.
 - `config_snapshot["pauta_aprovada"]["abertura"]` e `previa_aprovada_sha256` identificam a versão da abertura do episódio.
+
+## Verificação
+
+- Pytest cobre aprovação idempotente, revisão vencida, pendência, geração direta, conferência da pauta, pausa por contradição e as três decisões; Vitest cobre aprovar, repetir após falha e o painel de conflito.
+- Navegador (cópia do banco): Criar roteiro abriu `#/producao?run=<id>` com o painel Pauta do Board; repetir a aprovação da revisão 9 devolveu 200 e a mesma execução; o rascunho novo manteve a ideia guardada.
+- Não exercitado de ponta a ponta: a pausa por contradição com Acervo e modelo reais (coberta por testes com modelo e acervo falsos).

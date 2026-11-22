@@ -42,11 +42,11 @@
 - `fluxos_compativeis(db, canal) -> list[dict]` com `id, nome, descricao, disponivel, motivo` (todo fluxo cadastrado gera roteiro; `motivo` explica quando não).
 - `GET /board` expõe `pendencias` e `fluxos`.
 
-- [ ] Teste `test_pauta_antiga_abre_com_campos_novos_vazios`: grava `dados` com pauta de 5 campos direto no banco; `GET` devolve `blocos == []`, `abertura == ""` e os 5 valores.
-- [ ] Teste `test_pendencias_e_fluxo`: pauta só com título → pendências contêm `tema`, `promessa`, `blocos`, `fluxo`; após pauta completa e `{"acao": "fluxo", "fluxo_id": "padrao"}` → `pendencias == []`; `fluxo_id` inexistente → 422.
-- [ ] Teste `test_remover_guardada`: guardar, remover, `guardadas == []`.
-- [ ] Rodar e ver falhar; implementar; rodar `uv run pytest tests/api/test_board_criativo.py -q`.
-- [ ] Commit `feat(studio): pauta completa e pendências do Board`.
+- [x] Teste `test_pauta_antiga_abre_com_campos_novos_vazios`: grava `dados` com pauta de 5 campos direto no banco; `GET` devolve `blocos == []`, `abertura == ""` e os 5 valores.
+- [x] Teste `test_pendencias_e_fluxo`: pauta só com título → pendências contêm `tema`, `promessa`, `blocos`, `fluxo`; após pauta completa e `{"acao": "fluxo", "fluxo_id": "padrao"}` → `pendencias == []`; `fluxo_id` inexistente → 422.
+- [x] Teste `test_remover_guardada`: guardar, remover, `guardadas == []`.
+- [x] Rodar e ver falhar; implementar; rodar `uv run pytest tests/api/test_board_criativo.py -q`.
+- [x] Commit `feat(studio): pauta completa e pendências do Board`.
 
 ### Tarefa 2: Conversa com sugestões por campo
 
@@ -59,10 +59,10 @@
 - `responder_conversa(model, pauta, conversa, fontes) -> RespostaConversa` com `resposta` e `alteracoes` (`campo`, `valor`). Valida campo conhecido e tipo; `anterior` vem da pauta da revisão-base, no servidor.
 - Comando `{"acao": "aplicar_sugestao", "mensagem_id", "campos": [...]}`: aplica só os campos escolhidos que a mensagem propõe, registra em `aplicadas`. Revisão vencida → `409 revisao_board`.
 
-- [ ] Teste `test_conversa_propoe_so_abertura_e_aplica_so_ela` (cenário "IA propõe mudar somente a abertura"): modelo fake devolve alteração de `abertura`; `GET` mostra a mensagem da IA com `anterior` e `valor`; aplicar `["abertura"]` muda só a abertura.
-- [ ] Teste `test_sugestao_sobre_revisao_vencida_reaplica`: outra gravação após a sugestão → aplicar com revisão antiga dá 409; com a revisão atual aplica e preserva o campo editado pela outra aba.
-- [ ] Teste `test_resposta_invalida_preserva_mensagem`: alteração com campo `inventado` → `erro == "analise_indisponivel"` e a mensagem do criador continua na conversa.
-- [ ] Implementar; rodar a suíte do Board; commit `feat(studio): conversa do Board com sugestões por campo`.
+- [x] Teste `test_conversa_propoe_so_abertura_e_aplica_so_ela` (cenário "IA propõe mudar somente a abertura"): modelo fake devolve alteração de `abertura`; `GET` mostra a mensagem da IA com `anterior` e `valor`; aplicar `["abertura"]` muda só a abertura.
+- [x] Teste `test_sugestao_sobre_revisao_vencida_reaplica`: outra gravação após a sugestão → aplicar com revisão antiga dá 409; com a revisão atual aplica e preserva o campo editado pela outra aba.
+- [x] Teste `test_resposta_invalida_preserva_mensagem`: alteração com campo `inventado` → `erro == "analise_indisponivel"` e a mensagem do criador continua na conversa.
+- [x] Implementar; rodar a suíte do Board; commit `feat(studio): conversa do Board com sugestões por campo`.
 
 ### Tarefa 3: Interface de edição, conversa e revisão final
 
@@ -77,19 +77,24 @@
 - Layout: `.board-workspace` com pauta e conversa lado a lado a partir de 1024 px; abaixo, abas Pauta/Conversa que só ocultam (`hidden`), sem desmontar.
 - Ideia guardada ganha "Remover"; "Descartar" com alvo de toque de 24 px ou mais.
 
-- [ ] Teste `aplica só a abertura proposta pela IA`: render com mensagem IA propondo abertura; marcar e aplicar → PUT com `{"acao": "aplicar_sugestao", "campos": ["abertura"]}`.
-- [ ] Teste `conflito mostra a versão atual e reaplica a edição`: PUT devolve 409, GET devolve revisão nova; tela mostra o valor atual e "Reaplicar minha edição" faz PUT com a revisão nova e a pauta local.
-- [ ] Teste `revisão final aponta pendência ao lado de Criar roteiro`: pauta sem blocos → botão desabilitado e texto "Inclua pelo menos um bloco".
-- [ ] Teste `abas preservam o texto digitado`: digitar na mensagem, trocar para Pauta e voltar, texto continua.
-- [ ] Rodar `npx vitest run`, `npx eslint . -c eslint.config.mjs`; commit `feat(studio): edição, conversa e revisão final da pauta`.
+- [x] Teste `aplica só a abertura proposta pela IA`: render com mensagem IA propondo abertura; marcar e aplicar → PUT com `{"acao": "aplicar_sugestao", "campos": ["abertura"]}`.
+- [x] Teste `conflito mostra a versão atual e reaplica a edição`: PUT devolve 409, GET devolve revisão nova; tela mostra o valor atual e "Reaplicar minha edição" faz PUT com a revisão nova e a pauta local.
+- [x] Teste `revisão final aponta pendência ao lado de Criar roteiro`: pauta sem blocos → botão desabilitado e texto "Inclua pelo menos um bloco".
+- [x] Teste `abas preservam o texto digitado`: digitar na mensagem, trocar para Pauta e voltar, texto continua.
+- [x] Rodar `npx vitest run`, `npx eslint . -c eslint.config.mjs`; commit `feat(studio): edição, conversa e revisão final da pauta`.
 
 ### Tarefa 4: Verificação da fase
 
-- [ ] `uv run pytest -q`, `npx vitest run`, `npm run build`.
-- [ ] Navegador: recarregar recupera conversa e pauta; aceitar só a abertura; chegar à revisão final com um bloco e um fluxo.
-- [ ] Registrar resultado neste plano e marcar as caixas.
+- [x] `uv run pytest -q`, `npx vitest run`, `npm run build`.
+- [x] Navegador: recarregar recupera conversa e pauta; aceitar só a abertura; chegar à revisão final com um bloco e um fluxo.
+- [x] Registrar resultado neste plano e marcar as caixas.
 
 ## Contratos para a Fase 3
 
 - `GET /board` devolve `pauta` completa, `fluxo_id`, `fluxos` e `pendencias`. A Fase 3 aprova uma `revisao` cujo `pendencias == []`.
 - `DecisaoPauta.onCriar(revisao, fluxo_id)` é o ponto de entrada da aprovação.
+
+## Verificação
+
+- Pytest e Vitest cobrem pauta antiga, pendências, conversa com revisão-base, revisão vencida, resposta inválida, conflito entre abas, autosave e abas em tela estreita.
+- Navegador (Studio desta árvore com cópia do banco, 22/11/2026): o rascunho da Fase 1 (revisão 5, cinco campos) abriu com os campos novos vazios; bloco salvo por autosave; a IA real propôs só a abertura; aplicar mudou só a abertura; recarregar recuperou conversa e pauta; Criar roteiro liberado com um bloco e o fluxo Padrão.

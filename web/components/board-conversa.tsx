@@ -39,10 +39,11 @@ function Sugestao({mensagem, pauta, ocupado, aplicar}: {
   </div>;
 }
 
-export function ConversaBoard({conversa, pauta, respondendo, falhou, ocupado, editando, enviar, aplicar}: {
+export function ConversaBoard({conversa, pauta, respondendo, outraAnalise, falhou, ocupado, editando, enviar, aplicar}: {
   conversa: MensagemBoard[];
   pauta: PautaBoard;
   respondendo: boolean;
+  outraAnalise: boolean;
   falhou: boolean;
   ocupado: boolean;
   editando: boolean;
@@ -76,7 +77,8 @@ export function ConversaBoard({conversa, pauta, respondendo, falhou, ocupado, ed
         <textarea rows={3} maxLength={2000} value={texto} onChange={e => setTexto(e.target.value)}/>
       </label>
       {editando && <small>A IA considera a última revisão salva da pauta.</small>}
-      <button type="submit" className="btn" disabled={ocupado || respondendo || !texto.trim()}>Enviar</button>
+      {outraAnalise && <small>Aguarde a análise de propostas terminar para enviar.</small>}
+      <button type="submit" className="btn" disabled={ocupado || respondendo || outraAnalise || !texto.trim()}>Enviar</button>
     </form>
   </div>;
 }

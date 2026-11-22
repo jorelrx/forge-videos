@@ -64,6 +64,12 @@ def analisar_board(canal_id: str, pedido: Analise, request: Request, tarefas: Ba
         return JSONResponse(status_code=422, background=tarefas, content={
             "error": {"code": "analise_board", "message": str(erro)},
         })
+    if reserva is None and pedido.tipo == "conversa":
+        # A conversa sempre reserva; None aqui é outra análise em andamento.
+        return JSONResponse(status_code=409, background=tarefas, content={
+            "error": {"code": "analise_em_andamento",
+                      "message": "Aguarde a análise em andamento antes de enviar a mensagem."},
+        })
     if reserva:
         dono, entrada = reserva
         tarefas.add_task(executar_analise, repo, dono, pedido, entrada, ctx, editorial, settings,

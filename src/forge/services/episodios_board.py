@@ -46,8 +46,10 @@ def _janelas(ctx, video, publicado_em, hoje):
     detalhe = {}
     try:
         inicio, fim = periodo()
-        detalhe = ctx.relatorio(inicio, fim, video={"video_id": video, "publicado_em": publicado_em},
-                                somente_cache=True).get("janelas") or {}
+        # Leitura normal, não só cache: a chave do detalhe muda com o período do dia, então
+        # só o cache quase nunca acertava. A leitura é deduplicada e renovada uma vez por dia.
+        detalhe = ctx.relatorio(inicio, fim, video={"video_id": video, "publicado_em": publicado_em}
+                                ).get("janelas") or {}
     except Exception as erro:  # o cache do detalhe é opcional; o percurso não depende dele
         log.info("janelas_board_indisponiveis", video=video, erro=type(erro).__name__)
     return {f"d{n}": {"completa": primeiro + timedelta(days=n - 1) < hoje,

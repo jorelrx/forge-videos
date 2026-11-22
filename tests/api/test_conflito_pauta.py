@@ -69,3 +69,18 @@ def test_cancelar_encerra_e_preserva_pauta(services, settings):
 def test_editar_sem_texto_e_invalido():
     with pytest.raises(ValueError):
         DecisaoConflitoPauta(artefato_id="x", acao="editar")
+
+
+def test_cancelar_registra_fim(services, settings):
+    _, _, run_id, artefato = _preparar(services, settings)
+    run = services.commands.decidir_conflito_pauta(run_id, DecisaoConflitoPauta(artefato_id=artefato, acao="cancelar"))
+    assert run.finished_at is not None
+
+
+def test_repetir_etapa_posterior_nao_pula_o_conflito(services, settings):
+    _, _, run_id, _ = _preparar(services, settings)
+    with pytest.raises(TransicaoInvalida):
+        services.commands.request_retry_stage(run_id, StageName.ROTEIRO, idempotency_key="pular")
+    run = services.commands.request_retry_stage(run_id, StageName.PESQUISA, idempotency_key="refazer")
+    snapshot = services.commands.get_run(run_id).run.config_snapshot
+    assert "aguardando_editorial" not in snapshot and snapshot["pauta_aprovada"] == APROVADA

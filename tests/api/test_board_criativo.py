@@ -286,3 +286,25 @@ def test_resposta_invalida_preserva_mensagem(client):
         assert board["erro"] == "analise_indisponivel"
         assert board["conversa"][-1]["autor"] == "criador"
     assert board["pauta"] == PAUTA
+
+
+def test_conversa_durante_outra_analise_recusa_sem_perder(client, services):
+    board = alterar(client, estado(client), "pauta", pauta=PAUTA)
+    repo = BoardRepository(services.commands.db, "pessoa", "UC1")
+    repo.reservar(board["revisao"], "sugestoes", 60, lambda atual: "entrada")
+    resp = client.post(API + "/analises", json={"revisao": board["revisao"], "tipo": "conversa", "mensagem": "Oi"})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "analise_em_andamento"
+    assert estado(client)["conversa"] == []
+
+
+def test_sem_analytics_episodio_vai_ao_modelo_sem_medida():
+    from types import SimpleNamespace
+
+    from forge.domain.board_criativo import FonteBoard
+    from forge.services.board_criativo import _fontes_permitidas
+
+    fontes = [FonteBoard(id="episodio:v", tipo="episodio", titulo="T", url="/x", observacao={"valor": 10}),
+              FonteBoard(id="desempenho:v", tipo="desempenho", titulo="T", url="/x")]
+    [restante] = _fontes_permitidas(fontes, SimpleNamespace(pode_exibir_analytics=False))
+    assert restante.id == "episodio:v" and restante.observacao is None

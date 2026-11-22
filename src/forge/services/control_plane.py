@@ -350,6 +350,8 @@ class ControlPlaneService:
             snapshot = dict(run.config_snapshot)
             if snapshot.get("aguardando_editorial") == "propostas_editoriais" and StageName.PESQUISA not in dependent_stages:
                 raise TransicaoInvalida("Escolha uma proposta ou refaça a pesquisa")
+            if snapshot.get("aguardando_editorial") == "conflito_pauta" and StageName.PESQUISA not in dependent_stages:
+                raise TransicaoInvalida("Decida o conflito da pauta ou refaça a pesquisa")
             if snapshot.get("aguardando_editorial") == "previa_abertura" and StageName.PLANO_MIDIA not in dependent_stages:
                 raise TransicaoInvalida("Aprove ou refaça a prévia antes das etapas de mídia")
             if StageName.PLANO_MIDIA in dependent_stages:
@@ -358,6 +360,11 @@ class ControlPlaneService:
                     snapshot.pop(key, None)
             if StageName.PESQUISA in dependent_stages:
                 snapshot.pop("proposta_editorial", None)
+                # Refazer a pesquisa volta a conferir a pauta aprovada com as fontes.
+                for key in ("pauta_decidida", "decisao_pauta"):
+                    snapshot.pop(key, None)
+                if snapshot.get("aguardando_editorial") == "conflito_pauta":
+                    snapshot.pop("aguardando_editorial", None)
             operacao.invalidate_from_stage(run_id, stage)
             operacao.invalidate_artifacts(run_id, dependent_stages)
             operacao.save_run(
@@ -446,6 +453,7 @@ class ControlPlaneService:
                     "status": mudar_run(run.status, RunStatus.CANCELLED),
                     "config_snapshot": snapshot,
                     "pause_requested_at": None,
+                    "finished_at": self.now(),
                 }))
                 EventosRepository(conn).append(
                     kind="run.cancelled", level="info", message="Encaminhamento da pauta cancelado",

@@ -54,10 +54,12 @@ export function mesmoValor(a: ValorCampo | undefined, b: ValorCampo | undefined)
   return JSON.stringify(a ?? "") === JSON.stringify(b ?? "");
 }
 
-/** O servidor descarta itens vazios das listas; comparar sempre a forma normalizada. */
+/** O servidor apara os textos e descarta itens vazios das listas; comparar sempre a forma normalizada. */
 export function normalizarPauta(pauta: PautaBoard): PautaBoard {
   const limpar = (itens: string[]) => itens.map(item => item.trim()).filter(Boolean);
-  return {...pauta, blocos: limpar(pauta.blocos), perguntas_pesquisa: limpar(pauta.perguntas_pesquisa),
+  const textos = Object.fromEntries(camposPauta.filter(campo => !campo.lista)
+    .map(({chave}) => [chave, (pauta[chave] as string).trim()]));
+  return {...pauta, ...textos, blocos: limpar(pauta.blocos), perguntas_pesquisa: limpar(pauta.perguntas_pesquisa),
     referencias: limpar(pauta.referencias)};
 }
 

@@ -106,3 +106,51 @@ it("salva sozinho depois de uma pausa na digitação", async () => {
   await act(async () => { vi.advanceTimersByTime(1300); });
   await waitFor(() => expect(fetcher.mock.calls.some(c => corpo(c)?.pauta?.promessa === "Entender por que adiamos")).toBe(true));
 });
+
+it("espaço no fim do texto não faz o salvamento automático repetir", async () => {
+  vi.useFakeTimers({shouldAdvanceTime: true});
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+    if (init?.method !== "PUT") return Response.json(base);
+    const enviada = JSON.parse(String(init.body)).pauta;
+    return Response.json({...base, revisao: 5, pauta: {...enviada, promessa: enviada.promessa.trim()}});
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<BoardCriativo canal="A"/>);
+
+  fireEvent.change(await screen.findByLabelText("Promessa"), {target: {value: "Entender o adiamento "}});
+  await act(async () => { vi.advanceTimersByTime(1300); });
+  await waitFor(() => expect(fetcher.mock.calls.filter(c => corpo(c)?.acao === "pauta")).toHaveLength(1));
+  await act(async () => { vi.advanceTimersByTime(4000); });
+  expect(fetcher.mock.calls.filter(c => corpo(c)?.acao === "pauta")).toHaveLength(1);
+});
+
+it("gravação de outra aba substitui a cópia local sem edição pendente", async () => {
+  vi.useFakeTimers({shouldAdvanceTime: true});
+  const salvo = {...base, revisao: 5, pauta: {...pauta, promessa: "Minha promessa"}};
+  const outraAba = {...base, revisao: 6, pauta: {...pauta, promessa: "Promessa da outra aba"}};
+  let leituras = 0;
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+    if (init?.method === "PUT") return Response.json(salvo);
+    if (init?.method === "POST") return Response.json({estado_catalogo: "atualizado", estado: "atualizado"}, {status: 202});
+    leituras += 1;
+    return Response.json(leituras === 1 ? base : outraAba);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<BoardCriativo canal="A"/>);
+
+  fireEvent.change(await screen.findByLabelText("Promessa"), {target: {value: "Minha promessa"}});
+  await act(async () => { vi.advanceTimersByTime(1300); });
+  await waitFor(() => expect(fetcher.mock.calls.some(c => corpo(c)?.acao === "pauta")).toBe(true));
+  fireEvent.click(screen.getByRole("button", {name: /Atualizar histórico/}));
+  await waitFor(() => expect((screen.getByLabelText("Promessa") as HTMLTextAreaElement).value).toBe("Promessa da outra aba"));
+  await act(async () => { vi.advanceTimersByTime(3000); });
+  expect(fetcher.mock.calls.filter(c => corpo(c)?.acao === "pauta")).toHaveLength(1);
+  expect(screen.queryByText(/Outra aba salvou a pauta/)).toBeNull();
+});
+
+it("envio da conversa espera a análise de propostas", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({...base, operacao: "sugestoes"})));
+  render(<BoardCriativo canal="A"/>);
+  fireEvent.change(await screen.findByLabelText("Mensagem"), {target: {value: "Uma pergunta"}});
+  expect((screen.getByRole("button", {name: "Enviar"}) as HTMLButtonElement).disabled).toBe(true);
+});

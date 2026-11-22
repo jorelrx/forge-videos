@@ -97,7 +97,11 @@ def preparar_analise(board, pedido, editorial):
 
 
 def _fontes_permitidas(fontes, editorial):
-    return [fonte for fonte in fontes if fonte.tipo != "desempenho" or editorial.pode_exibir_analytics]
+    """Sem Analytics autorizado, nenhuma medida guardada chega ao modelo."""
+    if editorial.pode_exibir_analytics:
+        return list(fontes)
+    return [fonte.model_copy(update={"observacao": None}) if fonte.tipo == "episodio" else fonte
+            for fonte in fontes if fonte.tipo != "desempenho"]
 
 
 def executar_analise(repo, dono, pedido, entrada, ctx, editorial, settings, modelo=None):

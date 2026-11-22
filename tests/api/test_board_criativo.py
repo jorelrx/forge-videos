@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from forge.repositories.board_criativo import BoardRepository
@@ -189,3 +191,98 @@ def test_reinicio_da_api_libera_analise_orfa(client, services, api_factory):
     repo.concluir(dono, lambda atual: setattr(atual, "analisado_em", "resultado órfão"))
     assert estado(reiniciado)["analisado_em"] is None
     assert repo.reservar(board["revisao"], "sugestoes", 60, lambda atual: "entrada") is not None
+
+
+PAUTA = {
+    "tema": "Escolhas", "titulo": "Um ensaio", "pergunta": "Por que adiamos?", "recorte": "Uma cozinha à noite",
+    "promessa": "Entender o adiamento", "abertura": "Abre na pia cheia", "blocos": ["A cena", "A virada"],
+    "desfecho": "Volta à pia", "perguntas_pesquisa": ["Quem escreveu sobre adiar?"], "referencias": ["Livro X"],
+}
+
+
+def test_pauta_antiga_abre_com_campos_novos_vazios(client, services):
+    antiga = {"revisao": 3, "pauta": {"titulo": "T", "tema": "Tema", "pergunta": "P", "recorte": "R", "promessa": "Pr"}}
+    with services.commands.db.transaction() as conn:
+        conn.execute("INSERT INTO boards_criativos (conta_id,canal_id,dados) VALUES ('pessoa','UC1',?)",
+                     (json.dumps(antiga),))
+    board = estado(client)
+    assert board["revisao"] == 3
+    assert board["pauta"]["tema"] == "Tema"
+    assert board["pauta"]["blocos"] == [] and board["pauta"]["abertura"] == ""
+    assert board["conversa"] == []
+
+
+def test_pendencias_fluxos_e_remover_guardada(client):
+    board = alterar(client, estado(client), "pauta", pauta={"titulo": "Só título"})
+    assert {p["campo"] for p in board["pendencias"]} == {"tema", "promessa", "blocos", "fluxo"}
+    assert any(f["id"] == "padrao" and f["disponivel"] for f in board["fluxos"])
+    board = alterar(client, board, "pauta", pauta={**PAUTA, "blocos": ["", "  "]})
+    assert board["pauta"]["blocos"] == []
+    board = alterar(client, board, "pauta", pauta=PAUTA)
+    board = alterar(client, board, "fluxo", fluxo_id="padrao")
+    assert board["pendencias"] == []
+    inexistente = client.put(API, json={"revisao": board["revisao"], "acao": "fluxo", "fluxo_id": "nao-existe"})
+    assert inexistente.status_code == 422
+
+    client.app.state.modelo_board = Modelo
+    board = alterar(client, board, "posicionamento", texto="Canal")
+    board = analisar(client, board)
+    ideia = board["propostas"][0]["id"]
+    board = alterar(client, board, "guardar", ideia_id=ideia)
+    board = alterar(client, board, "remover_guardada", ideia_id=ideia)
+    assert board["guardadas"] == []
+
+
+class ModeloConversa(Modelo):
+    def __init__(self, alteracoes):
+        super().__init__()
+        self.alteracoes = alteracoes
+
+    def invoke(self, messages):
+        self.chamadas += 1
+        return {"parsed": {"resposta": "Sugiro outra abertura.", "alteracoes": self.alteracoes}}
+
+
+def conversar(client, board, texto="Melhore a abertura"):
+    resp = client.post(API + "/analises", json={"revisao": board["revisao"], "tipo": "conversa", "mensagem": texto})
+    assert resp.status_code == 202, resp.text
+    return estado(client)
+
+
+def test_conversa_propoe_so_abertura_e_aplica_so_ela(client):
+    board = alterar(client, estado(client), "pauta", pauta=PAUTA)
+    client.app.state.modelo_board = lambda: ModeloConversa([{"campo": "abertura", "valor": "Abre no ônibus lotado"}])
+    board = conversar(client, board)
+    criador, ia = board["conversa"]
+    assert criador["autor"] == "criador" and criador["texto"] == "Melhore a abertura"
+    assert ia["autor"] == "ia" and ia["base_revisao"] == board["revisao"] - 1
+    assert ia["alteracoes"] == [{"campo": "abertura", "anterior": "Abre na pia cheia", "valor": "Abre no ônibus lotado"}]
+    assert board["pauta"] == PAUTA
+    board = alterar(client, board, "aplicar_sugestao", mensagem_id=ia["id"], campos=["abertura"])
+    assert board["pauta"] == {**PAUTA, "abertura": "Abre no ônibus lotado"}
+    assert board["conversa"][1]["aplicadas"] == ["abertura"]
+
+
+def test_sugestao_sobre_revisao_vencida_reaplica(client):
+    board = alterar(client, estado(client), "pauta", pauta=PAUTA)
+    client.app.state.modelo_board = lambda: ModeloConversa([{"campo": "abertura", "valor": "Nova abertura"}])
+    board = conversar(client, board)
+    ia = board["conversa"][-1]["id"]
+    outra = alterar(client, board, "pauta", pauta={**PAUTA, "desfecho": "Desfecho da outra aba"})
+    vencida = client.put(API, json={"revisao": board["revisao"], "acao": "aplicar_sugestao",
+                                    "mensagem_id": ia, "campos": ["abertura"]})
+    assert vencida.status_code == 409
+    board = alterar(client, outra, "aplicar_sugestao", mensagem_id=ia, campos=["abertura"])
+    assert board["pauta"]["abertura"] == "Nova abertura"
+    assert board["pauta"]["desfecho"] == "Desfecho da outra aba"
+
+
+def test_resposta_invalida_preserva_mensagem(client):
+    board = alterar(client, estado(client), "pauta", pauta=PAUTA)
+    for alteracoes in ([{"campo": "inventado", "valor": "x"}], [{"campo": "abertura", "valor": ["lista"]}],
+                       [{"campo": "blocos", "valor": "texto"}]):
+        client.app.state.modelo_board = lambda: ModeloConversa(alteracoes)
+        board = conversar(client, board, "Pedido")
+        assert board["erro"] == "analise_indisponivel"
+        assert board["conversa"][-1]["autor"] == "criador"
+    assert board["pauta"] == PAUTA

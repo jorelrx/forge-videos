@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
 Tipo = Literal["continuacao", "publico", "experimento"]
@@ -16,6 +16,47 @@ class PautaInicial(BaseModel):
     pergunta: Texto = ""
     recorte: Texto = ""
     promessa: Texto = ""
+
+
+class Pauta(PautaInicial):
+    """A pauta editável do episódio. Campos novos têm padrão: rascunhos antigos continuam válidos."""
+    abertura: Texto = ""
+    blocos: list[Texto] = Field(default_factory=list, max_length=12)
+    desfecho: Texto = ""
+    perguntas_pesquisa: list[Curto] = Field(default_factory=list, max_length=8)
+    referencias: list[Curto] = Field(default_factory=list, max_length=10)
+
+    @field_validator("blocos", "perguntas_pesquisa", "referencias")
+    @classmethod
+    def sem_itens_vazios(cls, itens: list[str]) -> list[str]:
+        return [item for item in itens if item]
+
+    def vazia(self) -> bool:
+        return not any(self.model_dump().values())
+
+
+CAMPOS_PAUTA = ("tema", "titulo", "pergunta", "recorte", "promessa", "abertura", "blocos", "desfecho",
+                "perguntas_pesquisa", "referencias")
+CAMPOS_LISTA = frozenset({"blocos", "perguntas_pesquisa", "referencias"})
+CampoPauta = Literal["tema", "titulo", "pergunta", "recorte", "promessa", "abertura", "blocos", "desfecho",
+                     "perguntas_pesquisa", "referencias"]
+ValorCampo = str | list[str]
+
+
+class AlteracaoCampo(BaseModel):
+    campo: CampoPauta
+    anterior: ValorCampo
+    valor: ValorCampo
+
+
+class MensagemBoard(BaseModel):
+    id: str
+    autor: Literal["criador", "ia"]
+    texto: str
+    criada_em: str
+    base_revisao: int | None = None
+    alteracoes: list[AlteracaoCampo] = Field(default_factory=list)
+    aplicadas: list[str] = Field(default_factory=list)
 
 
 class FonteBoard(BaseModel):
@@ -60,8 +101,10 @@ class RascunhoBoard(BaseModel):
     propostas: list[Ideia] = Field(default_factory=list)
     guardadas: list[Ideia] = Field(default_factory=list)
     candidata: Ideia | None = None
-    pauta: PautaInicial | None = None
+    pauta: Pauta | None = None
     origem_pauta: Ideia | None = None
+    fluxo_id: str | None = None
+    conversa: list[MensagemBoard] = Field(default_factory=list)
     analisado_em: str | None = None
     erro: Literal["analise_indisponivel"] | None = None
 
@@ -71,6 +114,12 @@ class RascunhoBoard(BaseModel):
             if ideia.id == ideia_id and ideia.motivo_descarte is None:
                 return ideia
         raise ValueError("Ideia indisponível neste rascunho.")
+
+    def mensagem(self, mensagem_id: str) -> MensagemBoard:
+        for mensagem in self.conversa:
+            if mensagem.id == mensagem_id and mensagem.autor == "ia":
+                return mensagem
+        raise ValueError("Sugestão indisponível nesta conversa.")
 
 
 class Revisao(BaseModel):
@@ -85,7 +134,7 @@ class Posicionamento(Revisao):
 
 class PautaManual(Revisao):
     acao: Literal["pauta"]
-    pauta: PautaInicial
+    pauta: Pauta
 
 
 class DecisaoIdeia(Revisao):
@@ -94,7 +143,24 @@ class DecisaoIdeia(Revisao):
     motivo: Curto = ""
 
 
-Comando = Annotated[Posicionamento | PautaManual | DecisaoIdeia, Field(discriminator="acao")]
+class EscolhaFluxo(Revisao):
+    acao: Literal["fluxo"]
+    fluxo_id: Curto
+
+
+class RemoverGuardada(Revisao):
+    acao: Literal["remover_guardada"]
+    ideia_id: Curto
+
+
+class AplicarSugestao(Revisao):
+    acao: Literal["aplicar_sugestao"]
+    mensagem_id: Curto
+    campos: list[CampoPauta] = Field(min_length=1)
+
+
+Comando = Annotated[Posicionamento | PautaManual | DecisaoIdeia | EscolhaFluxo | RemoverGuardada | AplicarSugestao,
+                    Field(discriminator="acao")]
 
 
 class GerarSugestoes(Revisao):
@@ -107,4 +173,9 @@ class CombinarIdeias(Revisao):
     ideias: tuple[Curto, Curto]
 
 
-Analise = Annotated[GerarSugestoes | CombinarIdeias, Field(discriminator="tipo")]
+class Conversar(Revisao):
+    tipo: Literal["conversa"]
+    mensagem: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+
+Analise = Annotated[GerarSugestoes | CombinarIdeias | Conversar, Field(discriminator="tipo")]

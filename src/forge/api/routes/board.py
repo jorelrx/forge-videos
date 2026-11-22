@@ -6,10 +6,12 @@ from fastapi.responses import JSONResponse
 
 from forge.api.errors import validation_error
 from forge.api.routes.insights import contexto
-from forge.domain.board_criativo import Analise, Comando
+from forge.domain.board_criativo import Analise, Comando, EscolhaFluxo
 from forge.repositories.board_criativo import BoardRepository, ConflitoBoard
 from forge.services.board_contexto import ler_contexto
-from forge.services.board_criativo import aplicar_comando, executar_analise, expor_board, preparar_analise
+from forge.services.board_criativo import (
+    aplicar_comando, executar_analise, expor_board, fluxos_compativeis, preparar_analise, validar_fluxo,
+)
 
 board_router = APIRouter(prefix="/canais/{canal_id}/board")
 
@@ -24,20 +26,23 @@ def _conflito(erro, tarefas):
 def get_board(canal_id: str, request: Request, tarefas: BackgroundTasks):
     ctx = contexto(request, canal_id, tarefas)
     board, operacao = BoardRepository(ctx.db, ctx.conta, ctx.canal).ler()
-    return expor_board(board, operacao, ler_contexto(ctx))
+    return expor_board(board, operacao, ler_contexto(ctx), fluxos_compativeis(ctx.db, ctx.canal))
 
 
 @board_router.put("")
 def put_board(canal_id: str, comando: Comando, request: Request, tarefas: BackgroundTasks):
     ctx = contexto(request, canal_id, tarefas)
     repo = BoardRepository(ctx.db, ctx.conta, ctx.canal)
+    fluxos = fluxos_compativeis(ctx.db, ctx.canal)
     try:
+        if isinstance(comando, EscolhaFluxo):
+            validar_fluxo(fluxos, comando.fluxo_id)
         board, operacao = repo.alterar(comando.revisao, partial(aplicar_comando, comando=comando))
     except ConflitoBoard as erro:
         return _conflito(erro, tarefas)
     except ValueError as erro:
         validation_error(str(erro))
-    return expor_board(board, operacao, ler_contexto(ctx))
+    return expor_board(board, operacao, ler_contexto(ctx), fluxos)
 
 
 @board_router.post("/analises", status_code=202)
@@ -60,4 +65,4 @@ def analisar_board(canal_id: str, pedido: Analise, request: Request, tarefas: Ba
         tarefas.add_task(executar_analise, repo, dono, pedido, entrada, ctx, editorial, settings,
                          getattr(request.app.state, "modelo_board", None))
     board, operacao = repo.ler()
-    return expor_board(board, operacao, editorial)
+    return expor_board(board, operacao, editorial, fluxos_compativeis(ctx.db, ctx.canal))

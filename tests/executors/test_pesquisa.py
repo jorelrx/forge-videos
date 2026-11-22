@@ -204,3 +204,50 @@ def test_research_unavailable_has_stable_transient_failure(tmp_path):
 
     assert result.failure_class is FailureClass.TRANSIENT
     assert result.gate.findings[0].code == "research_unavailable"
+
+
+def test_pesquisa_com_pauta_usa_briefing_e_pausa_em_contradicao(tmp_path, monkeypatch):
+    import forge.executors.pesquisa as modulo
+    from forge.domain.pauta import ConferenciaPauta
+
+    pedidos = []
+    original = modulo.pesquisar
+
+    def espiao(*args, **kwargs):
+        pedidos.append(kwargs.get("pedido"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(modulo, "pesquisar", espiao)
+    monkeypatch.setattr(modulo, "conferir_pauta", lambda *a, **k: ConferenciaPauta(
+        compativel=False, explicacao="A fonte contraria.", evidencias=["12/ch1/p1"], recorte_proposto="Outro recorte"))
+    snapshot = _snapshot(tmp_path).model_copy(update={"config_snapshot": {"pauta_aprovada": {
+        "tema": "A consciência", "promessa": "Promessa", "recorte": "Recorte", "perguntas_pesquisa": ["Quem disse?"]}}})
+    events = []
+    executor = ResearchExecutor(model=FakeModel(), acervo=FakeAcervo([passage("12/ch1/p1")]), minimum_sources=1,
+                                settings=Settings(_env_file=None, juiz_relevancia=False))
+
+    result = executor.run(snapshot, lambda **event: events.append(event))
+
+    assert result.gate.approved
+    assert "Pergunta de pesquisa: Quem disse?" in pedidos[0]
+    conflito = next(e["payload"] for e in events if e["payload"].get("kind") == "conflito_pauta")
+    assert conflito["metadata"]["recorte_proposto"] == "Outro recorte"
+    assert conflito["metadata"]["promessa_proposta"] == "Promessa"
+    assert conflito["metadata"]["evidencias"][0]["trecho"] == "evidência literal"
+
+
+def test_falha_da_conferencia_nao_trava_a_pesquisa(tmp_path, monkeypatch):
+    import forge.executors.pesquisa as modulo
+
+    def quebra(*a, **k):
+        raise TimeoutError()
+
+    monkeypatch.setattr(modulo, "conferir_pauta", quebra)
+    snapshot = _snapshot(tmp_path).model_copy(update={"config_snapshot": {"pauta_aprovada": {"tema": "A consciência"}}})
+    events = []
+    executor = ResearchExecutor(model=FakeModel(), acervo=FakeAcervo([passage("12/ch1/p1")]), minimum_sources=1,
+                                settings=Settings(_env_file=None, juiz_relevancia=False))
+    result = executor.run(snapshot, lambda **event: events.append(event))
+    assert result.gate.approved
+    assert not any(e["payload"].get("kind") == "conflito_pauta" for e in events)
+    assert any(e["level"] == "warning" for e in events)

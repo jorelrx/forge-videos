@@ -9,6 +9,8 @@ from typing import Any
 
 from forge.agents.research import ResearchBundle, pesquisar
 from forge.agents.editorial import propor_recortes
+from forge.agents.pauta import conferir_pauta
+from forge.domain.pauta import ConflitoPauta
 from forge.domain.execucao import (
     ArtifactOutput,
     FailureDetail,
@@ -113,12 +115,15 @@ class ResearchExecutor(StageImplementation):
     ) -> StageExecutionResult:
         model, acervo, broker = self._runtime()
         recortes = None
+        conflito = None
+        pauta = context.pauta_episodio
         try:
             with broker.exclusivo("llm"):
                 bundle = pesquisar(
                     model,
                     context.tema,
                     acervo,
+                    pedido=pauta.briefing_pesquisa() if pauta else None,
                     top=self.settings.acervo_top,
                     settings=self.settings,
                     run_dir=context.run_dir,
@@ -135,6 +140,8 @@ class ResearchExecutor(StageImplementation):
                         referencias_editoriais=context.config_snapshot.get("referencias_editoriais") or "",
                         run_dir=context.run_dir,
                     )
+                if pauta is not None and context.config_snapshot.get("pauta_decidida") is None:
+                    conflito = self._conferir(model, pauta, bundle, context, emit)
             self._bundle = bundle
             paths = self._write_artifacts(context.run_dir, bundle, emit)
             if recortes is not None:
@@ -145,6 +152,16 @@ class ResearchExecutor(StageImplementation):
                     mime_type="application/json", metadata=recortes.model_dump(mode="json"),
                 )
                 emit(kind="artifact.created", level="info", message="Recortes editoriais disponíveis",
+                     payload=artifact.model_dump(mode="json"))
+                paths.append(artifact)
+            if conflito is not None:
+                destino = "video/conflito-pauta.json"
+                gravar_modelo(context.run_dir / destino, conflito)
+                artifact = ArtifactOutput(
+                    kind="conflito_pauta", relative_path=destino,
+                    mime_type="application/json", metadata=conflito.model_dump(mode="json"),
+                )
+                emit(kind="artifact.created", level="info", message="A pesquisa contraria a pauta aprovada",
                      payload=artifact.model_dump(mode="json"))
                 paths.append(artifact)
             return StageExecutionResult(
@@ -168,6 +185,27 @@ class ResearchExecutor(StageImplementation):
                     services={"acervo": "unavailable"},
                 ),
             )
+
+    @staticmethod
+    def _conferir(model, pauta, bundle, context, emit):
+        """Devolve o conflito a decidir, ou None. Falha técnica não trava a execução."""
+        try:
+            conferencia = conferir_pauta(model, pauta, bundle, run_dir=context.run_dir)
+        except Exception as erro:
+            emit(kind="stage.progress", level="warning",
+                 message="A conferência da pauta com o acervo falhou; a execução segue com a pauta aprovada",
+                 payload={"erro": type(erro).__name__})
+            return None
+        if conferencia.compativel:
+            return None
+        trechos = {p.path: p for p in bundle.passages if p.path}
+        return ConflitoPauta(
+            promessa=pauta.promessa, recorte=pauta.recorte, explicacao=conferencia.explicacao,
+            evidencias=[{"path": c, "titulo": trechos[c].title, "trecho": trechos[c].text[:600]}
+                        for c in conferencia.evidencias],
+            recorte_proposto=conferencia.recorte_proposto or pauta.recorte,
+            promessa_proposta=conferencia.promessa_proposta or pauta.promessa,
+        )
 
     @staticmethod
     def _write_artifacts(

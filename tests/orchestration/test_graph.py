@@ -317,3 +317,17 @@ def test_research_nao_chama_a_camada_de_conhecimento():
     fonte = Path(modulo.__file__).read_text(encoding="utf-8")
     assert "knowledge" not in fonte
     assert "consultar_e_aprender" not in fonte
+
+
+def test_diretrizes_incluem_a_pauta_decidida():
+    from forge.domain.fluxo_geracao import FLUXOS_INICIAIS
+    from forge.domain.pauta import PautaEpisodio
+    from forge.orchestration.graph import montar_diretrizes
+
+    pauta = PautaEpisodio(recorte="O medo de ser avaliado", abertura="Abre na pia", blocos=["Cena"])
+    gancho = next(f for f in FLUXOS_INICIAIS if f.id == "gancho-inicial")
+    texto = montar_diretrizes(gancho, pauta_episodio=pauta)
+    assert "Recorte: O medo de ser avaliado" in texto
+    assert "Abertura: Abre na pia" in texto
+    assert "primeiros 30 segundos" in texto
+    assert montar_diretrizes() == ""

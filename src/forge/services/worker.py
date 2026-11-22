@@ -478,15 +478,17 @@ class StudioWorker:
                 run_id=context.run.id,
                 stage_run_id=context.stage_run.id,
             )
-            if not result.failed and run.config_snapshot.get("revisao_editorial"):
-                checkpoint = {
-                    StageName.PESQUISA: "propostas_editoriais",
-                    StageName.PLANO_MIDIA: "previa_abertura",
-                }.get(stage.stage)
-                if checkpoint and any(
-                    artifact.get("kind") == checkpoint
-                    for artifact in result.outputs.get("artifacts", [])
-                ):
+            if not result.failed and (
+                run.config_snapshot.get("revisao_editorial") or run.config_snapshot.get("pauta_aprovada")
+            ):
+                # Uma pauta do Board pausa na pesquisa só quando as fontes a contrariam.
+                candidatos = {
+                    StageName.PESQUISA: ("conflito_pauta", "propostas_editoriais"),
+                    StageName.PLANO_MIDIA: ("previa_abertura",),
+                }.get(stage.stage, ())
+                produzidos = {artifact.get("kind") for artifact in result.outputs.get("artifacts", [])}
+                checkpoint = next((kind for kind in candidatos if kind in produzidos), None)
+                if checkpoint:
                     finished_run = operacao.save_run(run.model_copy(update={
                         "status": mudar_run(mudar_run(run.status, RunStatus.PAUSING), RunStatus.PAUSED),
                         "lease_owner": None,

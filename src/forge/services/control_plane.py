@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel
 
+from forge.domain.pauta import ConflitoPauta, DecisaoConflitoPauta
 from forge.domain.editorial import DecisaoAbertura, EscolhaEditorial, PropostasEditoriais
 from forge.domain.operacao import (
     Artifact,
@@ -426,6 +427,38 @@ class ControlPlaneService:
                 snapshot["reusar_plano_abertura"] = True
                 repo.invalidate_from_stage(run_id, StageName.PLANO_MIDIA)
                 repo.invalidate_artifacts(run_id, dependentes_de(StageName.PLANO_MIDIA))
+            return self._continuar_editorial(conn, repo, run, snapshot)
+
+    def decidir_conflito_pauta(self, run_id: str, decisao: DecisaoConflitoPauta) -> Run:
+        """Registra a decisão na execução; a pauta aprovada no snapshot nunca muda."""
+        with self.db.transaction(immediate=True) as conn:
+            repo = OperacaoRepository(conn)
+            run, artifact = self._checkpoint(repo, run_id, decisao.artefato_id, "conflito_pauta")
+            conflito = ConflitoPauta.model_validate(artifact.metadata)
+            snapshot = dict(run.config_snapshot)
+            aprovada = snapshot["pauta_aprovada"]
+            registro = {"acao": decisao.acao, "artefato_id": artifact.id, "em": self.now().isoformat(),
+                        "explicacao": conflito.explicacao}
+            if decisao.acao == "cancelar":
+                snapshot.pop("aguardando_editorial", None)
+                snapshot["decisao_pauta"] = registro
+                cancelada = repo.save_run(run.model_copy(update={
+                    "status": mudar_run(run.status, RunStatus.CANCELLED),
+                    "config_snapshot": snapshot,
+                    "pause_requested_at": None,
+                }))
+                EventosRepository(conn).append(
+                    kind="run.cancelled", level="info", message="Encaminhamento da pauta cancelado",
+                    payload={}, run_id=run.id,
+                )
+                return cancelada
+            if decisao.acao == "aceitar":
+                ajuste = {"recorte": conflito.recorte_proposto, "promessa": conflito.promessa_proposta}
+            else:
+                ajuste = {campo: valor for campo, valor in
+                          (("recorte", decisao.recorte), ("promessa", decisao.promessa)) if valor}
+            snapshot["pauta_decidida"] = {**aprovada, **ajuste}
+            snapshot["decisao_pauta"] = {**registro, **ajuste}
             return self._continuar_editorial(conn, repo, run, snapshot)
 
     def _checkpoint(

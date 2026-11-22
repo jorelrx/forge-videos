@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from forge.domain.fluxo_geracao import FluxoGeracao
+from forge.domain.pauta import PautaEpisodio
 from forge.domain.editorial import PropostaEditorial
 from forge.domain.operacao import Artifact, JSON_OBJECT, StageName, WorkItem
 
@@ -142,6 +143,12 @@ class RunSnapshot(BaseModel):
         if "fluxo_geracao" in self.config_snapshot:
             return FluxoGeracao.model_validate(self.config_snapshot["fluxo_geracao"])
         return None
+
+    @property
+    def pauta_episodio(self) -> PautaEpisodio | None:
+        """A pauta decidida depois de um conflito vence a aprovada; a aprovada fica no snapshot."""
+        pauta = self.config_snapshot.get("pauta_decidida") or self.config_snapshot.get("pauta_aprovada")
+        return PautaEpisodio.model_validate(pauta) if pauta else None
 
     @property
     def proposta_editorial(self) -> PropostaEditorial | None:

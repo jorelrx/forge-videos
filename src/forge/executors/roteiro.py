@@ -224,6 +224,8 @@ class ScriptExecutor(StageImplementation):
         contexto_editorial = (
             {"proposta_editorial": proposta, "tese_editorial": context.tese} if proposta else {}
         )
+        if context.pauta_episodio is not None:
+            contexto_editorial["pauta_episodio"] = context.pauta_episodio
         model, broker = self._runtime()
         bundle = self._load_bundle(context.run_dir)
         resumed = self._resume_content(context, bundle)

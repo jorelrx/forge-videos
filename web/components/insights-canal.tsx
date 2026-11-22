@@ -1,7 +1,18 @@
 "use client";
 import { useCallback, useState } from "react";
 import { Atualizacao, Observacoes, SerieDiaria, useLeitura } from "./leitura-insights";
-import { comConsulta, dataPublicacao, numero, somentePeriodo, type ListaVideos, type Resumo } from "../lib/insights";
+import { comConsulta, dataCivil, dataPublicacao, numero, somentePeriodo, type ListaVideos, type Resumo } from "../lib/insights";
+import { IconArrowRight, IconProduction } from "./icons";
+
+const medidas = [{id:"views", nome:"Visualizações"}, {id:"minutos", nome:"Minutos assistidos"}] as const;
+
+function Comparacao({valor, anterior}:{valor:number|null;anterior:number|null|undefined}) {
+  if (valor == null || anterior == null) return <small>Comparação indisponível</small>;
+  if (anterior === 0) return <small>Período anterior · 0</small>;
+  const variacao = (valor - anterior) / anterior;
+  const rotulo = new Intl.NumberFormat("pt-BR", {style:"percent", signDisplay:"exceptZero", maximumFractionDigits:1}).format(variacao);
+  return <small><b className={variacao > 0 ? "metric-up" : undefined}>{rotulo}</b> · anterior {numero(anterior)}</small>;
+}
 
 export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) {
   const [versao,setVersao] = useState(0);
@@ -23,34 +34,51 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
 
   const primeira = new URLSearchParams(persistidos);
   primeira.delete("cursor");
+  const top = dados?.contribuicoes.filter(video => video.views != null)
+    .sort((a,b) => b.views! - a.views!).slice(0,5) ?? [];
 
   return <main className="channel-page">
-    <h1>Vídeos e insights</h1>
-    <form className="catalog-filters" action={base}>
+    <header className="insight-heading">
+      <div><h1>Vídeos e insights</h1><p>Desempenho do canal e vídeos publicados.</p></div>
+      <a className="btn" href={base + "/producao"}>Abrir produção <IconArrowRight size={15}/></a>
+    </header>
+    <div className="insight-toolbar">
+    <form className="catalog-filters period-filters" action={base}>
       {["busca","ordem","publicado_de","publicado_ate"].map(k=>parametros.has(k) && <input key={k} type="hidden" name={k} value={parametros.get(k)!}/>)}
       <label>Início do período<input key={inicio} type="date" name="inicio" defaultValue={inicio} required/></label>
       <label>Fim do período<input key={fim} type="date" name="fim" defaultValue={fim} required/></label>
       <button className="btn" type="submit">Aplicar período</button>
     </form>
     <Atualizacao canal={canal} consulta={query} estado={dados?.estado} estadoCatalogo={dados?.estado_catalogo} ultima={dados?.ultima_atualizacao} atualizar={atualizar}/>
-    {(resumo.erro || lista.erro) && <div role="alert">{resumo.erro || lista.erro} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
+    </div>
+    {(resumo.erro || lista.erro) && <div className="insight-alert" role="alert">{resumo.erro || lista.erro} <button className="btn" onClick={atualizar}>Tentar novamente</button></div>}
     {dados && <>
-      <div className="channel-metrics">
-        {[["Visualizações",dados.views,dados.comparacao?.views],["Tempo de exibição (min)",dados.minutos,dados.comparacao?.minutos]].map(([nome,valor,anterior])=>
-          <a className="channel-metric" href={nome === "Visualizações" ? "#views" : "#minutos"} onClick={()=>{const item=document.getElementById(nome === "Visualizações" ? "views" : "minutos");if(item instanceof HTMLDetailsElement)item.open=true;}} key={nome}><span>{nome}</span><strong>{numero(valor as number|null)}</strong>
-            {anterior != null && <small>Período anterior · {numero(anterior as number)}</small>}</a>)}
-      </div>
-      <SerieDiaria serie={dados.serie}/>
-      <section className="evidence-list"><h2>Evidências do período</h2>
-        <Observacoes itens={dados.observacoes} base={base} consulta={query}/>
-        {dados.contribuicoes.length>0 && <section><h3>Contribuição por vídeo</h3>
-          {dados.amostra != null && <p>Amostra · {dados.amostra}</p>}
-          <ul>{dados.contribuicoes.map(v=><li key={v.video_id}><a href={comConsulta(base+"/videos/"+encodeURIComponent(v.video_id),query)}>{v.video_id}</a> · {numero(v.views)} visualizações</li>)}</ul>
-        </section>}
+      <section className="panel insight-summary" aria-label="Resumo do período">
+        <div className="insight-section-header"><h2>Resumo do período</h2>
+          <span>{dataCivil(dados.inicio)} – {dataCivil(dados.fim)}</span></div>
+        <div className="channel-metrics">
+          {medidas.map(({id,nome}) => <div className="channel-metric" key={id}>
+            <span>{nome}</span><strong>{numero(dados[id])}</strong>
+            <Comparacao valor={dados[id]} anterior={dados.comparacao?.[id]}/>
+          </div>)}
+        </div>
       </section>
+      <div className={top.length ? "insight-analysis with-ranking" : "insight-analysis"}>
+        <SerieDiaria serie={dados.serie} inicio={dados.inicio} fim={dados.fim}/>
+        {top.length > 0 && <section className="panel insight-ranking">
+          <div className="insight-section-header"><h2>Mais vistos no período</h2></div>
+          <ol>{top.map(video => <li key={video.video_id}>
+            <a href={comConsulta(base+"/videos/"+encodeURIComponent(video.video_id),query)}>{video.titulo || "Vídeo " + video.video_id}</a>
+            <span>{numero(video.views)} <small>visualizações</small></span>
+          </li>)}</ol>
+          {dados.amostra != null && <p>Amostra de {dados.amostra} vídeos</p>}
+        </section>}
+      </div>
     </>}
-    <section className="channel-catalog"><h2>Catálogo de vídeos</h2>
-      {dados?.ultima_atualizacao_catalogo && <p>Última atualização do catálogo · {new Date(dados.ultima_atualizacao_catalogo).toLocaleString("pt-BR")}</p>}
+    <section className="panel channel-catalog">
+      <div className="insight-section-header"><h2>Catálogo de vídeos</h2>
+        {dados?.ultima_atualizacao_catalogo && <span>Catálogo atualizado em {new Date(dados.ultima_atualizacao_catalogo).toLocaleString("pt-BR")}</span>}
+      </div>
       <form action={base} className="catalog-filters">
         {inicio && <input type="hidden" name="inicio" value={inicio}/>}
         {fim && <input type="hidden" name="fim" value={fim}/>}
@@ -62,16 +90,23 @@ export function InsightsCanal({canal, consulta}:{canal:string;consulta:string}) 
         </select></label>
         <button className="btn btn-primary" type="submit">Filtrar vídeos</button>
       </form>
-      {lista.dados ? lista.dados.videos.length ? <ul className="catalog-items">{lista.dados.videos.map(v=>
+      {lista.dados ? lista.dados.videos.length ? <div className="catalog-results">
+        <div className="catalog-columns" aria-hidden="true"><span>Vídeo</span><span>Visualizações</span></div>
+        <ul className="catalog-items">{lista.dados.videos.map(v=>
         <li key={v.video_id}>
-          {v.thumbnail ? <img alt="" loading="lazy" src={v.thumbnail}/> : <span className="catalog-placeholder" aria-hidden="true">▶</span>}
-          <div><a href={comConsulta(base+"/videos/"+encodeURIComponent(v.video_id),query)}>{v.titulo}</a><small>{dataPublicacao(v.publicado_em)}</small></div>
-          <span><b>{numero(v.views)}</b><small>visualizações</small></span>
-        </li>)}</ul> : <p>Nenhum vídeo encontrado.</p> : !lista.erro && <p role="status">Carregando catálogo…</p>}
+          <a className="catalog-video" href={comConsulta(base+"/videos/"+encodeURIComponent(v.video_id),query)} aria-label={v.titulo}>
+            {v.thumbnail ? <img alt="" loading="lazy" src={v.thumbnail}/> : <span className="catalog-placeholder" aria-hidden="true"><IconProduction size={22}/></span>}
+            <span><b>{v.titulo}</b><small>{dataPublicacao(v.publicado_em)} · {v.run_id ? "Publicado pelo Forge" : "YouTube"}</small></span>
+          </a>
+          <span className="catalog-number"><b>{numero(v.views)}</b><small>visualizações</small></span>
+        </li>)}</ul></div> : <p className="insight-empty">Nenhum vídeo encontrado.</p> : !lista.erro && <p className="insight-empty" role="status">Carregando catálogo…</p>}
       <div className="catalog-pagination">
         {parametros.has("cursor") && <a className="btn" href={comConsulta(base,primeira.toString())}>Primeira página</a>}
         {lista.dados?.proximo_cursor && <a className="btn" href={comConsulta(base,seguinte.toString())}>Próxima página</a>}
       </div>
     </section>
+    {dados && <section className="panel evidence-list"><h2>Fontes e cobertura</h2>
+      <Observacoes itens={dados.observacoes} base={base} consulta={query}/>
+    </section>}
   </main>;
 }

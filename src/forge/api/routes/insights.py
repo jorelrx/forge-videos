@@ -48,12 +48,15 @@ def resumo(request: Request, canal_id: str, tarefas: BackgroundTasks,
     estado, data = ctx.catalogo()
     resultado = ctx.relatorio(*datas)
     with ctx.db.connection() as conn:
-        ids = {r[0] for r in conn.execute("SELECT video_id FROM catalogo_canal WHERE canal_id=?", (canal_id,))}
-    if estado == "atualizado" and not ids:
+        titulos = dict(conn.execute("SELECT video_id, titulo FROM catalogo_canal WHERE canal_id=?", (canal_id,)))
+    if estado == "atualizado" and not titulos:
         estado = "canal_vazio"
     resultado["estado_catalogo"] = estado
     resultado["ultima_atualizacao_catalogo"] = data
-    resultado["contribuicoes"] = [r for r in resultado["contribuicoes"] if r["video_id"] in ids]
+    resultado["contribuicoes"] = [
+        {**item, "titulo": titulos[item["video_id"]]}
+        for item in resultado["contribuicoes"] if item["video_id"] in titulos
+    ]
     if estado == "canal_vazio" and resultado["estado"] == "sem_dados":
         resultado["estado"] = estado
     return resultado

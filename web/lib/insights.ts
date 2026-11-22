@@ -17,7 +17,7 @@ export interface Resumo extends Leitura {
   ultima_atualizacao_catalogo?: string | null;
   estado_catalogo: string; views: number | null; minutos: number | null;
   comparacao: {views: number | null; minutos: number | null} | null;
-  contribuicoes: {video_id:string;views:number | null}[];
+  contribuicoes: {video_id:string;titulo?:string;views:number | null}[];
   amostra: number | string | null;
 }
 export interface Detalhe extends Leitura {

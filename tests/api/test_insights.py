@@ -53,7 +53,11 @@ JANELA = {"inicio": "2026-01-01", "fim": "2026-01-01"}
 def test_fluxo_publicado_externo_e_paginacao(client, fonte):
     r = client.post(BASE+"/sincronizacoes", params=JANELA)
     assert r.status_code == 202, r.text
-    assert client.get(BASE+"/resumo", params=JANELA).json()["views"] == 120
+    resumo = client.get(BASE+"/resumo", params=JANELA).json()
+    assert resumo["views"] == 120
+    assert {item["titulo"] for item in resumo["contribuicoes"]} == {
+        "Externo a", "Externo b", "Externo antigo",
+    }
     params = dict(**JANELA, limite=1, ordem="resultado", busca="Externo")
     ids = []
     while True:

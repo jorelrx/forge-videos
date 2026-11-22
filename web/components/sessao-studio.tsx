@@ -1,5 +1,8 @@
 "use client";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { IconArrowRight } from "./icons";
+import { Sidebar } from "./sidebar";
 import { ApiError, cancelarRequisicoes, SESSAO_EXPIRADA, studioRequest } from "../lib/api";
 import { VinculoCanal } from "./vinculo-canal";
 
@@ -18,22 +21,12 @@ export function SessaoStudio({canalId, children}: {canalId?: string; children?: 
 }
 
 function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}) {
+  const pathname = usePathname();
   const [acesso, setAcesso] = useState<Acesso | null>(null);
   const [anonimo, setAnonimo] = useState(false);
   const [erro, setErro] = useState("");
   const [versao, setVersao] = useState(0);
-  const [menu, setMenu] = useState(false);
-  const gatilho = useRef<HTMLButtonElement>(null);
   const [ocupado, setOcupado] = useState(false);
-  useEffect(() => {
-    if (!menu) return;
-    document.querySelector<HTMLAnchorElement>("#channel-nav a")?.focus();
-    const fechar = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {setMenu(false);gatilho.current?.focus();}
-    };
-    document.addEventListener("keydown", fechar);
-    return () => document.removeEventListener("keydown", fechar);
-  }, [menu]);
   const revalidar = useCallback(() => {
     cancelarRequisicoes();
     setAcesso(null);
@@ -47,7 +40,6 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
     const expirar = () => {
       cancelarRequisicoes();
       setAcesso(null);
-      setMenu(false);
       setErro("");
       setAnonimo(true);
     };
@@ -121,38 +113,51 @@ function Entrada({ canalId, children }: {canalId?: string; children?: ReactNode}
   if (!acesso) {
     const retorno = typeof window === "undefined" ? "/" : location.pathname + location.search + location.hash;
     return <main className="studio-entry"><div className="entry-card">
-      <h1>Forge Studio</h1>{anonimo ? <a className="btn btn-primary" href={"/api/sessao/google?retorno=" + encodeURIComponent(retorno)}>Entrar com Google</a> :
+      <span className="brand-mark" aria-hidden="true">F</span>
+      <div><h1>Forge Studio</h1><p>Produção, publicação e desempenho dos seus canais.</p></div>
+      {anonimo ? <a className="btn btn-primary" href={"/api/sessao/google?retorno=" + encodeURIComponent(retorno)}>Entrar com Google <IconArrowRight size={16}/></a> :
       erro ? <><p role="alert">{erro}</p><button className="btn" onClick={revalidar}>Tentar novamente</button></> : <p role="status">Abrindo Studio…</p>}
     </div></main>;
   }
   const atual = acesso.canais.find(c => c.id === canalId);
   const base = atual && caminhoCanal(atual.id);
+  const producao = !!base && pathname === base + "/producao";
+
+  async function desvincular(id: string) {
+    if (!window.confirm("Desvincular este canal da sua conta?")) return;
+    try {
+      await studioRequest("/api/youtube/channels/" + encodeURIComponent(id) + "/disconnect", {method: "POST"});
+      revalidar();
+    } catch {
+      setErro("Falha ao desvincular canal.");
+    }
+  }
+
   return <div className="channel-studio" key={acesso.conta.id}>
     <header className="channel-header">
-      <b>Forge Studio</b>
-      {acesso.canais.length > 0 && <label>Canal {atual?.thumbnail && <img className="channel-avatar" alt="" src={atual.thumbnail}/>} <select className="select" value={atual?.id ?? ""} onChange={e => void selecionar(e.target.value)} disabled={ocupado}>
-        {!atual && <option value="">Selecione um canal</option>}
-        {acesso.canais.map(c => <option key={c.id} value={c.id}>{c.titulo}</option>)}
-      </select></label>}
-      <span className="studio-account">{acesso.conta.avatar && <img src={acesso.conta.avatar} referrerPolicy="no-referrer" alt="" />}{acesso.conta.nome}</span>
+      {!base && <b>Forge Studio</b>}
+      {acesso.canais.length > 0 && <label className="channel-picker">
+        {atual?.thumbnail && <img className="channel-avatar" alt="" src={atual.thumbnail}/>}
+        <span>Canal</span>
+        <select className="select" value={atual?.id ?? ""} onChange={e => void selecionar(e.target.value)} disabled={ocupado}>
+          {!atual && <option value="">Selecione um canal</option>}
+          {acesso.canais.map(c => <option key={c.id} value={c.id}>{c.titulo}</option>)}
+        </select>
+      </label>}
+      {atual && <details className="channel-settings">
+        <summary>Gerenciar canais</summary>
+        <div className="channel-settings-panel">
+          <VinculoCanal onComplete={revalidar}/>
+          <button className="btn" type="button" onClick={() => void desvincular(atual.id)}>Desvincular canal atual</button>
+        </div>
+      </details>}
+      <span className="studio-account">{acesso.conta.avatar && <img src={acesso.conta.avatar} referrerPolicy="no-referrer" alt=""/>}<span>{acesso.conta.nome}</span></span>
       <button type="button" className="btn" onClick={sair} disabled={ocupado}>Sair</button>
-      {base && <button className="btn channel-toggle" ref={gatilho} type="button" aria-expanded={menu} aria-controls="channel-nav" onClick={()=>setMenu(!menu)}>Menu</button>}
     </header>
     {erro && <p className="app-alert" role="alert">{erro}</p>}
-    {atual && base ? <div className="channel-body">
-      <nav id="channel-nav" className={"channel-nav" + (menu ? " opened" : "")} aria-label="Canal">
-        <a href={base}>Vídeos e insights</a><a href={base + "/producao"}>Produção</a><a href={base + "/producao#/publicacao"}>Publicação</a>
-        <a href={base + "/producao#/fila"}>Fila</a>
-        <a href={base + "/producao#/runs"}>Histórico de produção</a>
-        <a href={base + "/producao#/servicos"}>Serviços</a>
-        <VinculoCanal onComplete={revalidar}/>
-        <button className="btn" onClick={async()=>{
-          if(!window.confirm("Desvincular este canal da sua conta?")) return;
-          try {await studioRequest("/api/youtube/channels/"+encodeURIComponent(atual.id)+"/disconnect",{method:"POST"}); revalidar();}
-          catch {setErro("Falha ao desvincular canal.");}
-        }}>Desvincular canal</button>
-      </nav>
-      <div className="channel-content" key={atual.id}>
+    {atual && base ? <div className={producao ? "channel-production" : "channel-body"} key={atual.id}>
+      {producao ? null : <Sidebar channelBase={base}/>}
+      <div className="channel-content">
         {!atual.conectado && <aside className="channel-notice">Conexão do YouTube expirada. <VinculoCanal canalId={atual.id} onComplete={revalidar}/></aside>}
         {children}
       </div>

@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { screenHref, type Screen } from "../hooks/use-screen";
-import { IconPlus } from "./icons";
+import { IconHistory, IconPlus } from "./icons";
 import { SCREEN_META } from "./screen-meta";
 
 const NAV = SCREEN_META;
@@ -9,13 +9,33 @@ export function Sidebar({
   screen,
   onNavigate,
   onNewRun,
-  queueCount,
+  queueCount = 0,
+  channelBase,
 }: {
-  screen: Screen;
-  onNavigate: (screen: Screen) => void;
-  onNewRun: () => void;
-  queueCount: number;
+  screen?: Screen;
+  onNavigate?: (screen: Screen) => void;
+  onNewRun?: () => void;
+  queueCount?: number;
+  channelBase?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLButtonElement>(null);
+  const nav = useRef<HTMLElement>(null);
+  const production = channelBase ? channelBase + "/producao" : "";
+
+  useEffect(() => {
+    if (!open) return;
+    nav.current?.querySelector("a")?.focus();
+    function fechar(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        menu.current?.focus();
+      }
+    }
+    document.addEventListener("keydown", fechar);
+    return () => document.removeEventListener("keydown", fechar);
+  }, [open]);
+
   return (
     <aside className="sidebar" aria-label="Navegação">
       <div className="brand">
@@ -27,24 +47,47 @@ export function Sidebar({
         <span className="brand-name">Forge Studio</span>
       </div>
 
-      <button className="new-run-btn" data-choice="new-run" type="button" onClick={onNewRun}>
-        <IconPlus size={16} />
-        <span>Novo vídeo</span>
-      </button>
+      {channelBase && <button className="btn studio-menu" type="button" ref={menu}
+        aria-expanded={open} aria-controls="studio-navigation" onClick={() => setOpen(!open)}>Menu</button>}
+      {onNewRun ? (
+        <button className="new-run-btn" data-choice="new-run" type="button" onClick={onNewRun}>
+          <IconPlus size={16} />
+          <span>Novo vídeo</span>
+        </button>
+      ) : channelBase && (
+        <a className="new-run-btn" href={production + "#/producao?novo=1"}>
+          <IconPlus size={16} />
+          <span>Novo vídeo</span>
+        </a>
+      )}
 
-      <nav className="nav" aria-label="Telas">
+      <nav ref={nav} id="studio-navigation" className={`nav${open ? " nav-open" : ""}`}
+        aria-label={channelBase ? "Canal" : "Telas"}>
+        {channelBase && (
+          <a href={channelBase} className={`nav-item${!screen ? " active" : ""}`}
+            data-screen="insights" aria-current={!screen ? "page" : undefined} title="Vídeos e insights">
+            <IconHistory size={17} /><span className="nav-label">Vídeos e insights</span>
+          </a>
+        )}
         {NAV.map(({ screen: target, label, Icon }) => {
           const active = target === screen;
           return (
             <a
               key={target}
-              href={screenHref(target)}
+              href={onNavigate ? screenHref(target) : production + screenHref(target)}
               className={`nav-item${active ? " active" : ""}`}
               data-screen={target}
               aria-current={active ? "page" : undefined}
+              title={label}
               onClick={(event) => {
-                event.preventDefault();
-                onNavigate(target);
+                if (onNavigate && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+                  event.preventDefault();
+                  onNavigate(target);
+                  if (open) {
+                    setOpen(false);
+                    menu.current?.focus();
+                  }
+                }
               }}
             >
               <Icon size={17} />

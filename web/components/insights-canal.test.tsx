@@ -17,6 +17,22 @@ it("preserva busca, cursor e período no link do vídeo externo; zero é observa
 
 
 const resumo = {inicio:"2026-10-01",fim:"2026-10-28",views:120,minutos:0,estado:"atualizado",observacoes:[],contribuicoes:[],serie:[]};
+it("mostra comparação, nomes dos vídeos do ranking e alterna a medida diária", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.includes("/resumo") ? {
+    ...resumo,
+    comparacao: {views: 100, minutos: 0},
+    amostra: 1,
+    contribuicoes: [{video_id: "a", titulo: "Um episódio do canal", views: 120}],
+    serie: [{dia: "2026-10-01", views: 120, minutos: 0}],
+  } : {videos: [], proximo_cursor: null})));
+  render(<InsightsCanal canal="A" consulta=""/>);
+  expect((await screen.findByRole("link", {name: "Um episódio do canal"})).getAttribute("href")).toContain("/videos/a");
+  expect(screen.getByText("+20%")).toBeTruthy();
+  const minutos = screen.getByRole("button", {name: "Minutos assistidos"});
+  fireEvent.click(minutos);
+  expect(minutos.getAttribute("aria-pressed")).toBe("true");
+});
+
 it("descarta leitura lenta de A depois da troca para B", async () => {
   let liberar!: (value: Response)=>void;
   vi.stubGlobal("fetch",vi.fn((url:string)=>{

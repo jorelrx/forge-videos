@@ -39,6 +39,7 @@ import { serviceStatusLabel, stageStatus } from "../lib/stage-map";
 export interface DashboardProps {
   api?: StudioApi;
   eventSource?: typeof EventSource;
+  channelBase?: string;
 }
 
 export interface DashboardViewProps {
@@ -46,6 +47,7 @@ export interface DashboardViewProps {
   fluxosApi?: NewVideoFormProps["fluxosApi"];
   /** Injetável para teste; padrão é `GET /api/runs/{id}/artifacts`. */
   loadArtifacts?: (runId: string) => Promise<Artifact[]>;
+  channelBase?: string;
 }
 
 const defaultApi = createStudioApi();
@@ -200,11 +202,14 @@ function ServicesStrip({
   );
 }
 
-export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardViewProps) {
+export function DashboardView({ state, loadArtifacts, fluxosApi, channelBase }: DashboardViewProps) {
   const focusRun = state.focusRun;
   const formRef = React.useRef<HTMLFormElement>(null);
   const [screen, navigate] = useScreen();
   const [focusFormPending, setFocusFormPending] = React.useState(false);
+  React.useEffect(() => {
+    if (window.location.hash === "#/producao?novo=1") setFocusFormPending(true);
+  }, []);
   const services = state.services ?? {};
   const events = state.events ?? [];
   const queue = state.queue ?? [];
@@ -503,6 +508,7 @@ export function DashboardView({ state, loadArtifacts, fluxosApi }: DashboardView
   return (
     <div className="app">
       <Sidebar
+        channelBase={channelBase}
         screen={screen}
         onNavigate={navigate}
         onNewRun={requestNewVideo}
@@ -542,9 +548,9 @@ function progressPercent(progress: number): number {
   return Math.round(Math.min(1, Math.max(0, progress)) * 100);
 }
 
-export function Dashboard({ api, eventSource }: DashboardProps) {
+export function Dashboard({ api, eventSource, channelBase }: DashboardProps) {
   const state = useDashboard(api ?? defaultApi, {
     EventSource: eventSource,
   });
-  return <DashboardView state={state} fluxosApi={api ?? defaultApi} />;
+  return <DashboardView state={state} fluxosApi={api ?? defaultApi} channelBase={channelBase} />;
 }

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ApiError, studioRequest } from "../lib/api";
 import { comConsulta, dataCivil, numero, somentePeriodo, type Dia, type Observacao } from "../lib/insights";
 import { VinculoCanal } from "./vinculo-canal";
+import { IconRefresh } from "./icons";
 
 export function useLeitura<T>(url: string, versao: number) {
   const [resposta,setResposta] = useState<{url:string;dados:T} | null>(null);
@@ -50,7 +51,7 @@ export function Atualizacao({canal,consulta,estado,estadoCatalogo,ultima,atualiz
   }
   return <div className="reading-status">
     <span>{ultima ? "Última atualização válida · "+new Date(ultima).toLocaleString("pt-BR") : "Ainda sem leitura confirmada"}</span>
-    <button className="btn" onClick={sincronizar} disabled={enviando || pendente}>Atualizar histórico</button>
+    <button className="btn" onClick={sincronizar} disabled={enviando || pendente}><IconRefresh size={15}/>{enviando || pendente ? "Atualizando…" : "Atualizar histórico"}</button>
     {[...new Set([estado,estadoCatalogo])].map(s=>s && estados[s] && <span key={s} role="status">{estados[s]}</span>)}
     {estado === "sem_autorizacao" && <VinculoCanal canalId={canal} analytics/>}
     {(estado === "reconectar" || estadoCatalogo === "reconectar") && <VinculoCanal canalId={canal}/>}
@@ -58,12 +59,44 @@ export function Atualizacao({canal,consulta,estado,estadoCatalogo,ultima,atualiz
   </div>;
 }
 
-export function SerieDiaria({serie}:{serie:Dia[]}) {
-  return <details className="evidence-panel"><summary>Evolução diária</summary>
-    {serie.length ? <table><thead><tr><th>Dia</th><th>Visualizações</th><th>Minutos assistidos</th></tr></thead>
-      <tbody>{serie.map(d=><tr key={d.dia}><td>{dataCivil(d.dia)}</td><td>{numero(d.views)}</td><td>{numero(d.minutos)}</td></tr>)}</tbody></table>
-      : <p>Série diária indisponível.</p>}
-  </details>;
+export function SerieDiaria({serie, inicio, fim}:{serie:Dia[];inicio:string;fim:string}) {
+  const [medida, setMedida] = useState<"views" | "minutos">("views");
+  const pontos = serie.filter(dia => dia[medida] !== null);
+  const maximo = Math.max(0, ...pontos.map(dia => dia[medida]!));
+  const primeiro = Date.parse(inicio);
+  const ultimo = Date.parse(fim);
+  const totalDias = (ultimo - primeiro) / 86400000 + 1;
+  // Intervalos longos seguem legíveis na tabela, sem comprimir centenas de barras.
+  const desenhar = pontos.length > 0 && totalDias >= 1 && totalDias <= 93;
+  const valores = new Map(serie.map(dia => [dia.dia, dia[medida]]));
+
+  return <section className="panel insight-trend" aria-label="Evolução diária">
+    <div className="insight-section-header">
+      <h2>Evolução diária</h2>
+      {serie.length > 0 && <div className="metric-toggle" role="group" aria-label="Medida do gráfico">
+        <button type="button" aria-pressed={medida === "views"} onClick={() => setMedida("views")}>Visualizações</button>
+        <button type="button" aria-pressed={medida === "minutos"} onClick={() => setMedida("minutos")}>Minutos assistidos</button>
+      </div>}
+    </div>
+    {desenhar && <div className="trend-figure">
+      <div className="trend-scale" aria-hidden="true"><span>{numero(maximo)}</span><span>0</span></div>
+      <div className="trend-bars" aria-hidden="true">
+        {Array.from({length: totalDias}, (_, indice) => {
+          const dia = new Date(primeiro + indice * 86400000).toISOString().slice(0,10);
+          const valor = valores.get(dia);
+          return <div className="trend-day" key={dia} title={dataCivil(dia) + " · " + numero(valor)}>
+            {valor != null && <span className="trend-bar" style={{height: (maximo ? valor / maximo * 100 : 0) + "%"}}/>}
+          </div>;
+        })}
+      </div>
+      <div className="trend-dates"><time dateTime={inicio}>{dataCivil(inicio)}</time><time dateTime={fim}>{dataCivil(fim)}</time></div>
+    </div>}
+    {serie.length > 0 ? <details className="evidence-panel" open={!desenhar && pontos.length > 0}>
+      <summary>Dados por dia · {serie.length} {serie.length === 1 ? "dia" : "dias"} com registro</summary>
+      <table><thead><tr><th scope="col">Dia</th><th scope="col">Visualizações</th><th scope="col">Minutos assistidos</th></tr></thead>
+        <tbody>{serie.map(d=><tr key={d.dia}><th scope="row">{dataCivil(d.dia)}</th><td>{numero(d.views)}</td><td>{numero(d.minutos)}</td></tr>)}</tbody></table>
+    </details> : <p className="insight-empty">A fonte ainda não retornou dados diários para este período.</p>}
+  </section>;
 }
 
 export const nomes: Record<string,string> = {visualizacoes:"Visualizações",views:"Visualizações",minutos:"Tempo de exibição",minutos_assistidos:"Tempo de exibição",duracao_media:"Duração média",percentual_assistido:"Percentual assistido"};

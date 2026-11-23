@@ -106,3 +106,4 @@
 - Roteiro: o plano e o Gancho usam a abertura aprovada. A primeira rodada reprovou no gate de aberturas parecidas (Virada × Fecho repetindo "seis e quarenta", 0,46 contra o limite 0,45); a repetição da etapa passou com cerca de 2.180 palavras.
 - A execução foi pausada antes das etapas de mídia, para o criador decidir se segue.
 - Não exercitado ao vivo: a pausa por contradição (a pauta real foi compatível).
+- Retomada depois do aceite: plano de mídia, áudio (82 trechos, alguns recuperados na CPU), imagens (Codex), montagem e validação aprovados. `video/final.mp4` com 11 min 40 s, legenda, cartões de fonte e thumbnail. Transcrição com Whisper de trechos do início, do meio e do fim confirma narração inteligível e fiel ao roteiro; o início é a abertura aprovada.

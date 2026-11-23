@@ -2,306 +2,166 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import wave
+
+import httpx
 
 from forge.domain.execucao import FailureClass
-from forge.executors.audio_generate import AudioGenerateClient, AudioRequest
+from forge.executors.audio_generate import (
+    FALHAS_DE_SERVIDOR,
+    AudioGenerateClient,
+    AudioRequest,
+    montar_payload,
+)
 from forge.infrastructure.config import Settings
 
+WAV = b"RIFF" + b"\0" * 40 + b"dados"
 
-def _settings(tmp_path: Path) -> Settings:
+
+def _settings(tmp_path: Path, **kwargs) -> Settings:
     root = tmp_path / "audio-generate"
     return Settings(
         _env_file=None,
         audio_generate_dir=root,
-        tts_binary=root / "audio-generate.exe",
         tts_model=root / "model.gguf",
         tts_voice_reference=root / "voice.wav",
+        **kwargs,
     )
 
 
-def test_build_argv_uses_fixed_safe_batch_flags_and_no_sampling_knobs(tmp_path):
+class Servidor:
+    url = "http://127.0.0.1:9999"
+    backend = "vulkan"
+
+
+def _client(tmp_path, handler, **settings_kwargs):
+    return AudioGenerateClient(
+        _settings(tmp_path, **settings_kwargs),
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def _erro(status, mensagem):
+    return lambda request: httpx.Response(
+        status, json={"error": {"message": mensagem, "type": "server_error"}}
+    )
+
+
+def test_payload_leva_clonagem_no_nivel_de_cima(tmp_path):
     settings = _settings(tmp_path)
-    client = AudioGenerateClient(settings)
-    batch_file = tmp_path / "batch.jsonl"
-
-    argv = client.build_argv(batch_file, tmp_path / "out")
-
-    # Contrato verificado contra `audiocpp_cli.exe --help`: --task e --family
-    # são obrigatórios, a referência de voz é --voice-ref e a saída é --out-dir.
-    assert argv == [
-        str(settings.tts_binary),
-        "--task", "tts",
-        "--family", settings.tts_family,
-        "--model", str(settings.tts_model),
-        "--backend", settings.tts_backend,
-        "--voice-ref", str(settings.tts_voice_reference),
-        "--reference-text", settings.tts_reference_text,
-        "--batch-text-file", str(batch_file),
-        "--out-dir", str(tmp_path / "out"),
-        "--seed", "42",
-    ]
-    assert not {"--temperature", "--top-k", "--top-p"}.intersection(argv)
+    p = montar_payload(AudioRequest("b001", "<|emotion:calm|>Olá", seed=7), settings)
+    assert p["model"] == "higgs"
+    assert p["response_format"] == "wav"
+    assert p["voice_ref"] == str(settings.resolved_tts_voice_reference)
+    assert p["reference_text"] == settings.tts_reference_text
+    assert p["seed"] == 7
+    assert p["input"] == "Olá"
+    assert "options" not in p
+    assert "max_tokens" not in p
 
 
-def test_build_argv_carries_the_mandatory_task_and_family(tmp_path):
-    """Sem --task/--family o binário sai 1 sem gerar áudio."""
-    argv = AudioGenerateClient(_settings(tmp_path)).build_argv(
-        tmp_path / "batch.jsonl", tmp_path / "out"
+def test_seed_ausente_usa_tts_seed(tmp_path):
+    p = montar_payload(AudioRequest("b001", "Olá"), _settings(tmp_path, tts_seed=43))
+    assert p["seed"] == 43
+
+
+def test_max_tokens_vai_quando_definido(tmp_path):
+    p = montar_payload(AudioRequest("b001", "Olá", max_tokens=20), _settings(tmp_path))
+    assert p["max_tokens"] == 20
+
+
+def test_quebras_de_linha_viram_espaco(tmp_path):
+    p = montar_payload(AudioRequest("b001", "Uma\r\nduas"), _settings(tmp_path))
+    assert p["input"] == "Uma  duas"
+
+
+def test_grava_wav_atomico_com_nome_canonico(tmp_path):
+    recebido = []
+
+    def handler(request):
+        recebido.append((request.url, json.loads(request.content)))
+        return httpx.Response(200, content=WAV, headers={"Content-Type": "audio/wav"})
+
+    destino = tmp_path / "run" / "audio"
+    outcome = _client(tmp_path, handler).synthesize(AudioRequest("b001", "Texto"), Servidor(), destino)
+
+    assert outcome.ok
+    assert outcome.path == destino / "b001.wav"
+    assert outcome.path.read_bytes() == WAV
+    assert list(destino.glob("*.tmp")) == []
+    assert str(recebido[0][0]) == "http://127.0.0.1:9999/v1/audio/speech"
+    assert recebido[0][1]["input"] == "Texto"
+
+
+def test_pedido_usa_tts_item_timeout(tmp_path):
+    timeouts = []
+
+    def handler(request):
+        timeouts.append(request.extensions["timeout"])
+        return httpx.Response(200, content=WAV)
+
+    _client(tmp_path, handler, tts_item_timeout=17).synthesize(
+        AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out"
     )
-
-    assert "--task" in argv and argv[argv.index("--task") + 1] == "tts"
-    assert "--family" in argv and argv[argv.index("--family") + 1]
-    assert "--voice-ref" in argv
-    assert "--out-dir" in argv
+    assert timeouts[0]["read"] == 17
 
 
-def test_build_argv_requests_a_batch_manifest(tmp_path):
-    """O nome do WAV é `line_<N>`: o manifest é a única fonte do mapeamento."""
-    argv = AudioGenerateClient(_settings(tmp_path)).build_argv(
-        tmp_path / "batch.jsonl", tmp_path / "out", manifest_path=tmp_path / "m.json"
-    )
+def test_500_max_tokens_classifica_deterministico(tmp_path):
+    handler = _erro(500, "Higgs TTS generation reached max_tokens before EOC")
+    outcome = _client(tmp_path, handler).synthesize(AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out")
 
-    assert "--batch-manifest-out" in argv
-    assert argv[argv.index("--batch-manifest-out") + 1] == str(tmp_path / "m.json")
-
-
-def test_synthesize_batch_maps_outputs_through_the_manifest(tmp_path):
-    """O binário ignora o id do pedido e grava `line_<N>.wav`; o manifesto
-    devolve esse nome na ordem das linhas. Sem lê-lo, o adaptador anunciaria
-    caminhos que não existem."""
-    captured = {}
-
-    def run(argv, **kwargs):
-        captured["argv"] = argv
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        manifest = Path(argv[argv.index("--batch-manifest-out") + 1])
-        for index in (1, 2):
-            (out / f"line_{index}.wav").write_bytes(b"RIFF ok")
-        manifest.write_text(
-            json.dumps(
-                {
-                    "requests": [
-                        {"id": "line_1", "sample_rate": 24000, "channels": 1, "samples": 10},
-                        {"id": "line_2", "sample_rate": 24000, "channels": 1, "samples": 20},
-                    ],
-                    "chapters": [],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    client = AudioGenerateClient(_settings(tmp_path), run=run)
-    outcomes = client.synthesize_batch(
-        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda")],
-        tmp_path / "out",
-    )
-
-    assert [outcome.ok for outcome in outcomes] == [True, True]
-    assert outcomes[0].path == tmp_path / "out" / "b001.wav"
-    assert outcomes[1].path == tmp_path / "out" / "b002.wav"
-
-
-def test_synthesize_batch_fails_when_the_manifest_does_not_cover_every_item(tmp_path):
-    """Manifesto curto não vira sucesso silencioso: item sem arquivo falha."""
-
-    def run(argv, **kwargs):
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "line_1.wav").write_bytes(b"RIFF ok")
-        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
-            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
-            encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    client = AudioGenerateClient(_settings(tmp_path), run=run)
-    outcomes = client.synthesize_batch(
-        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda")],
-        tmp_path / "out",
-    )
-
-    assert outcomes[0].ok
-    assert not outcomes[1].ok
-    assert outcomes[1].failure is not None
-    assert outcomes[1].failure.code == "tts_output_missing"
-
-
-def test_synthesize_batch_fails_when_a_manifest_entry_has_no_file(tmp_path):
-    """Manifesto que anuncia um áudio ausente é falha, não sucesso."""
-
-    def run(argv, **kwargs):
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
-            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
-            encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    client = AudioGenerateClient(_settings(tmp_path), run=run)
-    outcomes = client.synthesize_batch([AudioRequest("b001", "Primeira")], tmp_path / "out")
-
-    assert not outcomes[0].ok
-    assert outcomes[0].failure is not None
-    assert outcomes[0].failure.code == "tts_output_missing"
-
-
-def test_synthesize_batch_serializes_plain_text_without_emotion_tags(tmp_path):
-    captured = {}
-
-    def run(argv, **kwargs):
-        captured["argv"] = argv
-        captured.update(kwargs)
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "line_1.wav").write_bytes(b"RIFF ok")
-        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
-            json.dumps({"requests": [{"id": "line_1"}], "chapters": []}),
-            encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    client = AudioGenerateClient(_settings(tmp_path), run=run)
-    outcomes = client.synthesize_batch(
-        [AudioRequest("b001", "Olá <|emotion:angry|> mundo")], tmp_path / "out"
-    )
-
-    assert outcomes[0].ok
-    batch_text = Path(captured["argv"][captured["argv"].index("--batch-text-file") + 1]).read_text(encoding="utf-8")
-    assert "<|emotion:" not in batch_text
-    assert batch_text == "Olá  mundo\n"
-    assert captured["shell"] is False
-    assert captured["cwd"] == tmp_path / "audio-generate"
-    assert captured["timeout"] == 900
-
-
-def test_lotes_diferentes_preservam_audios_anteriores(tmp_path):
-    raw_dirs = []
-
-    def run(argv, **kwargs):
-        raw = Path(argv[argv.index("--out-dir") + 1])
-        raw_dirs.append(raw)
-        raw.mkdir(parents=True, exist_ok=True)
-        (raw / "line_1.wav").write_bytes(f"lote-{len(raw_dirs)}".encode())
-        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
-            json.dumps({"requests": [{"id": "line_1"}]}), encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    client = AudioGenerateClient(_settings(tmp_path), run=run)
-    first = client.synthesize_batch([AudioRequest("b001", "Primeira")], tmp_path / "out")[0]
-    second = client.synthesize_batch([AudioRequest("b002", "Segunda")], tmp_path / "out")[0]
-    assert first.path.read_bytes() == b"lote-1"
-    assert second.path.read_bytes() == b"lote-2"
-    assert raw_dirs[0] != raw_dirs[1]
-
-
-def test_synthesize_batch_classifies_known_stderr_and_bounds_diagnostics(tmp_path):
-    stderr = "x" * 5000 + "ggml_vulkan: Device memory allocation"
-
-    def run(*args, **kwargs):
-        return type("Result", (), {"returncode": 1, "stderr": stderr})()
-
-    outcome = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
-        [AudioRequest("b001", "Texto")], tmp_path / "out"
-    )[0]
-
-    assert outcome.failure is not None
-    assert outcome.failure.code == "tts_vulkan_oom"
-    assert outcome.failure.failure_class is FailureClass.CAPACITY
-    assert len(outcome.stderr) == 4096
-
-
-def test_synthesize_batch_classifies_max_tokens_as_deterministic(tmp_path):
-    def run(*args, **kwargs):
-        return type("Result", (), {"returncode": 1, "stderr": "reached max_tokens before EOC"})()
-
-    outcome = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
-        [AudioRequest("b001", "Texto")], tmp_path / "out"
-    )[0]
-
-    assert outcome.failure is not None
     assert outcome.failure.code == "tts_max_tokens_before_eoc"
     assert outcome.failure.failure_class is FailureClass.DETERMINISTIC
     assert outcome.failure.retriable is False
+    assert not (tmp_path / "out" / "b001.wav").exists()
 
 
-def test_failed_batch_preserves_completed_lines_and_maps_unfinished_items(tmp_path):
-    def run(argv, **kwargs):
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out / "line_1.wav"), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(24000)
-            output.writeframes(b"\0\0" * 2400)
-        return type("Result", (), {
-            "returncode": 1,
-            "stderr": "Higgs TTS generation reached max_tokens before EOC",
-        })()
+def test_500_oom_vulkan_e_falha_de_servidor(tmp_path):
+    handler = _erro(500, "ggml_vulkan: Device memory allocation of size 123 failed")
+    outcome = _client(tmp_path, handler).synthesize(AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out")
 
-    outcomes = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
-        [AudioRequest("b001", "Primeira"), AudioRequest("b002", "Segunda"), AudioRequest("b003", "Terceira")],
-        tmp_path / "out",
-    )
-
-    assert outcomes[0].ok
-    assert outcomes[0].path == tmp_path / "out" / "b001.wav"
-    assert [outcome.item_key for outcome in outcomes[1:]] == ["b002", "b003"]
-    assert [outcome.failure.code for outcome in outcomes[1:]] == [
-        "tts_max_tokens_before_eoc", "tts_max_tokens_before_eoc",
-    ]
+    assert outcome.failure.code == "tts_vulkan_oom"
+    assert outcome.failure.code in FALHAS_DE_SERVIDOR
 
 
-def test_single_failed_line_is_not_accepted_as_completed_partial_audio(tmp_path):
-    def run(argv, **kwargs):
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out / "line_1.wav"), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(24000)
-            output.writeframes(b"\0\0" * 2400)
-        return type("Result", (), {
-            "returncode": 1,
-            "stderr": "Higgs TTS generation reached max_tokens before EOC",
-        })()
+def test_conexao_recusada_e_timeout_viram_servidor_indisponivel(tmp_path):
+    for erro in (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError):
+        def handler(request, erro=erro):
+            raise erro("falhou", request=request)
 
-    outcome = AudioGenerateClient(_settings(tmp_path), run=run).synthesize_batch(
-        [AudioRequest("b002", "Segunda")], tmp_path / "out",
-    )[0]
+        outcome = _client(tmp_path, handler).synthesize(
+            AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out"
+        )
+        assert outcome.failure.code == "tts_servidor_indisponivel", erro
+        assert outcome.failure.code in FALHAS_DE_SERVIDOR
+
+
+def test_outro_500_e_process_failed_com_mensagem_truncada(tmp_path):
+    handler = _erro(500, "could not open WAV input: C:/x.wav" + "y" * 6000)
+    outcome = _client(tmp_path, handler).synthesize(AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out")
+
+    assert outcome.failure.code == "tts_process_failed"
+    assert outcome.failure.code not in FALHAS_DE_SERVIDOR
+    assert len(outcome.stderr) == 4096
+    assert outcome.failure.services["status"] == 500
+
+
+def test_item_key_invalido_nao_escreve_fora_do_destino(tmp_path):
+    chamadas = []
+
+    def handler(request):
+        chamadas.append(request)
+        return httpx.Response(200, content=WAV)
+
+    outcome = _client(tmp_path, handler).synthesize(AudioRequest("../x", "Texto"), Servidor(), tmp_path / "out")
 
     assert not outcome.ok
-    assert outcome.failure is not None
-    assert outcome.failure.code == "tts_max_tokens_before_eoc"
+    assert chamadas == []
+    assert not (tmp_path / "x.wav").exists()
 
 
-def test_synthesize_batch_can_override_backend_for_one_call(tmp_path):
-    captured = {}
-
-    def run(argv, **kwargs):
-        captured["backend"] = argv[argv.index("--backend") + 1]
-        out = Path(argv[argv.index("--out-dir") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out / "line_1.wav"), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(24000)
-            output.writeframes(b"\0\0" * 2400)
-        Path(argv[argv.index("--batch-manifest-out") + 1]).write_text(
-            json.dumps({"requests": [{"id": "line_1"}]}), encoding="utf-8",
-        )
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
-    settings = _settings(tmp_path)
-    client = AudioGenerateClient(settings, run=run)
-    outcome = client.synthesize_batch(
-        [AudioRequest("b002", "Segunda")], tmp_path / "out", backend="cpu",
-    )[0]
-
-    assert outcome.ok
-    assert captured["backend"] == "cpu"
-    assert settings.tts_backend == "vulkan"
+def test_resposta_200_vazia_nao_e_sucesso(tmp_path):
+    outcome = _client(tmp_path, lambda r: httpx.Response(200, content=b"")).synthesize(
+        AudioRequest("b001", "Texto"), Servidor(), tmp_path / "out"
+    )
+    assert not outcome.ok
+    assert not (tmp_path / "out" / "b001.wav").exists()

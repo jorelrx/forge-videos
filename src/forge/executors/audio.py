@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import shutil
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 from time import monotonic
-from typing import Any
+from typing import Any, Callable, ContextManager, Literal
 
 import numpy as np
 import soundfile as sf
@@ -28,7 +29,17 @@ from forge.domain.execucao import (
 )
 from forge.domain.operacao import Artifact, ItemStatus, StageName, WorkItem
 from forge.executors.abertura import artefato_aprovado
-from forge.executors.audio_generate import AudioGenerateClient, AudioOutcome, AudioRequest
+from forge.executors.audio_generate import (
+    FALHAS_DE_SERVIDOR,
+    SERVIDOR_INDISPONIVEL,
+    AudioGenerateClient,
+    AudioRequest,
+)
+from forge.executors.audiocpp_server import (
+    ContratoServidorQuebrado,
+    ServidorIndisponivel,
+    montar_servidor,
+)
 from forge.executors.base import StageImplementation
 from forge.executors.plano_midia import hash_json
 from forge.gpu.liberadores import montar_broker
@@ -76,6 +87,64 @@ def validate_wav(
     return findings
 
 
+@dataclass
+class _Tentativa:
+    """Resultado do laço de sementes de um trecho num servidor.
+
+    `classe` decide o destino: `trecho` pode ir para a fila de CPU, `servidor`
+    reinicia o processo, `config` falha o trecho na hora (erro igual para todo
+    trecho, esconder na CPU só atrasaria o diagnóstico).
+    """
+
+    classe: Literal["ok", "trecho", "servidor", "config"]
+    artefato: ArtifactOutput | None = None
+    path: Path | None = None
+    seed: int | None = None
+    falha: FailureDetail | None = None
+    elapsed_ms: int = 0
+
+
+class _Lado:
+    """Um servidor de um backend e o reinício único que ele tem por etapa."""
+
+    def __init__(self, servidor: Any, backend: str, *, motivo: str = "", contrato: bool = False):
+        self.servidor = servidor
+        self.backend = backend
+        self.disponivel = servidor is not None
+        self.reiniciou = False
+        self.motivo = motivo
+        self.contrato = contrato
+
+    def falha_indisponivel(self, item_key: str) -> FailureDetail:
+        if self.contrato:
+            return _falha_contrato(self.motivo, item_key=item_key)
+        return FailureDetail(
+            code=SERVIDOR_INDISPONIVEL,
+            message=f"Servidor de áudio ({self.backend}) indisponível",
+            failure_class=FailureClass.PROCESS,
+            retriable=True,
+            recommended_action="Conferir o audiocpp_server e a VRAM livre, depois repetir a etapa",
+            adapter="audio",
+            attempt=1,
+            item_key=item_key,
+            services={"stderr_tail": self.motivo},
+        )
+
+
+def _falha_contrato(motivo: str, *, item_key: str | None = None) -> FailureDetail:
+    return FailureDetail(
+        code="tts_contrato_servidor",
+        message="audiocpp_server não respeita o contrato de clonagem de voz",
+        failure_class=FailureClass.DETERMINISTIC,
+        retriable=False,
+        recommended_action="Conferir a versão do audiocpp_server em runtime/bin",
+        adapter="audio",
+        attempt=1,
+        item_key=item_key,
+        services={"stderr_tail": motivo},
+    )
+
+
 class _NoopBroker:
     def exclusivo(self, resource: str):
         return nullcontext()
@@ -92,10 +161,16 @@ class AudioExecutor(StageImplementation):
         settings: Settings | None = None,
         client: AudioGenerateClient | Any | None = None,
         broker: Any | None = None,
+        servidor_factory: Callable[[str, Path], ContextManager[Any]] | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.client = client or AudioGenerateClient(self.settings)
         self.broker = broker
+        # Um servidor residente por backend durante a etapa; injetável nos
+        # testes, que nunca sobem processo.
+        self._servidor_factory = servidor_factory or (
+            lambda backend, pasta: montar_servidor(self.settings, backend, pasta_log=pasta)
+        )
 
     def prepare(self, context: RunSnapshot) -> StagePlan:
         if context.stage is not StageName.AUDIO:
@@ -353,40 +428,86 @@ class AudioExecutor(StageImplementation):
             if float(output.metadata.get("silencio_max", 0.0)) > SILENCIO_MAXIMO_SEGUNDOS
         ]
 
-    def _retry_long_silences(
-        self,
-        context: RunSnapshot,
-        plan: StagePlan,
-        paths: dict[str, Path],
-        artifacts: dict[str, ArtifactOutput],
-        output_dir: Path,
-        emit: EventSink,
-    ) -> None:
-        """Regenera, com outra semente, o bloco que saiu com um buraco mudo.
+    # -- síntese ----------------------------------------------------------------
 
-        Sem isto o defeito só aparecia na validação final, depois de imagens e
-        montagem prontas, e repetir a etapa reaproveitava o mesmo arquivo.
-        """
-        by_key = {item.item_key: item for item in plan.items}
-        for key in self._silence_keys(artifacts):
-            for seed in self.alternate_seeds:
-                outcomes = self.client.synthesize_batch(
-                    [self._request(by_key[key], seed=seed)], output_dir
+    def _seeds(self) -> list[int]:
+        # A saída é determinística por semente (byte a byte na GPU): repetir a
+        # mesma semente nunca muda o resultado.
+        return list(dict.fromkeys((self.settings.tts_seed, *self.alternate_seeds)))
+
+    def _tentar(
+        self, context: RunSnapshot, item: WorkItemPlan, servidor: Any, *, output_dir: Path,
+    ) -> _Tentativa:
+        """Laço de sementes de um trecho num servidor. Sem efeito colateral
+        além do WAV: roda tanto na thread principal quanto na de CPU."""
+        started = monotonic()
+        guardado: tuple[Path, ArtifactOutput, int] | None = None
+        ultima: FailureDetail | None = None
+
+        def elapsed() -> int:
+            return round((monotonic() - started) * 1000)
+
+        for seed in self._seeds():
+            outcome = self.client.synthesize(self._request(item, seed=seed), servidor, output_dir)
+            if outcome.failure is not None:
+                code = outcome.failure.code
+                if code in FALHAS_DE_SERVIDOR:
+                    return _Tentativa("servidor", falha=outcome.failure, seed=seed, elapsed_ms=elapsed())
+                if code != "tts_max_tokens_before_eoc":
+                    return _Tentativa("config", falha=outcome.failure, seed=seed, elapsed_ms=elapsed())
+                ultima = outcome.failure
+                continue
+            output, findings = self._artifact_for(context, item.item_key, outcome.path, seed=seed)
+            if output is None:
+                # O arquivo canônico agora tem esta saída inválida: um
+                # artefato guardado de semente anterior já não corresponde.
+                guardado = None
+                ultima = self._failure_from_findings(item.item_key, findings)
+                continue
+            silencio = float(output.metadata.get("silencio_max", 0.0))
+            if silencio > SILENCIO_MAXIMO_SEGUNDOS:
+                guardado = (outcome.path, output, seed)
+                ultima = FailureDetail(
+                    code="audio_silence",
+                    message="Bloco com silêncio longo no meio da fala",
+                    failure_class=FailureClass.ITEM,
+                    retriable=True,
+                    recommended_action="Gerar o bloco com outra semente",
+                    adapter="audio",
+                    attempt=1,
+                    item_key=item.item_key,
+                    services={"silencio_max": silencio},
                 )
-                outcome = outcomes[0] if outcomes else None
-                if outcome is None or not outcome.ok or outcome.path is None:
-                    continue
-                output, findings = self._artifact_for(context, key, outcome.path, seed=seed)
-                if output is None or findings:
-                    continue
-                paths[key] = outcome.path
-                artifacts[key] = output
-                emit(
-                    kind="artifact.created", level="info", message="Áudio regenerado",
-                    payload=output.model_dump(mode="json"),
-                )
-                if key not in self._silence_keys(artifacts):
-                    break
+                continue
+            return _Tentativa("ok", artefato=output, path=outcome.path, seed=seed, elapsed_ms=elapsed())
+        if guardado is not None:
+            path, output, seed = guardado
+            return _Tentativa("trecho", artefato=output, path=path, seed=seed, falha=ultima, elapsed_ms=elapsed())
+        return _Tentativa("trecho", falha=ultima, elapsed_ms=elapsed())
+
+    def _processar(
+        self, context: RunSnapshot, item: WorkItemPlan, lado: _Lado, *, output_dir: Path,
+    ) -> _Tentativa:
+        """`_tentar` com a política de servidor: um reinício por backend."""
+        if not lado.disponivel:
+            return _Tentativa("servidor", falha=lado.falha_indisponivel(item.item_key))
+        tentativa = self._tentar(context, item, lado.servidor, output_dir=output_dir)
+        if tentativa.classe != "servidor":
+            return tentativa
+        if lado.reiniciou:
+            lado.disponivel = False
+            return tentativa
+        lado.reiniciou = True
+        try:
+            lado.servidor.reiniciar()
+        except (ServidorIndisponivel, ContratoServidorQuebrado) as error:
+            lado.disponivel = False
+            lado.motivo = str(error)
+            return _Tentativa("servidor", falha=lado.falha_indisponivel(item.item_key))
+        tentativa = self._tentar(context, item, lado.servidor, output_dir=output_dir)
+        if tentativa.classe == "servidor":
+            lado.disponivel = False
+        return tentativa
 
     def _retry_voice_outliers(
         self,
@@ -394,6 +515,7 @@ class AudioExecutor(StageImplementation):
         plan: StagePlan,
         paths: dict[str, Path],
         artifacts: dict[str, ArtifactOutput],
+        lado: _Lado | None,
         output_dir: Path,
         emit: EventSink,
     ) -> None:
@@ -403,9 +525,13 @@ class AudioExecutor(StageImplementation):
             for seed in self.alternate_seeds:
                 if key not in self._voice_outlier_keys(artifacts):
                     break
-                outcomes = self.client.synthesize_batch([self._request(item, seed=seed)], output_dir)
-                outcome = outcomes[0] if outcomes else None
-                if outcome is None or not outcome.ok or outcome.path is None:
+                if lado is None or not lado.disponivel:
+                    logger.warning("Outlier de voz não regenerado: servidor indisponível", item_key=key)
+                    return
+                outcome = self.client.synthesize(self._request(item, seed=seed), lado.servidor, output_dir)
+                if not outcome.ok or outcome.path is None:
+                    if outcome.failure is not None and outcome.failure.code in FALHAS_DE_SERVIDOR:
+                        lado.disponivel = False
                     continue
                 output, findings = self._artifact_for(context, key, outcome.path, seed=seed)
                 if output is None or findings:
@@ -472,201 +598,124 @@ class AudioExecutor(StageImplementation):
             emit(kind="artifact.created", level="info", message="Áudio reutilizado", payload=refreshed.model_dump(mode="json"))
             emit(kind="item.succeeded", level="info", message="Narração concluída", payload={"item_key": item.item_key, "duration_ms": 0})
 
-        with self._broker().exclusivo("tts"):
-            retry: list[WorkItemPlan] = []
+        principal = self.settings.tts_backend
+        recuperacao = "cpu" if principal != "cpu" else None
 
-            def accept(
-                item: WorkItemPlan, outcome: AudioOutcome | None, elapsed: int, backend: str,
-                seed: int | None = None,
-            ) -> bool:
-                if outcome is None or not outcome.ok or outcome.path is None:
-                    return False
-                output, findings = self._artifact_for(
-                    context, item.item_key, outcome.path,
-                    seed=self.settings.tts_seed if seed is None else seed,
+        def aceitar(item: WorkItemPlan, tentativa: _Tentativa, backend: str) -> None:
+            paths[item.item_key], artifacts[item.item_key] = tentativa.path, tentativa.artefato
+            emit(kind="artifact.created", level="info", message="Áudio criado",
+                 payload=tentativa.artefato.model_dump(mode="json"))
+            emit(kind="item.succeeded", level="info", message="Narração concluída", payload={
+                "item_key": item.item_key, "duration_ms": tentativa.elapsed_ms, "backend": backend,
+            })
+
+        def falhar(item: WorkItemPlan, falha: FailureDetail, backend: str, **extra: Any) -> None:
+            emit(kind="item.failed", level="error", message=falha.message, payload={
+                "item_key": item.item_key, "failure_code": falha.code,
+                "failure_message": falha.message, "backend": backend, **extra,
+            })
+
+        def concluir(item: WorkItemPlan, tentativa: _Tentativa, backend: str, **extra: Any) -> None:
+            """Destino final de um trecho que não vai a mais lugar nenhum."""
+            if tentativa.artefato is not None:
+                # Só achados (silêncio): o artefato fica e o gate reprova.
+                aceitar(item, tentativa, backend)
+                return
+            falha = tentativa.falha or self._failure_from_findings(item.item_key, [])
+            falhar(item, falha, backend, **extra)
+
+        with self._broker().exclusivo("tts"), ExitStack() as pilha:
+            try:
+                lado_principal = _Lado(
+                    pilha.enter_context(self._servidor_factory(principal, output_dir)), principal,
                 )
-                if output is None or findings:
-                    return False
-                paths[item.item_key], artifacts[item.item_key] = outcome.path, output
-                emit(kind="artifact.created", level="info", message="Áudio criado", payload=output.model_dump(mode="json"))
-                emit(kind="item.succeeded", level="info", message="Narração concluída", payload={
-                    "item_key": item.item_key, "duration_ms": elapsed, "backend": backend,
+            except ContratoServidorQuebrado as error:
+                logger.error("Contrato do servidor TTS quebrado", backend=principal, error=str(error))
+                return StageExecutionResult(
+                    current_items=len(artifacts), total_items=len(plan.items),
+                    artifacts=list(artifacts.values()),
+                    failure=_falha_contrato(str(error)),
+                )
+            except ServidorIndisponivel as error:
+                logger.error("Servidor TTS não subiu", backend=principal, error=str(error))
+                lado_principal = _Lado(None, principal, motivo=str(error))
+
+            fila_cpu: list[tuple[WorkItemPlan, FailureDetail]] = []
+            for item in pending:
+                emit(kind="item.started", level="info", message="Narração iniciada", payload={
+                    "item_key": item.item_key, "duration_ms": 0, "backend": principal,
                 })
-                return True
-
-            for offset in range(0, len(pending), self.settings.tts_batch_size):
-                batch = pending[offset : offset + self.settings.tts_batch_size]
-                for item in batch:
-                    emit(kind="item.started", level="info", message="Narração iniciada", payload={
-                        "item_key": item.item_key, "duration_ms": 0,
-                        "backend": self.settings.tts_backend,
-                    })
-                started = monotonic()
-                outcomes = {
-                    outcome.item_key: outcome
-                    for outcome in self.client.synthesize_batch(
-                        [self._request(item) for item in batch], output_dir
-                    )
-                }
-                elapsed = round((monotonic() - started) * 1000)
-                for item in batch:
-                    outcome = outcomes.get(item.item_key)
-                    if accept(item, outcome, elapsed, self.settings.tts_backend):
-                        continue
-                    failure = outcome.failure if outcome is not None else None
-                    if (
-                        failure is not None
-                        and failure.code == "tts_max_tokens_before_eoc"
-                        and self.settings.tts_backend == "vulkan"
-                    ):
-                        original_failure = failure
-                        if len(batch) > 1:
-                            logger.warning(
-                                "tts_max_tokens_batch_item_isolation_started",
-                                item_key=item.item_key, batch_item_keys=[x.item_key for x in batch],
-                                backend="vulkan", failure_code=failure.code,
-                            )
-                            isolated_started = monotonic()
-                            isolated = self.client.synthesize_batch(
-                                [self._request(item)], output_dir
-                            )
-                            isolated_elapsed = round((monotonic() - isolated_started) * 1000)
-                            outcome = isolated[0] if isolated else None
-                            if accept(item, outcome, isolated_elapsed, "vulkan"):
-                                continue
-                            failure = outcome.failure if outcome is not None else None
-                            if failure is None or failure.code != "tts_max_tokens_before_eoc":
-                                if failure is not None and failure.retriable:
-                                    retry.append(item)
-                                else:
-                                    detail = failure or self._failure_from_findings(item.item_key, [])
-                                    emit(kind="item.failed", level="error", message=detail.message, payload={
-                                        "item_key": item.item_key, "failure_code": detail.code,
-                                        "failure_message": detail.message, "backend": "vulkan",
-                                    })
-                                continue
-                            original_failure = failure
-
-                        logger.warning(
-                            "tts_max_tokens_cpu_fallback_started", item_key=item.item_key,
-                            original_backend="vulkan", fallback_backend="cpu",
-                            original_failure_code=original_failure.code,
-                            original_failure_message=original_failure.message,
-                            original_failure_services=original_failure.services,
-                        )
-                        emit(
-                            kind="audio.recovery.started", level="warning",
-                            message="Tentando somente este trecho na CPU após falha max_tokens na GPU",
-                            payload={
-                                "item_key": item.item_key, "backend": "cpu",
-                                "fallback_from": "vulkan", "attempt": 1,
-                                "original_failure_code": original_failure.code,
-                                "original_failure_message": original_failure.message,
-                                "original_failure_stderr": original_failure.services.get("stderr_tail", ""),
-                            },
-                        )
-                        # A CPU é determinística: com a mesma semente, o trecho que
-                        # não fecha (EOC) não fecha nunca, e repetir a etapa cai no
-                        # mesmo lugar. Só outra semente muda a geração.
-                        recovered = False
-                        cpu_outcome = None
-                        for cpu_seed in (None, *self.alternate_seeds):
-                            cpu_started = monotonic()
-                            cpu_outcomes = self.client.synthesize_batch(
-                                [self._request(item, seed=cpu_seed)], output_dir, backend="cpu"
-                            )
-                            cpu_elapsed = round((monotonic() - cpu_started) * 1000)
-                            cpu_outcome = cpu_outcomes[0] if cpu_outcomes else None
-                            if accept(item, cpu_outcome, cpu_elapsed, "cpu", seed=cpu_seed):
-                                recovered = True
-                                break
-                            cpu_code = (
-                                cpu_outcome.failure.code
-                                if cpu_outcome is not None and cpu_outcome.failure is not None
-                                else None
-                            )
-                            if cpu_code != "tts_max_tokens_before_eoc":
-                                break
-                        if recovered:
-                            logger.info(
-                                "tts_max_tokens_cpu_fallback_succeeded", item_key=item.item_key,
-                                original_backend="vulkan", fallback_backend="cpu",
-                                original_failure_code=original_failure.code,
-                            )
-                            emit(
-                                kind="audio.recovery.completed", level="info",
-                                message="Trecho recuperado na CPU; próximos trechos seguem na GPU",
-                                payload={
-                                    "item_key": item.item_key, "backend": "cpu",
-                                    "fallback_from": "vulkan", "status": "succeeded",
-                                    "original_failure_code": original_failure.code,
-                                },
-                            )
-                            continue
-                        cpu_failure = (
-                            cpu_outcome.failure
-                            if cpu_outcome is not None and cpu_outcome.failure is not None
-                            else self._failure_from_findings(item.item_key, [])
-                        )
-                        logger.error(
-                            "tts_max_tokens_cpu_fallback_failed", item_key=item.item_key,
-                            original_backend="vulkan", fallback_backend="cpu",
-                            original_failure_code=original_failure.code,
-                            cpu_failure_code=cpu_failure.code,
-                            cpu_failure_message=cpu_failure.message,
-                        )
-                        emit(
-                            kind="audio.recovery.completed", level="error",
-                            message="Trecho também falhou na CPU",
-                            payload={
-                                "item_key": item.item_key, "backend": "cpu",
-                                "fallback_from": "vulkan", "status": "failed",
-                                "original_failure_code": original_failure.code,
-                                "cpu_failure_code": cpu_failure.code,
-                                "cpu_failure_message": cpu_failure.message,
-                                "cpu_failure_stderr": cpu_failure.services.get("stderr_tail", ""),
-                            },
-                        )
-                        emit(kind="item.failed", level="error", message=cpu_failure.message, payload={
-                            "item_key": item.item_key, "failure_code": cpu_failure.code,
-                            "failure_message": cpu_failure.message, "backend": "cpu",
-                            "original_backend": "vulkan",
-                            "original_failure_code": original_failure.code,
-                            "original_failure_stderr": original_failure.services.get("stderr_tail", ""),
-                            "fallback_backend": "cpu",
-                            "fallback_failure_stderr": cpu_failure.services.get("stderr_tail", ""),
-                        })
-                        continue
-                    if failure is not None and not failure.retriable:
-                        emit(kind="item.failed", level="error", message=failure.message, payload={
-                            "item_key": item.item_key, "failure_code": failure.code,
-                            "failure_message": failure.message,
-                            "backend": self.settings.tts_backend,
-                        })
-                    else:
-                        retry.append(item)
-            for item in retry:
-                started = monotonic()
-                outcomes = self.client.synthesize_batch([self._request(item)], output_dir)
-                outcome = outcomes[0] if outcomes else None
-                elapsed = round((monotonic() - started) * 1000)
-                output, findings = (
-                    self._artifact_for(context, item.item_key, outcome.path, seed=self.settings.tts_seed)
-                    if outcome is not None and outcome.ok and outcome.path is not None
-                    else (None, [])
-                )
-                if output is not None:
-                    paths[item.item_key], artifacts[item.item_key] = outcome.path, output
-                    emit(kind="artifact.created", level="info", message="Áudio criado", payload=output.model_dump(mode="json"))
-                    emit(kind="item.succeeded", level="info", message="Narração concluída", payload={"item_key": item.item_key, "duration_ms": elapsed, "backend": self.settings.tts_backend})
+                tentativa = self._processar(context, item, lado_principal, output_dir=output_dir)
+                if tentativa.classe == "ok":
+                    aceitar(item, tentativa, principal)
                     continue
-                failure = outcome.failure if outcome is not None and outcome.failure is not None else self._failure_from_findings(item.item_key, findings)
-                emit(kind="item.failed", level="error", message=failure.message, payload={"item_key": item.item_key, "failure_code": failure.code, "failure_message": failure.message, "backend": self.settings.tts_backend})
-            self._retry_long_silences(context, plan, paths, artifacts, output_dir, emit)
-        self._retry_voice_outliers(context, plan, paths, artifacts, output_dir, emit)
+                if tentativa.classe == "trecho" and recuperacao is not None:
+                    original = tentativa.falha or self._failure_from_findings(item.item_key, [])
+                    logger.warning(
+                        "tts_trecho_enviado_para_cpu", item_key=item.item_key,
+                        original_backend=principal, original_failure_code=original.code,
+                    )
+                    emit(
+                        kind="audio.recovery.started", level="warning",
+                        message="Trecho esgotou as sementes na GPU; entrou na fila de CPU",
+                        payload={
+                            "item_key": item.item_key, "backend": recuperacao,
+                            "fallback_from": principal, "queued": True,
+                            "original_failure_code": original.code,
+                            "original_failure_message": original.message,
+                            "original_failure_stderr": original.services.get("stderr_tail", ""),
+                        },
+                    )
+                    fila_cpu.append((item, original))
+                    continue
+                concluir(item, tentativa, principal)
+
+            lado_cpu: _Lado | None = None
+            for item, original in fila_cpu:
+                if lado_cpu is None:
+                    lado_cpu = self._subir_lado(pilha, recuperacao, output_dir)
+                tentativa = self._processar(context, item, lado_cpu, output_dir=output_dir)
+                sucesso = tentativa.classe == "ok"
+                final = tentativa.falha or self._failure_from_findings(item.item_key, [])
+                emit(
+                    kind="audio.recovery.completed",
+                    level="info" if sucesso else "error",
+                    message="Trecho recuperado na CPU" if sucesso else "Trecho também falhou na CPU",
+                    payload={
+                        "item_key": item.item_key, "backend": recuperacao,
+                        "fallback_from": principal,
+                        "status": "succeeded" if sucesso else "failed",
+                        "original_failure_code": original.code,
+                        **({} if sucesso else {
+                            "cpu_failure_code": final.code,
+                            "cpu_failure_message": final.message,
+                        }),
+                    },
+                )
+                if sucesso:
+                    aceitar(item, tentativa, recuperacao)
+                else:
+                    concluir(
+                        item, tentativa, recuperacao,
+                        original_backend=principal, original_failure_code=original.code,
+                    )
+
+            self._retry_voice_outliers(
+                context, plan, paths, artifacts, lado_principal, output_dir, emit,
+            )
         return StageExecutionResult(
             current_items=len(artifacts), total_items=len(plan.items), artifacts=list(artifacts.values())
         )
+
+    def _subir_lado(self, pilha: ExitStack, backend: str, output_dir: Path) -> _Lado:
+        try:
+            return _Lado(pilha.enter_context(self._servidor_factory(backend, output_dir)), backend)
+        except ContratoServidorQuebrado as error:
+            logger.error("Contrato do servidor TTS quebrado", backend=backend, error=str(error))
+            return _Lado(None, backend, motivo=str(error), contrato=True)
+        except ServidorIndisponivel as error:
+            logger.error("Servidor TTS não subiu", backend=backend, error=str(error))
+            return _Lado(None, backend, motivo=str(error))
 
     def validate(
         self, context: RunSnapshot, plan: StagePlan, result: StageExecutionResult

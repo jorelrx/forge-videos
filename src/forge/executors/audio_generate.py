@@ -1,22 +1,32 @@
-"""Safe adapter for the local audio-generate batch command."""
+"""Cliente HTTP do `audiocpp_server`: um pedido por trecho de narração.
+
+O servidor (ver `audiocpp_server.py`) mantém o Higgs carregado; aqui só se
+monta o pedido, grava o WAV e classifica a falha. A classificação decide o que
+o executor faz: falha de *trecho* troca de semente e pode ir para a CPU; falha
+de *servidor* reinicia o processo; o resto falha o trecho na hora.
+"""
 
 from __future__ import annotations
 
-import json
 import re
-import shutil
-import subprocess
-import wave
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Callable, Sequence
+from typing import Any
+
+import httpx
 
 from forge.domain.execucao import FailureClass, FailureDetail
 from forge.infrastructure.config import Settings
 
 _EMOTION_TAG = re.compile(r"<\|emotion:[^|]*\|>")
+_ITEM_KEY = re.compile(r"[A-Za-z0-9_-]+")
 _MAX_STDERR_BYTES = 4 * 1024
+MODELO_ID = "higgs"
+
+SERVIDOR_INDISPONIVEL = "tts_servidor_indisponivel"
+# Códigos que dizem respeito ao processo, não ao trecho: o executor reinicia o
+# servidor e repete o mesmo trecho com a mesma semente.
+FALHAS_DE_SERVIDOR = frozenset({"tts_vulkan_oom", SERVIDOR_INDISPONIVEL})
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +34,7 @@ class AudioRequest:
     item_key: str
     text: str
     seed: int | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,59 +69,72 @@ class AudioOutcome:
         )
 
 
-def _stderr_tail(value: object) -> str:
+def _tail(value: object) -> str:
     raw = str(value or "").encode("utf-8", errors="replace")
     return raw[-_MAX_STDERR_BYTES:].decode("utf-8", errors="replace")
 
 
 def classify_audio_failure(
-    stderr: str, *, exit_code: int, item_key: str | None = None, attempt: int = 1
+    message: str, *, status: int, item_key: str | None = None, attempt: int = 1
 ) -> FailureDetail:
-    """Classify known audio-generate exits without exposing unbounded stderr."""
-    stderr = _stderr_tail(stderr)
-    if "reached max_tokens before EOC" in stderr:
+    """Classifica a resposta de erro do servidor sem expor texto ilimitado."""
+    message = _tail(message)
+    if "reached max_tokens before EOC" in message:
         code, failure_class, retriable, action = (
             "tts_max_tokens_before_eoc", FailureClass.DETERMINISTIC, False,
             "Encurtar o bloco de narração antes de gerar novamente",
         )
-    elif "ggml_vulkan: Device memory allocation" in stderr:
+    elif "ggml_vulkan: Device memory allocation" in message:
         code, failure_class, retriable, action = (
             "tts_vulkan_oom", FailureClass.CAPACITY, True,
-            "Liberar VRAM ou reduzir o lote de narração",
+            "Liberar VRAM ou reiniciar o servidor de áudio",
         )
     else:
         code, failure_class, retriable, action = (
-            "tts_process_failed", FailureClass.PROCESS, True,
-            "Verificar o gerador de áudio e tentar novamente",
+            "tts_process_failed", FailureClass.PROCESS, False,
+            "Verificar o gerador de áudio (modelo, referência de voz) e tentar novamente",
         )
     return FailureDetail(
         code=code,
-        message=f"Geração de áudio falhou (exit_code={exit_code})",
+        message=f"Geração de áudio falhou (status={status})",
         failure_class=failure_class,
         retriable=retriable,
         recommended_action=action,
         adapter="audio_generate",
         attempt=attempt,
         item_key=item_key,
-        services={"exit_code": exit_code, "stderr_tail": stderr},
+        services={"status": status, "stderr_tail": message},
     )
 
 
-_OUTPUT_MISSING = "tts_output_missing"
+def _indisponivel(item_key: str, error: Exception) -> AudioOutcome:
+    detalhe = _tail(f"{type(error).__name__}: {error}")
+    return AudioOutcome(
+        item_key=item_key,
+        stderr=detalhe,
+        failure=FailureDetail(
+            code=SERVIDOR_INDISPONIVEL,
+            message="Servidor de áudio não respondeu",
+            failure_class=FailureClass.TRANSIENT,
+            retriable=True,
+            recommended_action="Reiniciar o servidor de áudio",
+            adapter="audio_generate",
+            attempt=1,
+            item_key=item_key,
+            services={"stderr_tail": detalhe},
+        ),
+    )
 
 
-def _missing_output(item_key: str, detail: str) -> AudioOutcome:
-    """Saída anunciada que não existe é falha determinística, não sucesso."""
+def _saida_invalida(item_key: str, detalhe: str) -> AudioOutcome:
     return AudioOutcome(
         item_key=item_key,
         failure=FailureDetail(
-            code=_OUTPUT_MISSING,
-            message=f"Áudio não produzido: {detail}",
+            code="tts_output_missing",
+            message=f"Áudio não produzido: {detalhe}",
             failure_class=FailureClass.DETERMINISTIC,
             retriable=False,
-            recommended_action=(
-                "Conferir --out-dir/--batch-manifest-out do audiocpp_cli"
-            ),
+            recommended_action="Conferir o pedido enviado ao audiocpp_server",
             adapter="audio_generate",
             attempt=1,
             item_key=item_key,
@@ -118,199 +142,76 @@ def _missing_output(item_key: str, detail: str) -> AudioOutcome:
     )
 
 
-def _map_manifest_outputs(
-    items: Sequence[AudioRequest], output_dir: Path, manifest_path: Path,
-    destination_dir: Path,
-) -> list[AudioOutcome]:
-    """Traduz o manifesto do batch em resultados por item.
+def _clean_text(value: str) -> str:
+    # O servidor trata o texto como fala; tags de emoção e quebras de linha
+    # não são narração.
+    return _EMOTION_TAG.sub("", value).strip().replace("\r", " ").replace("\n", " ")
 
-    O binário ignora o `id` do pedido e grava `line_<N>.wav`, devolvendo esse
-    nome no manifesto, na ordem das linhas. Sem ler o manifesto, o adaptador
-    anunciaria um `<item_key>.wav` que o disco não tem — e um exit 0 com N
-    áudios viraria N sucessos falsos.
+
+def montar_payload(request: AudioRequest, settings: Settings) -> dict[str, Any]:
+    """Corpo de `/v1/audio/speech`.
+
+    Os campos de clonagem vão no nível de cima: dentro de `options` o servidor
+    os ignora em silêncio e devolve uma voz não clonada com status 200.
     """
-    try:
-        dados = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        entradas = dados.get("requests") or []
-    except (OSError, ValueError) as error:
-        return [
-            _missing_output(item.item_key, f"manifesto ilegível ({error})")
-            for item in items
-        ]
-
-    outcomes: list[AudioOutcome] = []
-    for index, item in enumerate(items):
-        if index >= len(entradas):
-            outcomes.append(
-                _missing_output(item.item_key, "manifesto não cobre todos os itens")
-            )
-            continue
-        nome = str((entradas[index] or {}).get("id") or "")
-        caminho = output_dir / f"{nome}.wav"
-        if not re.fullmatch(r"line_[0-9]+", nome) or not caminho.is_file():
-            outcomes.append(
-                _missing_output(
-                    item.item_key, f"arquivo declarado no manifesto ausente: {nome!r}"
-                )
-            )
-            continue
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", item.item_key):
-            outcomes.append(_missing_output(item.item_key, "identificador de bloco inválido"))
-            continue
-        destination = destination_dir / f"{item.item_key}.wav"
-        shutil.copyfile(caminho, destination)
-        outcomes.append(AudioOutcome.succeeded(item.item_key, destination))
-    return outcomes
-
-
-def _map_partial_outputs(
-    items: Sequence[AudioRequest], output_dir: Path, destination_dir: Path,
-    *, stderr: str, exit_code: int,
-) -> list[AudioOutcome]:
-    """Keep complete line WAVs from a failed batch; leave only unfinished items failed."""
-    outcomes: list[AudioOutcome] = []
-    for index, item in enumerate(items, start=1):
-        source = output_dir / f"line_{index}.wav"
-        # A failed singleton is the failing item itself, so never promote its
-        # possible partial output. In a failed multi-item batch, valid WAVs
-        # already written for earlier lines remain reusable.
-        complete = False
-        try:
-            with wave.open(str(source), "rb") as wav_file:
-                frames = wav_file.getnframes()
-                expected_bytes = frames * wav_file.getnchannels() * wav_file.getsampwidth()
-                complete = (
-                    len(items) > 1
-                    and frames > 0
-                    and len(wav_file.readframes(frames)) == expected_bytes
-                )
-        except (OSError, EOFError, wave.Error):
-            complete = False
-
-        if complete and re.fullmatch(r"[A-Za-z0-9_-]+", item.item_key):
-            destination = destination_dir / f"{item.item_key}.wav"
-            shutil.copyfile(source, destination)
-            outcomes.append(AudioOutcome.succeeded(item.item_key, destination))
-            continue
-
-        failure = classify_audio_failure(
-            stderr, exit_code=exit_code, item_key=item.item_key,
-        )
-        outcomes.append(AudioOutcome(
-            item_key=item.item_key, failure=failure, stderr=_stderr_tail(stderr),
-        ))
-    return outcomes
+    payload: dict[str, Any] = {
+        "model": MODELO_ID,
+        "input": _clean_text(request.text),
+        "response_format": "wav",
+        "voice_ref": str(settings.resolved_tts_voice_reference),
+        "reference_text": settings.tts_reference_text,
+        "seed": settings.tts_seed if request.seed is None else request.seed,
+    }
+    if request.max_tokens is not None:
+        payload["max_tokens"] = request.max_tokens
+    return payload
 
 
 class AudioGenerateClient:
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        run: Callable[..., object] | None = None,
-    ) -> None:
+    def __init__(self, settings: Settings, *, http: httpx.Client | None = None) -> None:
         self.settings = settings
-        self._run = run or subprocess.run
+        self._http = http or httpx.Client()
 
-    def build_argv(
-        self,
-        batch_text_file: Path,
-        output_dir: Path,
-        *,
-        seed: int | None = None,
-        manifest_path: Path | None = None,
-        backend: str | None = None,
-    ) -> list[str]:
-        # Contrato real do audiocpp_cli: `--task` e `--family` são obrigatórios,
-        # a referência de voz é `--voice-ref` e a saída é `--out-dir`. As formas
-        # antigas (`--voice-reference`, `--output-dir`, sem task/family) fazem o
-        # binário sair 1 sem gerar nada.
-        argv = [
-            str(self.settings.resolved_tts_binary),
-            "--task", "tts",
-            "--family", self.settings.tts_family,
-            "--model", str(self.settings.resolved_tts_model),
-            "--backend", backend or self.settings.tts_backend,
-            "--voice-ref", str(self.settings.resolved_tts_voice_reference),
-            "--reference-text", self.settings.tts_reference_text,
-            "--batch-text-file", str(batch_text_file),
-            "--out-dir", str(output_dir),
-            "--seed", str(self.settings.tts_seed if seed is None else seed),
-        ]
-        if manifest_path is not None:
-            argv += ["--batch-manifest-out", str(manifest_path)]
-        return argv
-
-    @staticmethod
-    def _clean_text(value: str) -> str:
-        return _EMOTION_TAG.sub("", value).strip()
-
-    def synthesize_batch(
-        self, items: Sequence[AudioRequest], output_dir: Path, *,
-        backend: str | None = None,
-    ) -> list[AudioOutcome]:
-        if not items:
-            return []
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".txt", prefix="tts-batch-",
-            dir=output_dir, delete=False,
-        ) as source:
-            for item in items:
-                # O CLI trata cada linha como fala, não como JSON.
-                source.write(self._clean_text(item.text).replace("\r", " ").replace("\n", " ") + "\n")
-            batch_text_file = Path(source.name)
-        manifest_path = batch_text_file.with_suffix(".manifest.json")
-        # O CLI reinicia os nomes line_1, line_2 em cada chamada. Saídas cruas
-        # ficam isoladas; só os WAVs canônicos b001, b002 vão para a run.
-        raw_dir = output_dir / ".batches" / batch_text_file.stem
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        argv = self.build_argv(
-            batch_text_file, raw_dir, seed=items[0].seed, manifest_path=manifest_path,
-            backend=backend,
-        )
-        timeout = min(
-            self.settings.tts_batch_timeout,
-            self.settings.tts_item_timeout * len(items),
-        )
-        stderr = ""
-        exit_code = 1
+    def synthesize(self, request: AudioRequest, servidor: Any, destino_dir: Path) -> AudioOutcome:
+        """Sintetiza um trecho em `destino_dir/<item_key>.wav`."""
+        if not _ITEM_KEY.fullmatch(request.item_key):
+            return _saida_invalida(request.item_key, "identificador de bloco inválido")
+        destino_dir = Path(destino_dir)
+        destino_dir.mkdir(parents=True, exist_ok=True)
         try:
-            completed = self._run(
-                argv,
-                cwd=self.settings.audio_generate_dir,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+            resposta = self._http.post(
+                servidor.url + "/v1/audio/speech",
+                json=montar_payload(request, self.settings),
+                timeout=self.settings.tts_item_timeout,
             )
-            stderr = _stderr_tail(getattr(completed, "stderr", ""))
-            batch_text_file.with_suffix(".stderr.log").write_text(stderr, encoding="utf-8")
-            exit_code = int(getattr(completed, "returncode", 1))
-            if exit_code == 0:
-                return _map_manifest_outputs(items, raw_dir, manifest_path, output_dir)
-            if "reached max_tokens before EOC" in stderr:
-                return _map_partial_outputs(
-                    items, raw_dir, output_dir, stderr=stderr, exit_code=exit_code,
-                )
-        except (OSError, subprocess.SubprocessError) as error:
-            stderr = _stderr_tail(error)
-        return [
-            AudioOutcome(
-                item_key=item.item_key,
-                failure=classify_audio_failure(
-                    stderr, exit_code=exit_code, item_key=item.item_key
-                ),
-                stderr=stderr,
+        except httpx.HTTPError as error:
+            return _indisponivel(request.item_key, error)
+        if resposta.status_code != 200:
+            try:
+                mensagem = str(resposta.json()["error"]["message"])
+            except (ValueError, KeyError, TypeError):
+                mensagem = resposta.text
+            failure = classify_audio_failure(
+                mensagem, status=resposta.status_code, item_key=request.item_key,
             )
-            for item in items
-        ]
+            return AudioOutcome(item_key=request.item_key, failure=failure, stderr=_tail(mensagem))
+        if not resposta.content:
+            return _saida_invalida(request.item_key, "resposta vazia do servidor")
+        destino = destino_dir / f"{request.item_key}.wav"
+        # Nunca meio arquivo com o nome canônico: a montagem e o reuso leem
+        # `<key>.wav` direto do disco.
+        temporario = destino.with_name(destino.name + ".tmp")
+        temporario.write_bytes(resposta.content)
+        temporario.replace(destino)
+        return AudioOutcome.succeeded(request.item_key, destino)
 
 
 __all__ = [
+    "FALHAS_DE_SERVIDOR",
+    "SERVIDOR_INDISPONIVEL",
     "AudioGenerateClient",
     "AudioOutcome",
     "AudioRequest",
     "classify_audio_failure",
+    "montar_payload",
 ]

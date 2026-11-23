@@ -180,8 +180,18 @@ def test_audio_child_events_project_without_invalid_transitions_or_duplicate_ter
     ]))
 
     class Client:
-        def synthesize_batch(self, items, output_dir):
-            return [AudioOutcome.succeeded(item.item_key, _wav(output_dir / f"{item.item_key}.wav")) for item in items]
+        def synthesize(self, request, servidor, output_dir):
+            return AudioOutcome.succeeded(request.item_key, _wav(output_dir / f"{request.item_key}.wav"))
+
+    class Servidor:
+        url = "falso://vulkan"
+        backend = "vulkan"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
 
     class Broker:
         @contextmanager
@@ -191,7 +201,7 @@ def test_audio_child_events_project_without_invalid_transitions_or_duplicate_ter
     events = []
     result = AudioExecutor(
         settings=Settings(_env_file=None, audio_generate_dir=tmp_path / "audio-generate"),
-        client=Client(), broker=Broker(),
+        client=Client(), broker=Broker(), servidor_factory=lambda backend, pasta: Servidor(),
     ).run(snapshot, lambda **event: events.append(event))
     projector = ChildEventProjector(db, run_dir, stage.id)
     for event in events:

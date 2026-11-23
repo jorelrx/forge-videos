@@ -50,7 +50,7 @@ from forge.domain.execucao import RunSnapshot
 from forge.domain.midia import BlocoNarracao, PlanoMidia
 from forge.domain.operacao import ItemStatus, StageName, WorkItem
 from forge.executors.audio import AudioExecutor
-from forge.executors.audio_generate import AudioOutcome
+from forge.executors.audio_generate import SERVIDOR_INDISPONIVEL, AudioOutcome, classify_audio_failure
 from forge.infrastructure.config import Settings
 from forge.services.persistencia import gravar_modelo
 
@@ -80,33 +80,122 @@ def _snapshot(tmp_path: Path, *, work_items=(), stage=StageName.AUDIO) -> RunSna
 
 
 class Broker:
-    def __init__(self): self.calls = []
+    def __init__(self, eventos=None):
+        self.calls = []
+        self.eventos = eventos if eventos is not None else []
+
     @contextmanager
     def exclusivo(self, resource):
         self.calls.append(resource)
+        self.eventos.append("broker.entra")
         yield
+        self.eventos.append("broker.sai")
 
 
-class Client:
-    def __init__(self, fail_batch=False):
+class ServidorFalso:
+    def __init__(self, backend, eventos):
+        self.backend = backend
+        self.url = f"falso://{backend}"
+        self.reinicios = 0
+        self.saiu = False
+        self.eventos = eventos
+
+    def __enter__(self):
+        self.eventos.append(f"servidor.{self.backend}.entra")
+        return self
+
+    def __exit__(self, *exc):
+        self.saiu = True
+        self.eventos.append(f"servidor.{self.backend}.sai")
+
+    def reiniciar(self):
+        self.reinicios += 1
+
+
+class Fabrica:
+    """`servidor_factory` falso; `falha[backend]` é a exceção da subida."""
+
+    def __init__(self, falha=None, eventos=None):
+        self.falha = falha or {}
+        self.servidores = []
+        self.eventos = eventos if eventos is not None else []
+
+    def __call__(self, backend, pasta):
+        if backend in self.falha:
+            raise self.falha[backend]
+        servidor = ServidorFalso(backend, self.eventos)
+        self.servidores.append(servidor)
+        return servidor
+
+    @property
+    def backends(self):
+        return [s.backend for s in self.servidores]
+
+
+_MENSAGENS = {
+    "max_tokens": "Higgs TTS generation reached max_tokens before EOC",
+    "oom": "ggml_vulkan: Device memory allocation of size 1 failed",
+    "500": "could not open WAV input: C:/x.wav",
+}
+
+
+class Cliente:
+    """`roteiro(item_key, seed, backend)` devolve "ok", "silencio", "caiu",
+    "max_tokens", "oom" ou "500"; o padrão é "ok"."""
+
+    def __init__(self, roteiro=None, eventos=None):
+        self.roteiro = roteiro or (lambda key, seed, backend: "ok")
         self.calls = []
-        self.fail_batch = fail_batch
-    def synthesize_batch(self, items, output_dir):
-        keys = [item.item_key for item in items]
-        self.calls.append(keys)
-        outcomes = []
-        for item in items:
-            path = output_dir / f"{item.item_key}.wav"
-            if self.fail_batch and len(items) > 1:
-                outcomes.append(AudioOutcome.failed(item.item_key, "tts_process_failed", "batch failed"))
-            else:
-                _wav(path)
-                outcomes.append(AudioOutcome.succeeded(item.item_key, path))
-        return outcomes
+        self.eventos = eventos
+
+    def synthesize(self, request, servidor, destino):
+        self.calls.append((request.item_key, request.seed, servidor.backend))
+        if self.eventos is not None:
+            self.eventos.append(f"pedido.{request.item_key}.{servidor.backend}")
+        acao = self.roteiro(request.item_key, request.seed, servidor.backend)
+        if acao == "caiu":
+            return AudioOutcome.failed(request.item_key, SERVIDOR_INDISPONIVEL, "conexão recusada")
+        if acao in _MENSAGENS:
+            return AudioOutcome(
+                item_key=request.item_key,
+                failure=classify_audio_failure(_MENSAGENS[acao], status=500, item_key=request.item_key),
+            )
+        path = Path(destino) / f"{request.item_key}.wav"
+        _fala(path, silencio=5.0 if acao == "silencio" else 0.3)
+        return AudioOutcome.succeeded(request.item_key, path)
+
+
+def _fala(path: Path, *, silencio: float = 0.0, rate: int = 24000, frequencia: int = 200) -> None:
+    """Tom de 0,5 s, `silencio` segundos mudos, tom de 0,5 s."""
+    import math
+    import struct
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meio = rate // 2
+    tom = [int(9000 * math.sin(2 * math.pi * frequencia * i / rate)) for i in range(meio)]
+    amostras = tom + [0] * int(silencio * rate) + tom
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(struct.pack(f"<{len(amostras)}h", *amostras))
 
 
 def _settings(tmp_path: Path, **kwargs) -> Settings:
     return Settings(_env_file=None, audio_generate_dir=tmp_path / "audio-generate", **kwargs)
+
+
+def _executor(tmp_path, cliente=None, fabrica=None, broker=None, **settings_kwargs):
+    return AudioExecutor(
+        settings=_settings(tmp_path, **settings_kwargs),
+        client=cliente or Cliente(),
+        broker=broker or Broker(),
+        servidor_factory=fabrica or Fabrica(),
+    )
+
+
+def _de(eventos, kind):
+    return [e for e in eventos if e["kind"] == kind]
 
 
 def test_prepare_reads_blocks_and_uses_canonical_hash(tmp_path):
@@ -135,166 +224,6 @@ def test_tts_request_receives_only_spoken_text(tmp_path):
     assert request.text == "fala"
     assert not hasattr(request, "referencias")
     assert not hasattr(request, "prompt_visual")
-
-
-def test_run_batches_then_retries_every_unfinished_block_once_under_one_broker_lock(tmp_path):
-    client, broker, events = Client(fail_batch=True), Broker(), []
-    executor = AudioExecutor(settings=_settings(tmp_path, tts_batch_size=3), client=client, broker=broker)
-
-    result = executor.run(_snapshot(tmp_path), lambda **event: events.append(event))
-
-    assert client.calls == [["b001", "b002", "b003"], ["b001"], ["b002"], ["b003"]]
-    assert broker.calls == ["tts"]
-    assert result.current_items == result.total_items == 3
-    assert result.gate.approved
-    assert all(event["payload"].get("duration_ms") is not None for event in events if event["kind"] == "item.started")
-    assert [event["payload"]["item_key"] for event in events if event["kind"] == "artifact.created"] == ["b001", "b002", "b003"]
-
-
-@pytest.mark.parametrize("cpu_succeeds", [True, False])
-def test_max_tokens_isolates_only_failed_item_and_uses_cpu_once(tmp_path, cpu_succeeds):
-    from forge.executors.audio_generate import classify_audio_failure
-
-    class DeviceClient:
-        def __init__(self):
-            self.calls = []
-
-        def synthesize_batch(self, items, output_dir, *, backend=None):
-            keys = [item.item_key for item in items]
-            self.calls.append((keys, backend or "vulkan"))
-            outcomes = []
-            for item in items:
-                path = output_dir / f"{item.item_key}.wav"
-                if len(items) > 1 and item.item_key == "b001":
-                    _wav(path)
-                    outcomes.append(AudioOutcome.succeeded(item.item_key, path))
-                elif len(items) > 1 or (item.item_key == "b002" and backend != "cpu"):
-                    failure = classify_audio_failure(
-                        "Higgs TTS generation reached max_tokens before EOC",
-                        exit_code=1, item_key=item.item_key,
-                    )
-                    outcomes.append(AudioOutcome(item.item_key, failure=failure))
-                elif item.item_key == "b002" and backend == "cpu" and not cpu_succeeds:
-                    failure = classify_audio_failure(
-                        "Higgs TTS generation reached max_tokens before EOC",
-                        exit_code=1, item_key=item.item_key,
-                    )
-                    outcomes.append(AudioOutcome(item.item_key, failure=failure))
-                else:
-                    _wav(path)
-                    outcomes.append(AudioOutcome.succeeded(item.item_key, path))
-            return outcomes
-
-    client, events = DeviceClient(), []
-    executor = AudioExecutor(
-        settings=_settings(tmp_path, tts_batch_size=3), client=client, broker=Broker()
-    )
-
-    result = executor.run(_snapshot(tmp_path), lambda **event: events.append(event))
-
-    # CPU que também estoura tenta as sementes alternativas antes de desistir.
-    cpu_calls = 1 if cpu_succeeds else 3
-    assert client.calls == [
-        (["b001", "b002", "b003"], "vulkan"),
-        (["b002"], "vulkan"),
-        *[(["b002"], "cpu")] * cpu_calls,
-        (["b003"], "vulkan"),
-    ]
-    assert result.current_items == 2 + int(cpu_succeeds)
-    cpu_starts = [event for event in events if event["kind"] == "audio.recovery.started"]
-    assert len(cpu_starts) == 1
-    assert cpu_starts[0]["payload"]["item_key"] == "b002"
-    assert cpu_starts[0]["payload"]["backend"] == "cpu"
-    assert cpu_starts[0]["payload"]["fallback_from"] == "vulkan"
-    assert cpu_starts[0]["payload"]["original_failure_code"] == "tts_max_tokens_before_eoc"
-    assert "reached max_tokens before EOC" in cpu_starts[0]["payload"]["original_failure_stderr"]
-    assert ("b003", "vulkan") in [(keys[0], backend) for keys, backend in client.calls if len(keys) == 1]
-    if not cpu_succeeds:
-        failed = [event for event in events if event["kind"] == "item.failed"]
-        assert len(failed) == 1
-        assert failed[0]["payload"]["item_key"] == "b002"
-        assert failed[0]["payload"]["fallback_backend"] == "cpu"
-        assert failed[0]["payload"]["original_failure_code"] == "tts_max_tokens_before_eoc"
-        assert "reached max_tokens before EOC" in failed[0]["payload"]["original_failure_stderr"]
-        completed = [event for event in events if event["kind"] == "audio.recovery.completed"]
-        assert len(completed) == 1
-        assert completed[0]["payload"]["status"] == "failed"
-        assert completed[0]["payload"]["cpu_failure_code"] == "tts_max_tokens_before_eoc"
-
-
-def test_max_tokens_na_cpu_troca_a_semente_antes_de_desistir(tmp_path):
-    """Semente fixa repete a mesma geração sem fim: só outra semente destrava."""
-    from forge.executors.audio_generate import classify_audio_failure
-
-    class SeedClient:
-        def __init__(self):
-            self.calls = []
-
-        def synthesize_batch(self, items, output_dir, *, backend=None):
-            outcomes = []
-            for item in items:
-                self.calls.append((item.item_key, backend or "vulkan", item.seed))
-                path = output_dir / f"{item.item_key}.wav"
-                if item.item_key == "b002" and item.seed != 1042:
-                    failure = classify_audio_failure(
-                        "Higgs TTS generation reached max_tokens before EOC",
-                        exit_code=1, item_key=item.item_key,
-                    )
-                    outcomes.append(AudioOutcome(item.item_key, failure=failure))
-                else:
-                    _wav(path)
-                    outcomes.append(AudioOutcome.succeeded(item.item_key, path))
-            return outcomes
-
-    client, events = SeedClient(), []
-    executor = AudioExecutor(
-        settings=_settings(tmp_path, tts_batch_size=1), client=client, broker=Broker()
-    )
-
-    result = executor.run(_snapshot(tmp_path), lambda **event: events.append(event))
-
-    assert [call for call in client.calls if call[0] == "b002"] == [
-        ("b002", "vulkan", None), ("b002", "cpu", None), ("b002", "cpu", 1042),
-    ]
-    assert result.current_items == result.total_items == 3
-    assert result.gate.approved
-    criado = next(
-        e for e in events
-        if e["kind"] == "artifact.created" and e["payload"]["item_key"] == "b002"
-    )
-    assert criado["payload"]["metadata"]["seed"] == 1042
-    assert not [e for e in events if e["kind"] == "item.failed"]
-
-
-def test_non_retriable_max_tokens_is_not_retried_when_cpu_is_primary(tmp_path):
-    from forge.executors.audio_generate import classify_audio_failure
-
-    class CpuClient:
-        def __init__(self):
-            self.calls = []
-
-        def synthesize_batch(self, items, output_dir):
-            self.calls.append([item.item_key for item in items])
-            return [AudioOutcome(
-                item_key=item.item_key,
-                failure=classify_audio_failure(
-                    "Higgs TTS generation reached max_tokens before EOC",
-                    exit_code=1, item_key=item.item_key,
-                ),
-            ) for item in items]
-
-    client, events = CpuClient(), []
-    executor = AudioExecutor(
-        settings=_settings(tmp_path, tts_backend="cpu", tts_batch_size=3),
-        client=client, broker=Broker(),
-    )
-
-    result = executor.run(_snapshot(tmp_path), lambda **event: events.append(event))
-
-    assert client.calls == [["b001", "b002", "b003"]]
-    assert result.current_items == 0
-    failures = [event for event in events if event["kind"] == "item.failed"]
-    assert [event["payload"]["item_key"] for event in failures] == ["b001", "b002", "b003"]
 
 
 def test_validate_rejects_incomplete_current_outputs(tmp_path):
@@ -343,8 +272,8 @@ def test_previous_attempt_output_is_reused_from_parent_verified_snapshot(tmp_pat
         size_bytes=reusable.stat().st_size, mime_type="audio/wav", metadata={"seed": 42},
         is_current=True, created_at="2026-09-13T00:00:00Z",
     )
-    client, events = Client(), []
-    result = AudioExecutor(settings=_settings(tmp_path), client=client, broker=Broker()).run(
+    client, events = Cliente(), []
+    result = _executor(tmp_path, client).run(
         snapshot.model_copy(update={"reusable_outputs": [ReusableOutput(
             artifact=artifact,
             input_hash=hash_json({"id": "b001", "secao": "A", "texto": "Primeiro texto."}),
@@ -352,33 +281,179 @@ def test_previous_attempt_output_is_reused_from_parent_verified_snapshot(tmp_pat
         lambda **event: events.append(event),
     )
 
-    assert client.calls == [["b002", "b003"]]
+    assert client.calls == [("b002", 42, "vulkan"), ("b003", 42, "vulkan")]
     assert [event["kind"] for event in events if event["payload"].get("item_key") == "b001"] == [
         "item.planned", "item.started", "artifact.created", "item.succeeded"
     ]
     assert result.current_items == 3
 
 
-def test_voice_outlier_is_retried_with_alternate_seed_before_gate(tmp_path):
-    import math
+def test_cada_trecho_e_um_pedido_e_um_servidor_por_etapa(tmp_path):
+    cliente, fabrica, broker, eventos = Cliente(), Fabrica(), Broker(), []
+    result = _executor(tmp_path, cliente, fabrica, broker).run(
+        _snapshot(tmp_path), lambda **e: eventos.append(e)
+    )
 
-    class VoiceClient:
-        def __init__(self): self.seeds = []
-        def synthesize_batch(self, items, output_dir):
-            result = []
-            for item in items:
-                self.seeds.append(item.seed)
-                path = output_dir / f"{item.item_key}.wav"
-                frequency = 440 if item.item_key == "b003" and item.seed is None else 200
-                path.parent.mkdir(parents=True, exist_ok=True)
-                frames = bytearray()
-                for index in range(2400):
-                    frames.extend(int(20000 * math.sin(2 * math.pi * frequency * index / 24000)).to_bytes(2, "little", signed=True))
-                with wave.open(str(path), "wb") as output:
-                    output.setnchannels(1); output.setsampwidth(2); output.setframerate(24000); output.writeframes(frames)
-                result.append(AudioOutcome.succeeded(item.item_key, path))
-            return result
+    assert cliente.calls == [("b001", 42, "vulkan"), ("b002", 42, "vulkan"), ("b003", 42, "vulkan")]
+    assert fabrica.backends == ["vulkan"]
+    assert fabrica.servidores[0].saiu
+    assert broker.calls == ["tts"]
+    assert result.gate.approved and result.current_items == 3
+    assert [e["payload"]["item_key"] for e in _de(eventos, "artifact.created")] == ["b001", "b002", "b003"]
+    assert all(e["payload"]["backend"] == "vulkan" for e in _de(eventos, "item.succeeded"))
 
+
+def test_max_tokens_troca_de_seed_na_gpu_antes_da_cpu(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if (k, s) == ("b002", 42) else "ok")
+    fabrica = Fabrica()
+    result = _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert ("b002", 1042, "vulkan") in cliente.calls
+    assert fabrica.backends == ["vulkan"]
+    assert result.gate.approved
+    assert next(a for a in result.artifacts if a.item_key == "b002").metadata["seed"] == 1042
+
+
+def test_trecho_esgotado_na_gpu_vai_para_cpu(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b002" and b == "vulkan" else "ok")
+    fabrica, eventos = Fabrica(), []
+    result = _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    assert [c for c in cliente.calls if c[0] == "b002"] == [
+        ("b002", 42, "vulkan"), ("b002", 1042, "vulkan"), ("b002", 2042, "vulkan"), ("b002", 42, "cpu"),
+    ]
+    assert fabrica.backends == ["vulkan", "cpu"]
+    assert all(s.saiu for s in fabrica.servidores)
+    iniciado = _de(eventos, "audio.recovery.started")[0]["payload"]
+    assert iniciado["item_key"] == "b002" and iniciado["queued"] is True
+    assert iniciado["original_failure_code"] == "tts_max_tokens_before_eoc"
+    concluido = _de(eventos, "audio.recovery.completed")[0]["payload"]
+    assert concluido["status"] == "succeeded" and concluido["backend"] == "cpu"
+    sucesso = next(e for e in _de(eventos, "item.succeeded") if e["payload"]["item_key"] == "b002")
+    assert sucesso["payload"]["backend"] == "cpu"
+    assert result.gate.approved
+
+
+def test_trecho_que_falha_tambem_na_cpu_falha_sem_artefato(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b002" else "ok")
+    eventos = []
+    result = _executor(tmp_path, cliente).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falha = _de(eventos, "item.failed")[0]["payload"]
+    assert falha["item_key"] == "b002" and falha["failure_code"] == "tts_max_tokens_before_eoc"
+    assert falha["backend"] == "cpu" and falha["original_backend"] == "vulkan"
+    assert _de(eventos, "audio.recovery.completed")[0]["payload"]["status"] == "failed"
+    assert not result.gate.approved and result.gate.code == "audio_incomplete"
+
+
+def test_silencio_longo_conta_como_seed_ruim(tmp_path):
+    cliente = Cliente(lambda k, s, b: "silencio" if (k, s) == ("b002", 42) else "ok")
+    fabrica = Fabrica()
+    result = _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: None)
+
+    final = next(a for a in result.artifacts if a.item_key == "b002")
+    assert final.metadata["seed"] == 1042 and final.metadata["silencio_max"] < 1.0
+    assert fabrica.backends == ["vulkan"]
+    assert result.gate.approved
+
+
+def test_silencio_que_nenhuma_seed_cura_mantem_artefato_e_gate_reprova(tmp_path):
+    cliente = Cliente(lambda k, s, b: "silencio" if k == "b002" else "ok")
+    result = _executor(tmp_path, cliente).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert [(s, b) for k, s, b in cliente.calls if k == "b002"] == [
+        (42, "vulkan"), (1042, "vulkan"), (2042, "vulkan"), (42, "cpu"), (1042, "cpu"), (2042, "cpu"),
+    ]
+    assert not result.gate.approved
+    achado = next(f for f in result.gate.findings if f.code == "audio_silence")
+    assert achado.item_key == "b002" and achado.details["silencio_max"] > 4.5
+
+
+def test_erro_500_generico_falha_na_hora_sem_trocar_seed_nem_cpu(tmp_path):
+    cliente = Cliente(lambda k, s, b: "500" if k == "b002" else "ok")
+    fabrica, eventos = Fabrica(), []
+    _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    assert [c for c in cliente.calls if c[0] == "b002"] == [("b002", 42, "vulkan")]
+    assert fabrica.backends == ["vulkan"]
+    assert _de(eventos, "item.failed")[0]["payload"]["failure_code"] == "tts_process_failed"
+    assert _de(eventos, "audio.recovery.started") == []
+
+
+def test_servidor_cai_reinicia_uma_vez_e_repete_o_trecho(tmp_path):
+    quedas = iter([True])
+    cliente = Cliente(lambda k, s, b: "caiu" if k == "b002" and next(quedas, False) else "ok")
+    fabrica = Fabrica()
+    result = _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert fabrica.servidores[0].reinicios == 1
+    assert [c for c in cliente.calls if c[0] == "b002"] == [("b002", 42, "vulkan")] * 2
+    assert result.gate.approved
+
+
+def test_oom_tambem_reinicia_o_servidor(tmp_path):
+    quedas = iter([True])
+    cliente = Cliente(lambda k, s, b: "oom" if k == "b001" and next(quedas, False) else "ok")
+    fabrica = Fabrica()
+    result = _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert fabrica.servidores[0].reinicios == 1
+    assert result.gate.approved
+
+
+def test_servidor_cai_duas_vezes_restantes_falham_sem_ir_para_cpu(tmp_path):
+    cliente = Cliente(lambda k, s, b: "ok" if k == "b001" else "caiu")
+    fabrica, eventos = Fabrica(), []
+    _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falhas = {e["payload"]["item_key"]: e["payload"]["failure_code"] for e in _de(eventos, "item.failed")}
+    assert falhas == {"b002": "tts_servidor_indisponivel", "b003": "tts_servidor_indisponivel"}
+    assert fabrica.backends == ["vulkan"]
+    assert fabrica.servidores[0].reinicios == 1
+    assert [c for c in cliente.calls if c[0] == "b003"] == []
+
+
+def test_servidor_principal_que_nao_sobe_falha_todos_os_trechos(tmp_path):
+    from forge.executors.audiocpp_server import ServidorIndisponivel
+
+    fabrica, eventos = Fabrica(falha={"vulkan": ServidorIndisponivel("porta ocupada")}), []
+    result = _executor(tmp_path, fabrica=fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    assert {e["payload"]["failure_code"] for e in _de(eventos, "item.failed")} == {"tts_servidor_indisponivel"}
+    assert len(_de(eventos, "item.failed")) == 3
+    assert not result.gate.approved
+
+
+def test_contrato_quebrado_na_gpu_falha_a_etapa(tmp_path):
+    from forge.executors.audiocpp_server import ContratoServidorQuebrado
+
+    cliente = Cliente()
+    fabrica = Fabrica(falha={"vulkan": ContratoServidorQuebrado("sonda 200")})
+    executor = _executor(tmp_path, cliente, fabrica)
+    snapshot = _snapshot(tmp_path)
+
+    result = executor.execute(snapshot, executor.prepare(snapshot), lambda **e: None)
+
+    assert result.failure is not None and result.failure.code == "tts_contrato_servidor"
+    assert cliente.calls == []
+
+
+def test_seed_sobrescrita_da_abertura_e_a_primeira(tmp_path):
+    cliente, fabrica = Cliente(), Fabrica()
+    _executor(tmp_path, cliente, fabrica, tts_seed=43).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert {s for _, s, _ in cliente.calls} == {43}
+    assert fabrica.backends == ["vulkan"]
+
+
+def test_seed_sobrescrita_igual_a_alternativa_nao_repete(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b001" and b == "vulkan" else "ok")
+    _executor(tmp_path, cliente, tts_seed=1042).run(_snapshot(tmp_path), lambda **e: None)
+
+    assert [s for k, s, b in cliente.calls if k == "b001" and b == "vulkan"] == [1042, 2042]
+
+
+def _snapshot_cinco(tmp_path):
     snapshot = _snapshot(tmp_path)
     media = PlanoMidia.model_validate_json((snapshot.run_dir / "video" / "midia.json").read_text())
     media.blocos.extend([
@@ -386,75 +461,58 @@ def test_voice_outlier_is_retried_with_alternate_seed_before_gate(tmp_path):
         BlocoNarracao(id="b005", secao="B", texto="Quinto texto."),
     ])
     gravar_modelo(snapshot.run_dir / "video" / "midia.json", media)
-    client = VoiceClient()
+    return snapshot
 
-    result = AudioExecutor(settings=_settings(tmp_path, tts_batch_size=8), client=client, broker=Broker()).run(snapshot, lambda **event: None)
 
+class _ClienteVoz(Cliente):
+    """b003 sai uma oitava acima na seed padrão (outra voz)."""
+
+    def synthesize(self, request, servidor, destino):
+        self.calls.append((request.item_key, request.seed, servidor.backend))
+        if self.eventos is not None:
+            self.eventos.append(f"pedido.{request.item_key}.{servidor.backend}")
+        path = Path(destino) / f"{request.item_key}.wav"
+        aguda = request.item_key == "b003" and request.seed == 42
+        _fala(path, silencio=0.3, frequencia=440 if aguda else 200)
+        return AudioOutcome.succeeded(request.item_key, path)
+
+
+def test_outliers_de_voz_rodam_dentro_do_slot_tts(tmp_path):
+    ordem = []
+    cliente = _ClienteVoz(eventos=ordem)
+    fabrica, broker = Fabrica(eventos=ordem), Broker(eventos=ordem)
+    result = _executor(tmp_path, cliente, fabrica, broker).run(_snapshot_cinco(tmp_path), lambda **e: None)
+
+    assert ("b003", 1042, "vulkan") in cliente.calls
     assert result.gate.approved
-    assert 1042 in client.seeds
+    regerado = len(ordem) - 1 - ordem[::-1].index("pedido.b003.vulkan")
+    assert ordem.index("broker.entra") < regerado < ordem.index("servidor.vulkan.sai") < ordem.index("broker.sai")
 
 
-# --- silêncio longo dentro de um bloco ---
+def test_outlier_com_servidor_indisponivel_e_pulado(tmp_path):
+    cliente = _ClienteVoz()
+    executor = _executor(tmp_path, cliente)
+    original = cliente.synthesize
 
-def _fala(path: Path, *, silencio: float = 0.0, rate: int = 24000) -> None:
-    """Tom de 1 s, `silencio` segundos mudos, tom de 1 s."""
-    import math
-    import struct
+    def synthesize(request, servidor, destino):
+        if request.seed != 42:
+            return AudioOutcome.failed(request.item_key, SERVIDOR_INDISPONIVEL, "caiu")
+        return original(request, servidor, destino)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tom = [int(9000 * math.sin(2 * math.pi * 200 * i / rate)) for i in range(rate)]
-    amostras = tom + [0] * int(silencio * rate) + tom
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(rate)
-        output.writeframes(struct.pack(f"<{len(amostras)}h", *amostras))
+    cliente.synthesize = synthesize
+    result = executor.run(_snapshot_cinco(tmp_path), lambda **e: None)
 
-
-class _ClienteComBuraco:
-    """b002 sai com 5 s mudos no meio, a menos que a semente esteja em `curam`."""
-
-    def __init__(self, curam=()):
-        self.curam = set(curam)
-        self.calls = []
-
-    def synthesize_batch(self, items, output_dir, *, backend=None):
-        outcomes = []
-        for item in items:
-            self.calls.append((item.item_key, item.seed))
-            path = output_dir / f"{item.item_key}.wav"
-            buraco = item.item_key == "b002" and item.seed not in self.curam
-            _fala(path, silencio=5.0 if buraco else 0.3)
-            outcomes.append(AudioOutcome.succeeded(item.item_key, path))
-        return outcomes
+    assert any(f.code == "audio_voice_divergence" for f in result.gate.findings)
 
 
-def test_bloco_com_silencio_longo_e_regenerado_com_outra_semente(tmp_path):
-    """O TTS às vezes trava mudo no meio da frase; só a validação final via."""
-    client, events = _ClienteComBuraco(curam={1042}), []
-    executor = AudioExecutor(
-        settings=_settings(tmp_path, tts_batch_size=3), client=client, broker=Broker()
+def test_backend_cpu_usa_so_servidor_cpu(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b002" else "ok")
+    fabrica, eventos = Fabrica(), []
+    _executor(tmp_path, cliente, fabrica, tts_backend="cpu").run(
+        _snapshot(tmp_path), lambda **e: eventos.append(e)
     )
 
-    result = executor.run(_snapshot(tmp_path), lambda **event: events.append(event))
-
-    assert client.calls[-1] == ("b002", 1042)
-    assert result.gate.approved
-    final = next(a for a in result.artifacts if a.item_key == "b002")
-    assert final.metadata["seed"] == 1042
-    assert final.metadata["silencio_max"] < 1.0
-
-
-def test_silencio_longo_que_nenhuma_semente_cura_reprova_o_audio(tmp_path):
-    client = _ClienteComBuraco()
-    executor = AudioExecutor(
-        settings=_settings(tmp_path, tts_batch_size=3), client=client, broker=Broker()
-    )
-
-    result = executor.run(_snapshot(tmp_path), lambda **event: None)
-
-    assert [seed for key, seed in client.calls if key == "b002"] == [None, 1042, 2042]
-    assert not result.gate.approved
-    achado = next(f for f in result.gate.findings if f.code == "audio_silence")
-    assert achado.item_key == "b002"
-    assert achado.details["silencio_max"] > 4.5
+    assert fabrica.backends == ["cpu"]
+    assert {b for _, _, b in cliente.calls} == {"cpu"}
+    assert _de(eventos, "audio.recovery.started") == []
+    assert _de(eventos, "item.failed")[0]["payload"]["item_key"] == "b002"

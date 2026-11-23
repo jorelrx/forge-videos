@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from forge.executors.audio_generate import AudioGenerateClient, AudioRequest
+from forge.executors.audiocpp_server import ServidorTTS
 from forge.executors.ffmpeg import probe_media, run_ffmpeg
 from forge.gpu.broker import Broker, GPUOcupada
 from forge.llms.model import build_chat_model, extract_thinking
@@ -77,7 +78,7 @@ def test_lm_studio_returns_content(real_settings) -> None:
 
 def test_tts_synthesizes_a_real_wav(real_settings, tmp_path: Path) -> None:
     require_file(
-        real_settings.resolved_tts_binary, env_var="FORGE_TTS_BINARY"
+        real_settings.resolved_tts_server_binary, env_var="FORGE_TTS_SERVER_BINARY"
     )
     require_file(real_settings.resolved_tts_model, env_var="FORGE_TTS_MODEL")
     require_file(
@@ -87,13 +88,12 @@ def test_tts_synthesizes_a_real_wav(real_settings, tmp_path: Path) -> None:
 
     out_dir = tmp_path / "tts"
     client = AudioGenerateClient(real_settings)
-    resultados = client.synthesize_batch(
-        [AudioRequest(item_key="prova-tts", text="O Forge verifica uma frase curta.")],
-        out_dir,
-    )
-
-    assert len(resultados) == 1
-    resultado = resultados[0]
+    # Sobe o audiocpp_server de verdade: inclui a sonda de contrato da clonagem.
+    with ServidorTTS(real_settings, real_settings.tts_backend, pasta_log=out_dir) as servidor:
+        resultado = client.synthesize(
+            AudioRequest(item_key="prova-tts", text="O Forge verifica uma frase curta."),
+            servidor, out_dir,
+        )
 
     if not resultado.ok and resultado.failure is not None:
         if resultado.failure.code == "tts_vulkan_oom":
@@ -104,7 +104,6 @@ def test_tts_synthesizes_a_real_wav(real_settings, tmp_path: Path) -> None:
             )
     assert resultado.ok, f"TTS falhou: {resultado.failure}"
 
-    # O binário nomeia a saída `line_<N>.wav`; o caminho vem do manifesto.
     caminho = resultado.path
     assert caminho is not None and caminho.is_file(), f"WAV ausente: {caminho}"
 

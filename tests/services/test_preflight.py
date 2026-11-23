@@ -252,6 +252,18 @@ class TestCheckPreflight:
         check = next(c for c in report.checks if c.name == "tts")
         assert check.state == "failed"
 
+    def test_tts_exige_binario_do_servidor(self, tmp_path: Path) -> None:
+        s = _settings(tmp_path)
+        faltando = s.resolved_tts_server_binary
+
+        report = check_preflight(
+            s, runner=lambda *a, **k: MagicMock(), which=lambda c: None,
+            path_exists=lambda p: Path(p) != faltando,
+        )
+        check = next(c for c in report.checks if c.name == "tts")
+        assert check.state == "failed"
+        assert "tts_server_binary" in check.message
+
     def test_web_node_modules_exists_passes(self, tmp_path: Path) -> None:
         s = _settings(tmp_path)
         (tmp_path / "web" / "node_modules").mkdir(parents=True)

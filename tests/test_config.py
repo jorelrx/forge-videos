@@ -310,3 +310,15 @@ def test_aviso_ia_ligado_por_padrao(monkeypatch):
     assert Settings(_env_file=None).aviso_ia is True
     monkeypatch.setenv("FORGE_AVISO_IA", "false")
     assert Settings(_env_file=None).aviso_ia is False
+
+
+def test_tts_server_binary_padrao_fica_no_runtime(tmp_path):
+    s = Settings(_env_file=None, audio_generate_dir=tmp_path)
+    assert s.resolved_tts_server_binary == tmp_path / "runtime" / "bin" / "audiocpp_server.exe"
+    assert s.tts_cpu_threads == 12
+    assert s.tts_server_start_timeout == 120
+
+
+def test_tts_server_binary_explicito_vence_o_padrao(tmp_path):
+    s = Settings(_env_file=None, audio_generate_dir=tmp_path, tts_server_binary=tmp_path / "x.exe")
+    assert s.resolved_tts_server_binary == tmp_path / "x.exe"

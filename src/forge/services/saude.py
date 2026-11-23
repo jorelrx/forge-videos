@@ -216,7 +216,7 @@ def _default_probes(settings=None) -> HealthProbes:
 
     def tts_probe() -> bool:
         try:
-            binary = settings.resolved_tts_binary
+            binary = settings.resolved_tts_server_binary
             model = settings.resolved_tts_model
             voice = settings.resolved_tts_voice_reference
             return binary.exists() and model.exists() and voice.exists()

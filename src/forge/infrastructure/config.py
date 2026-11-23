@@ -181,8 +181,16 @@ class Settings(BaseSettings):
     )
     tts_seed: int = 42
     tts_batch_size: int = Field(default=3, ge=1, le=8)
+    # Timeout de cada pedido HTTP ao audiocpp_server (um trecho por pedido).
     tts_item_timeout: float = Field(default=900, gt=0)
     tts_batch_timeout: float = Field(default=3600, gt=0)
+    # O audiocpp_server mantém o modelo carregado durante a etapa de áudio: a
+    # carga (~8 s na RX 580) é paga uma vez por backend, não por trecho.
+    tts_server_binary: Path | None = None
+    tts_server_start_timeout: float = Field(default=120, gt=0)
+    # Medido em 2026-11-23 (Ryzen 7 5700X, 16 threads lógicas): com 12 threads
+    # sintetizando na CPU, a GPU não perdeu velocidade.
+    tts_cpu_threads: int = Field(default=12, ge=1)
     tts_sample_rate: int = Field(default=24000, gt=0)
     comfy_url: str = "http://127.0.0.1:8188"
     image_provider: Literal["comfyui", "codex"] = "comfyui"
@@ -244,6 +252,13 @@ class Settings(BaseSettings):
     @property
     def resolved_tts_binary(self) -> Path:
         return self.tts_binary or self.audio_generate_dir / "runtime" / "bin" / "audiocpp_cli.exe"
+
+    @property
+    def resolved_tts_server_binary(self) -> Path:
+        return (
+            self.tts_server_binary
+            or self.audio_generate_dir / "runtime" / "bin" / "audiocpp_server.exe"
+        )
 
     @property
     def resolved_tts_model(self) -> Path:

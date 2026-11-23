@@ -137,7 +137,7 @@ def _check_ffmpeg(which=shutil.which) -> PreflightCheck:
 def _check_tts(settings: Settings, path_exists=Path.exists) -> PreflightCheck:
     missing = []
     for label, resolved in [
-        ("tts_binary", settings.resolved_tts_binary),
+        ("tts_server_binary", settings.resolved_tts_server_binary),
         ("tts_model", settings.resolved_tts_model),
         ("tts_voice_reference", settings.resolved_tts_voice_reference),
     ]:
@@ -151,7 +151,7 @@ def _check_tts(settings: Settings, path_exists=Path.exists) -> PreflightCheck:
         name="tts",
         state=FAIL,
         message=f"Faltam: {', '.join(missing)}",
-        action="Configure tts_binary, tts_model, tts_voice_reference",
+        action="Configure tts_server_binary, tts_model, tts_voice_reference",
     )
 
 

@@ -97,3 +97,12 @@
 - Pytest cobre aprovação idempotente, revisão vencida, pendência, geração direta, conferência da pauta, pausa por contradição e as três decisões; Vitest cobre aprovar, repetir após falha e o painel de conflito.
 - Navegador (cópia do banco): Criar roteiro abriu `#/producao?run=<id>` com o painel Pauta do Board; repetir a aprovação da revisão 9 devolveu 200 e a mesma execução; o rascunho novo manteve a ideia guardada.
 - Não exercitado de ponta a ponta: a pausa por contradição com Acervo e modelo reais (coberta por testes com modelo e acervo falsos).
+
+## Aceite ao vivo (22/11/2026, Studio no checkout principal, provider Codex)
+
+- Pauta real aprovada na revisão 7 com o fluxo Padrão; **Criar roteiro** abriu a execução `064fa34a`.
+- A primeira tentativa revelou um defeito que os testes com etapas falsas não pegavam: a preparação validava o snapshot como `StudioPreset` estrito e recusava `pauta_aprovada`. Corrigido em `6768e90` com teste do executor real; a etapa foi repetida na mesma execução.
+- Pesquisa: as perguntas e o recorte viraram as queries (exame da noite em Sêneca, nota de onde a tarefa parou); 32 passagens. A conferência julgou a pauta compatível, sem pausa. Esse resultado não deixava rastro; desde `47368cb` vira evento.
+- Roteiro: o plano e o Gancho usam a abertura aprovada. A primeira rodada reprovou no gate de aberturas parecidas (Virada × Fecho repetindo "seis e quarenta", 0,46 contra o limite 0,45); a repetição da etapa passou com cerca de 2.180 palavras.
+- A execução foi pausada antes das etapas de mídia, para o criador decidir se segue.
+- Não exercitado ao vivo: a pausa por contradição (a pauta real foi compatível).

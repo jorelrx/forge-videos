@@ -197,6 +197,9 @@ class ResearchExecutor(StageImplementation):
                  payload={"erro": type(erro).__name__})
             return None
         if conferencia.compativel:
+            # Sem conflito também fica registrado: o painel mostra que a pauta foi conferida.
+            emit(kind="stage.progress", level="info", message="Pauta conferida com o acervo: compatível",
+                 payload={"conferencia_pauta": "compativel", "evidencias": conferencia.evidencias})
             return None
         trechos = {p.path: p for p in bundle.passages if p.path}
         return ConflitoPauta(

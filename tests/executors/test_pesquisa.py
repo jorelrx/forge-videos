@@ -251,3 +251,17 @@ def test_falha_da_conferencia_nao_trava_a_pesquisa(tmp_path, monkeypatch):
     assert result.gate.approved
     assert not any(e["payload"].get("kind") == "conflito_pauta" for e in events)
     assert any(e["level"] == "warning" for e in events)
+
+
+def test_conferencia_compativel_fica_registrada(tmp_path, monkeypatch):
+    import forge.executors.pesquisa as modulo
+    from forge.domain.pauta import ConferenciaPauta
+
+    monkeypatch.setattr(modulo, "conferir_pauta", lambda *a, **k: ConferenciaPauta(
+        compativel=True, explicacao="As fontes sustentam o recorte.", evidencias=["12/ch1/p1"]))
+    snapshot = _snapshot(tmp_path).model_copy(update={"config_snapshot": {"pauta_aprovada": {"tema": "A consciência"}}})
+    events = []
+    executor = ResearchExecutor(model=FakeModel(), acervo=FakeAcervo([passage("12/ch1/p1")]), minimum_sources=1,
+                                settings=Settings(_env_file=None, juiz_relevancia=False))
+    executor.run(snapshot, lambda **event: events.append(event))
+    assert any(e["payload"].get("conferencia_pauta") == "compativel" for e in events)

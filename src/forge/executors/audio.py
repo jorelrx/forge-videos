@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import shutil
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
 from statistics import median
 from time import monotonic
 from typing import Any, Callable, ContextManager, Literal
@@ -143,6 +145,65 @@ def _falha_contrato(motivo: str, *, item_key: str | None = None) -> FailureDetai
         item_key=item_key,
         services={"stderr_tail": motivo},
     )
+
+
+_ESPERA_CPU = 1.0
+_FIM = object()
+
+
+class _TrabalhadorCPU:
+    """Consome a fila de recuperação na CPU, em paralelo à GPU.
+
+    Só sintetiza e valida (`_tentar` não tem efeito colateral fora do WAV); os
+    eventos e o estado ficam com a thread principal, que lê `resultados`. Para
+    todo item enfileirado sai exatamente um resultado, mesmo quando a síntese
+    estoura: senão a principal esperaria para sempre. O servidor de CPU sobe
+    aqui dentro, no primeiro item, para a carga do modelo não segurar a GPU.
+    """
+
+    def __init__(self, executor: "AudioExecutor", context: RunSnapshot, backend: str, output_dir: Path):
+        self._executor = executor
+        self._context = context
+        self._backend = backend
+        self._output_dir = output_dir
+        self._entrada: Queue = Queue()
+        self._parar = threading.Event()
+        self.resultados: Queue = Queue()
+        self._thread = threading.Thread(target=self._rodar, name="tts-cpu", daemon=True)
+        self._thread.start()
+
+    @property
+    def vivo(self) -> bool:
+        return self._thread.is_alive()
+
+    def enfileirar(self, item: WorkItemPlan) -> None:
+        self._entrada.put(item)
+
+    def encerrar(self) -> None:
+        self._parar.set()
+        self._entrada.put(_FIM)
+        self._thread.join()
+
+    def _rodar(self) -> None:
+        lado: _Lado | None = None
+        with ExitStack() as pilha:
+            while True:
+                item = self._entrada.get()
+                if item is _FIM or self._parar.is_set():
+                    return
+                try:
+                    if lado is None:
+                        lado = self._executor._subir_lado(pilha, self._backend, self._output_dir)
+                    tentativa = self._executor._processar(
+                        self._context, item, lado, output_dir=self._output_dir,
+                    )
+                except Exception as error:  # noqa: BLE001 - a thread não pode morrer calada
+                    logger.exception("Falha na thread de CPU do TTS", item_key=item.item_key)
+                    tentativa = _Tentativa(
+                        "servidor",
+                        falha=_Lado(None, self._backend, motivo=str(error)).falha_indisponivel(item.item_key),
+                    )
+                self.resultados.put((item, tentativa))
 
 
 class _NoopBroker:
@@ -640,41 +701,11 @@ class AudioExecutor(StageImplementation):
                 logger.error("Servidor TTS não subiu", backend=principal, error=str(error))
                 lado_principal = _Lado(None, principal, motivo=str(error))
 
-            fila_cpu: list[tuple[WorkItemPlan, FailureDetail]] = []
-            for item in pending:
-                emit(kind="item.started", level="info", message="Narração iniciada", payload={
-                    "item_key": item.item_key, "duration_ms": 0, "backend": principal,
-                })
-                tentativa = self._processar(context, item, lado_principal, output_dir=output_dir)
-                if tentativa.classe == "ok":
-                    aceitar(item, tentativa, principal)
-                    continue
-                if tentativa.classe == "trecho" and recuperacao is not None:
-                    original = tentativa.falha or self._failure_from_findings(item.item_key, [])
-                    logger.warning(
-                        "tts_trecho_enviado_para_cpu", item_key=item.item_key,
-                        original_backend=principal, original_failure_code=original.code,
-                    )
-                    emit(
-                        kind="audio.recovery.started", level="warning",
-                        message="Trecho esgotou as sementes na GPU; entrou na fila de CPU",
-                        payload={
-                            "item_key": item.item_key, "backend": recuperacao,
-                            "fallback_from": principal, "queued": True,
-                            "original_failure_code": original.code,
-                            "original_failure_message": original.message,
-                            "original_failure_stderr": original.services.get("stderr_tail", ""),
-                        },
-                    )
-                    fila_cpu.append((item, original))
-                    continue
-                concluir(item, tentativa, principal)
+            originais: dict[str, tuple[WorkItemPlan, FailureDetail]] = {}
+            trabalhador: _TrabalhadorCPU | None = None
 
-            lado_cpu: _Lado | None = None
-            for item, original in fila_cpu:
-                if lado_cpu is None:
-                    lado_cpu = self._subir_lado(pilha, recuperacao, output_dir)
-                tentativa = self._processar(context, item, lado_cpu, output_dir=output_dir)
+            def tratar_cpu(item: WorkItemPlan, tentativa: _Tentativa) -> None:
+                _, original = originais.pop(item.item_key)
                 sucesso = tentativa.classe == "ok"
                 final = tentativa.falha or self._failure_from_findings(item.item_key, [])
                 emit(
@@ -699,6 +730,72 @@ class AudioExecutor(StageImplementation):
                         item, tentativa, recuperacao,
                         original_backend=principal, original_failure_code=original.code,
                     )
+
+            def drenar() -> None:
+                if trabalhador is None:
+                    return
+                while True:
+                    try:
+                        item, tentativa = trabalhador.resultados.get_nowait()
+                    except Empty:
+                        return
+                    tratar_cpu(item, tentativa)
+
+            try:
+                for item in pending:
+                    emit(kind="item.started", level="info", message="Narração iniciada", payload={
+                        "item_key": item.item_key, "duration_ms": 0, "backend": principal,
+                    })
+                    tentativa = self._processar(context, item, lado_principal, output_dir=output_dir)
+                    if tentativa.classe == "ok":
+                        aceitar(item, tentativa, principal)
+                    elif tentativa.classe == "trecho" and recuperacao is not None:
+                        original = tentativa.falha or self._failure_from_findings(item.item_key, [])
+                        logger.warning(
+                            "tts_trecho_enviado_para_cpu", item_key=item.item_key,
+                            original_backend=principal, original_failure_code=original.code,
+                        )
+                        emit(
+                            kind="audio.recovery.started", level="warning",
+                            message="Trecho esgotou as sementes na GPU; entrou na fila de CPU",
+                            payload={
+                                "item_key": item.item_key, "backend": recuperacao,
+                                "fallback_from": principal, "queued": True,
+                                "original_failure_code": original.code,
+                                "original_failure_message": original.message,
+                                "original_failure_stderr": original.services.get("stderr_tail", ""),
+                            },
+                        )
+                        originais[item.item_key] = (item, original)
+                        if trabalhador is None:
+                            trabalhador = _TrabalhadorCPU(self, context, recuperacao, output_dir)
+                        trabalhador.enfileirar(item)
+                    else:
+                        concluir(item, tentativa, principal)
+                    # Resultados da CPU entram entre um trecho e outro da GPU:
+                    # só esta thread emite eventos e mexe em paths/artifacts.
+                    drenar()
+
+                # O servidor da GPU fica de pé enquanto a CPU termina: nada mais
+                # usa a placa nesta etapa, e o passe de outliers precisa dele.
+                while originais:
+                    try:
+                        item, tentativa = trabalhador.resultados.get(timeout=_ESPERA_CPU)
+                    except Empty:
+                        if trabalhador.vivo:
+                            continue
+                        drenar()
+                        for item, _ in list(originais.values()):
+                            tratar_cpu(item, _Tentativa(
+                                "servidor",
+                                falha=_Lado(None, recuperacao, motivo="thread de CPU encerrada")
+                                .falha_indisponivel(item.item_key),
+                            ))
+                        break
+                    tratar_cpu(item, tentativa)
+            finally:
+                if trabalhador is not None:
+                    trabalhador.encerrar()
 
             self._retry_voice_outliers(
                 context, plan, paths, artifacts, lado_principal, output_dir, emit,

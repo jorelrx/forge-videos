@@ -516,3 +516,106 @@ def test_backend_cpu_usa_so_servidor_cpu(tmp_path):
     assert {b for _, _, b in cliente.calls} == {"cpu"}
     assert _de(eventos, "audio.recovery.started") == []
     assert _de(eventos, "item.failed")[0]["payload"]["item_key"] == "b002"
+
+
+# --- fila de CPU em paralelo ---
+
+def test_gpu_segue_enquanto_cpu_trabalha(tmp_path):
+    import threading
+
+    cpu_comecou, gpu_terminou = threading.Event(), threading.Event()
+    esperas = {}
+
+    class ClienteParalelo(Cliente):
+        def synthesize(self, request, servidor, destino):
+            if request.item_key == "b001" and servidor.backend == "cpu":
+                cpu_comecou.set()
+                esperas["cpu"] = gpu_terminou.wait(5)
+            if request.item_key == "b003" and servidor.backend == "vulkan":
+                esperas["gpu"] = cpu_comecou.wait(5)
+            outcome = super().synthesize(request, servidor, destino)
+            if request.item_key == "b003" and servidor.backend == "vulkan":
+                gpu_terminou.set()
+            return outcome
+
+    cliente = ClienteParalelo(lambda k, s, b: "max_tokens" if k == "b001" and b == "vulkan" else "ok")
+    eventos = []
+    result = _executor(tmp_path, cliente).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    assert esperas == {"gpu": True, "cpu": True}
+    assert [e["payload"]["item_key"] for e in _de(eventos, "item.succeeded")] == ["b002", "b003", "b001"]
+    assert result.gate.approved
+
+
+def test_thread_cpu_que_morre_nao_trava_a_etapa(tmp_path):
+    class ClienteQuebrado(Cliente):
+        def synthesize(self, request, servidor, destino):
+            if servidor.backend == "cpu":
+                raise RuntimeError("bug na thread de CPU")
+            return super().synthesize(request, servidor, destino)
+
+    cliente = ClienteQuebrado(lambda k, s, b: "max_tokens" if k == "b001" else "ok")
+    eventos = []
+    _executor(tmp_path, cliente).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falha = _de(eventos, "item.failed")[0]["payload"]
+    assert falha["item_key"] == "b001" and falha["failure_code"] == "tts_servidor_indisponivel"
+    assert {e["payload"]["item_key"] for e in _de(eventos, "item.succeeded")} == {"b002", "b003"}
+
+
+def _threads_cpu():
+    import threading
+
+    return [t for t in threading.enumerate() if t.name.startswith("tts-cpu")]
+
+
+def test_excecao_na_principal_encerra_servidores_e_thread(tmp_path):
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b001" and b == "vulkan" else "ok")
+    fabrica = Fabrica()
+
+    def emit(**evento):
+        if evento["kind"] == "item.succeeded" and evento["payload"]["item_key"] == "b003":
+            raise RuntimeError("falha ao projetar evento")
+
+    with pytest.raises(RuntimeError, match="projetar"):
+        _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), emit)
+
+    assert all(s.saiu for s in fabrica.servidores)
+    assert _threads_cpu() == []
+
+
+def test_servidor_cpu_que_nao_sobe_so_afeta_a_fila_cpu(tmp_path):
+    from forge.executors.audiocpp_server import ServidorIndisponivel
+
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b001" else "ok")
+    fabrica = Fabrica(falha={"cpu": ServidorIndisponivel("binário ausente")})
+    eventos = []
+    _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falhas = {e["payload"]["item_key"]: e["payload"]["failure_code"] for e in _de(eventos, "item.failed")}
+    assert falhas == {"b001": "tts_servidor_indisponivel"}
+    assert {e["payload"]["item_key"] for e in _de(eventos, "item.succeeded")} == {"b002", "b003"}
+
+
+def test_contrato_quebrado_na_cpu_falha_so_os_itens_da_fila(tmp_path):
+    from forge.executors.audiocpp_server import ContratoServidorQuebrado
+
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k in {"b001", "b003"} else "ok")
+    fabrica = Fabrica(falha={"cpu": ContratoServidorQuebrado("sonda 200")})
+    eventos = []
+    _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falhas = {e["payload"]["item_key"]: e["payload"]["failure_code"] for e in _de(eventos, "item.failed")}
+    assert falhas == {"b001": "tts_contrato_servidor", "b003": "tts_contrato_servidor"}
+
+
+def test_emit_so_e_chamado_da_thread_principal(tmp_path):
+    import threading
+
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k == "b002" and b == "vulkan" else "ok")
+    threads = set()
+    _executor(tmp_path, cliente).run(
+        _snapshot(tmp_path), lambda **e: threads.add(threading.get_ident())
+    )
+
+    assert threads == {threading.get_ident()}

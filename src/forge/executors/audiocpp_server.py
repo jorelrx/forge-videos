@@ -23,7 +23,7 @@ from tempfile import TemporaryDirectory
 from typing import IO, Callable, Literal
 
 import httpx
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from forge.infrastructure.config import Settings
 from forge.infrastructure.logging import get_logger
@@ -114,7 +114,9 @@ class ServidorTTS:
         return self
 
     def __exit__(self, *exc) -> None:
-        self._parar()
+        # Levantar aqui trocaria a exceção que já está subindo; o PID fica no
+        # registro e `liberar_tts` termina o serviço.
+        self._parar(levantar=False)
 
     def reiniciar(self) -> None:
         logger.warning("Reiniciando servidor TTS", backend=self.backend)
@@ -164,16 +166,23 @@ class ServidorTTS:
         except OSError as error:
             self._limpar_temporarios()
             raise ServidorIndisponivel(f"audiocpp_server não iniciou: {error}") from error
-        _alterar_registro(
-            caminho_registro(self.settings),
-            lambda e: [*e, {"pid": self._proc.pid, "backend": self.backend}],
-        )
         logger.info("Servidor TTS iniciando", backend=self.backend, pid=self._proc.pid, porta=porta)
         try:
+            # Dentro do try: um registro que falha não pode deixar o processo
+            # vivo, com o modelo carregado e invisível para `liberar_tts`.
+            try:
+                _alterar_registro(
+                    caminho_registro(self.settings),
+                    lambda e: [*e, {"pid": self._proc.pid, "backend": self.backend}],
+                )
+            except (OSError, Timeout) as error:
+                raise ServidorIndisponivel(
+                    f"não foi possível registrar o PID do servidor TTS: {error}"
+                ) from error
             self._esperar_health()
             self._sondar_contrato()
         except BaseException:
-            self._parar()
+            self._parar(levantar=False)
             raise
         logger.info("Servidor TTS pronto", backend=self.backend, pid=self._proc.pid)
 
@@ -221,23 +230,43 @@ class ServidorTTS:
             f"(sonda respondeu {resposta.status_code})"
         )
 
-    def _parar(self) -> None:
+    def _parar(self, *, levantar: bool = True) -> None:
+        """Encerra o processo e tira o PID do registro.
+
+        Processo que não sai nem com kill (driver Vulkan travado) fica no
+        registro, para `liberar_tts` tentar de novo, e vira
+        `ServidorIndisponivel` — falha daquele backend, não da etapa.
+        """
         proc, self._proc = self._proc, None
-        if proc is not None:
+        try:
+            if proc is None:
+                return
+            pid = proc.pid
             if proc.poll() is None:
                 proc.terminate()
                 try:
                     proc.wait(timeout=ESPERA_ENCERRAR)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    proc.wait(timeout=ESPERA_ENCERRAR)
-            pid = proc.pid
-            _alterar_registro(
-                caminho_registro(self.settings),
-                lambda e: [d for d in e if d.get("pid") != pid],
-            )
+                    try:
+                        proc.wait(timeout=ESPERA_ENCERRAR)
+                    except subprocess.TimeoutExpired as error:
+                        logger.error("Servidor TTS não encerrou", backend=self.backend, pid=pid)
+                        if levantar:
+                            raise ServidorIndisponivel(
+                                f"audiocpp_server ({self.backend}, pid {pid}) não encerrou"
+                            ) from error
+                        return
+            try:
+                _alterar_registro(
+                    caminho_registro(self.settings),
+                    lambda e: [d for d in e if d.get("pid") != pid],
+                )
+            except (OSError, Timeout) as error:
+                logger.warning("Registro do servidor TTS não atualizado", pid=pid, error=str(error))
             logger.info("Servidor TTS encerrado", backend=self.backend, pid=pid)
-        self._limpar_temporarios()
+        finally:
+            self._limpar_temporarios()
 
     def _limpar_temporarios(self) -> None:
         if self._saida is not None:

@@ -619,3 +619,43 @@ def test_emit_so_e_chamado_da_thread_principal(tmp_path):
     )
 
     assert threads == {threading.get_ident()}
+
+
+# --- correções da revisão final ---
+
+def test_contrato_quebrado_no_reinicio_reporta_contrato(tmp_path):
+    from forge.executors.audiocpp_server import ContratoServidorQuebrado
+
+    class FabricaContrato(Fabrica):
+        def __call__(self, backend, pasta):
+            servidor = super().__call__(backend, pasta)
+
+            def reiniciar():
+                raise ContratoServidorQuebrado("sonda 200 depois do reinício")
+
+            servidor.reiniciar = reiniciar
+            return servidor
+
+    cliente = Cliente(lambda k, s, b: "caiu" if k == "b001" else "ok")
+    eventos = []
+    _executor(tmp_path, cliente, FabricaContrato()).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    falhas = {e["payload"]["item_key"]: e["payload"]["failure_code"] for e in _de(eventos, "item.failed")}
+    assert falhas == {k: "tts_contrato_servidor" for k in ("b001", "b002", "b003")}
+
+
+def test_erro_inesperado_ao_subir_servidor_cpu_nao_tenta_de_novo_por_item(tmp_path):
+    class FabricaQuebrada(Fabrica):
+        def __call__(self, backend, pasta):
+            if backend == "cpu":
+                self.servidores.append(ServidorFalso("cpu-tentativa", self.eventos))
+                raise RuntimeError("bug inesperado na subida")
+            return super().__call__(backend, pasta)
+
+    cliente = Cliente(lambda k, s, b: "max_tokens" if k in {"b001", "b002"} else "ok")
+    fabrica, eventos = FabricaQuebrada(), []
+    _executor(tmp_path, cliente, fabrica).run(_snapshot(tmp_path), lambda **e: eventos.append(e))
+
+    assert fabrica.backends.count("cpu-tentativa") == 1
+    falhas = {e["payload"]["item_key"]: e["payload"]["failure_code"] for e in _de(eventos, "item.failed")}
+    assert falhas == {"b001": "tts_servidor_indisponivel", "b002": "tts_servidor_indisponivel"}

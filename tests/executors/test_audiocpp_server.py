@@ -188,3 +188,54 @@ def test_reiniciar_sobe_processo_novo(tmp_path):
         assert popen.instancias[0].returncode is not None
         assert popen.instancias[1].returncode is None
     assert popen.instancias[1].returncode is not None
+
+
+def test_falha_ao_registrar_pid_encerra_o_processo(tmp_path, monkeypatch):
+    import forge.executors.audiocpp_server as modulo
+
+    original = modulo._alterar_registro
+    chamadas = []
+
+    def alterar(caminho, alterar_fn):
+        chamadas.append(caminho)
+        if len(chamadas) == 1:
+            raise PermissionError("registro travado pelo antivírus")
+        return original(caminho, alterar_fn)
+
+    monkeypatch.setattr(modulo, "_alterar_registro", alterar)
+    popen = PopenFalso()
+    with pytest.raises(ServidorIndisponivel, match="registro"):
+        with _servidor(tmp_path, popen=popen):
+            pass
+    assert popen.instancias[0].returncode is not None
+
+
+class _ProcTeimoso(PopenFalso):
+    """Processo que não sai nem com kill (driver Vulkan travado)."""
+
+    def __call__(self, argv, **kwargs):
+        proc = super().__call__(argv, **kwargs)
+
+        def wait(timeout=None):
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        proc.wait = wait
+        return proc
+
+
+def test_reiniciar_com_processo_que_nao_morre_e_indisponivel_e_mantem_registro(tmp_path):
+    popen = _ProcTeimoso()
+    servidor = _servidor(tmp_path, popen=popen)
+    servidor.__enter__()
+    with pytest.raises(ServidorIndisponivel):
+        servidor.reiniciar()
+    registro = json.loads(caminho_registro(_settings(tmp_path)).read_text(encoding="utf-8"))
+    assert {"pid": 4321, "backend": "vulkan"} in registro
+
+
+def test_saida_com_processo_que_nao_morre_nao_levanta(tmp_path):
+    popen = _ProcTeimoso()
+    with _servidor(tmp_path, popen=popen):
+        pass
+    registro = json.loads(caminho_registro(_settings(tmp_path)).read_text(encoding="utf-8"))
+    assert {"pid": 4321, "backend": "vulkan"} in registro

@@ -199,6 +199,11 @@ class _TrabalhadorCPU:
                     )
                 except Exception as error:  # noqa: BLE001 - a thread não pode morrer calada
                     logger.exception("Falha na thread de CPU do TTS", item_key=item.item_key)
+                    if lado is None:
+                        # Subida que estourou de forma inesperada: o backend fica
+                        # indisponível, em vez de tentar subir outro servidor
+                        # (~5 GB de RAM cada) a cada item da fila.
+                        lado = _Lado(None, self._backend, motivo=str(error))
                     tentativa = _Tentativa(
                         "servidor",
                         falha=_Lado(None, self._backend, motivo=str(error)).falha_indisponivel(item.item_key),
@@ -564,6 +569,7 @@ class AudioExecutor(StageImplementation):
         except (ServidorIndisponivel, ContratoServidorQuebrado) as error:
             lado.disponivel = False
             lado.motivo = str(error)
+            lado.contrato = isinstance(error, ContratoServidorQuebrado)
             return _Tentativa("servidor", falha=lado.falha_indisponivel(item.item_key))
         tentativa = self._tentar(context, item, lado.servidor, output_dir=output_dir)
         if tentativa.classe == "servidor":

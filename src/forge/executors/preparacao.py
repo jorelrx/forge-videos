@@ -19,6 +19,7 @@ from forge.domain.execucao import (
     StudioPreset,
 )
 from forge.domain.fluxo_geracao import FluxoGeracao
+from forge.domain.pauta import PautaEpisodio
 from forge.domain.operacao import StageName
 from forge.executors.base import StageImplementation
 from forge.services.persistencia import carregar_modelo, gravar_modelo
@@ -39,6 +40,12 @@ class PreparationInput(BaseModel):
     fluxo_geracao: FluxoGeracao | None = None
     revisao_editorial: bool = False
     referencias_editoriais: str | None = None
+    # Pauta do Board que a execução vai consumir (a decidida após um conflito vence a aprovada).
+    pauta_episodio: PautaEpisodio | None = None
+
+
+# Chaves que o Board grava no snapshot; não pertencem ao preset estrito.
+CHAVES_DA_PAUTA = ("pauta_aprovada", "pauta_decidida", "decisao_pauta")
 
 
 class PreparationExecutor(StageImplementation):
@@ -50,6 +57,8 @@ class PreparationExecutor(StageImplementation):
         raw.pop("fluxo_geracao", None)
         revisao_editorial = raw.pop("revisao_editorial", False)
         referencias_editoriais = raw.pop("referencias_editoriais", None)
+        for chave in CHAVES_DA_PAUTA:
+            raw.pop(chave, None)
         return PreparationInput(
             run_id=context.run_id,
             video_id=context.video_id,
@@ -60,6 +69,7 @@ class PreparationExecutor(StageImplementation):
             fluxo_geracao=context.fluxo_geracao,
             revisao_editorial=revisao_editorial,
             referencias_editoriais=referencias_editoriais,
+            pauta_episodio=context.pauta_episodio,
         )
 
     @staticmethod
@@ -67,7 +77,9 @@ class PreparationExecutor(StageImplementation):
         canonical = json.dumps(
             value.model_dump(
                 mode="json",
-                exclude={"fluxo_geracao"} if value.fluxo_geracao is None else None,
+                # Campos opcionais ausentes ficam fora do hash: runs antigas mantêm o mesmo.
+                exclude={campo for campo in ("fluxo_geracao", "pauta_episodio")
+                         if getattr(value, campo) is None} or None,
             ),
             ensure_ascii=False,
             sort_keys=True,

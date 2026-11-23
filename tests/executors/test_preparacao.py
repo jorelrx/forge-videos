@@ -130,3 +130,19 @@ def test_preparation_event_registers_input_in_catalog_without_work_item(tmp_path
     assert artifacts[0].work_item_id is None
     assert artifacts[0].relative_path == "video/input.json"
     assert [event.kind for event in events] == ["artifact.created"]
+
+
+def test_preparation_accepts_board_brief_and_records_it(tmp_path):
+    aprovada = {"aprovacao_id": "a1", "revisao": 7, "tema": "Encerrar o expediente", "promessa": "Um ritual curto",
+                "recorte": "A entrega incompleta", "blocos": ["A cena"], "perguntas_pesquisa": ["O que diz Sêneca?"]}
+    sem_pauta = PreparationExecutor().prepare(_snapshot(tmp_path))
+    for extra in ({}, {"pauta_decidida": {**aprovada, "recorte": "Outro recorte"},
+                       "decisao_pauta": {"acao": "aceitar"}}):
+        snapshot = _snapshot(tmp_path, config_snapshot={"preset": "local-recomendado-v1",
+                                                          "pauta_aprovada": aprovada, **extra})
+        result = PreparationExecutor().run(snapshot, _events()[1])
+        assert result.gate.approved
+        gravado = carregar_modelo(snapshot.run_dir / "video" / "input.json", PreparationInput)
+        assert gravado.pauta_episodio.perguntas_pesquisa == ["O que diz Sêneca?"]
+        assert gravado.pauta_episodio.recorte == ("Outro recorte" if extra else "A entrega incompleta")
+    assert PreparationExecutor().prepare(_snapshot(tmp_path)).input_hash == sem_pauta.input_hash

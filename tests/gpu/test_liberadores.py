@@ -111,9 +111,88 @@ def test_liberar_imagem_com_comfy_fora_do_ar_apenas_avisa():
     liberar_imagem(_settings(), cliente=cliente)  # não levanta
 
 
-def test_liberar_tts_e_no_op():
-    """O audiocpp_cli morre sozinho ao terminar o trecho; não há o que descarregar."""
-    liberar_tts(_settings())
+def _registro(tmp_path, entradas):
+    import json
+
+    from forge.executors.audiocpp_server import caminho_registro
+
+    settings = _settings(output_dir=tmp_path / "output" / "roteiros")
+    caminho = caminho_registro(settings)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    caminho.write_text(json.dumps(entradas), encoding="utf-8")
+    return settings, caminho
+
+
+def _executar_com(linha_de_comando):
+    """`executar` falso: a consulta de processo devolve `linha_de_comando`."""
+    import json
+
+    chamadas = []
+    morto = [False]
+
+    def executar(cmd, **kwargs):
+        chamadas.append(cmd)
+        proc = _Proc()
+        if cmd[0] in {"taskkill", "kill"}:
+            morto[0] = True
+        if cmd[0] in {"powershell", "ps"}:
+            if linha_de_comando is None or morto[0]:
+                proc.stdout = ""
+            elif cmd[0] == "powershell":
+                proc.stdout = json.dumps({"ProcessId": 77, "CommandLine": linha_de_comando})
+            else:
+                proc.stdout = linha_de_comando
+        return proc
+
+    return executar, chamadas
+
+
+def _matou(chamadas):
+    return [c for c in chamadas if c[0] in {"taskkill", "kill"}]
+
+
+def test_liberar_tts_mata_servidor_registrado_vivo(tmp_path):
+    import json
+
+    settings, caminho = _registro(tmp_path, [{"pid": 77, "backend": "vulkan"}])
+    executar, chamadas = _executar_com(r"C:\dev\audio-generate\runtime\bin\audiocpp_server.exe --config x")
+
+    liberar_tts(settings, executar=executar)
+
+    assert _matou(chamadas) and "77" in _matou(chamadas)[0]
+    assert json.loads(caminho.read_text(encoding="utf-8")) == []
+
+
+def test_liberar_tts_nao_mata_pid_reaproveitado_por_outro_programa(tmp_path):
+    import json
+
+    settings, caminho = _registro(tmp_path, [{"pid": 77, "backend": "cpu"}])
+    executar, chamadas = _executar_com(r"C:\Windows\notepad.exe")
+
+    liberar_tts(settings, executar=executar)
+
+    assert _matou(chamadas) == []
+    assert json.loads(caminho.read_text(encoding="utf-8")) == []
+
+
+def test_liberar_tts_com_pid_que_ja_morreu_so_limpa_o_registro(tmp_path):
+    import json
+
+    settings, caminho = _registro(tmp_path, [{"pid": 77, "backend": "vulkan"}])
+    executar, chamadas = _executar_com(None)
+
+    liberar_tts(settings, executar=executar)
+
+    assert _matou(chamadas) == []
+    assert json.loads(caminho.read_text(encoding="utf-8")) == []
+
+
+def test_liberar_tts_sem_registro_nao_faz_nada(tmp_path):
+    executar, chamadas = _executar_com(None)
+
+    liberar_tts(_settings(output_dir=tmp_path / "output" / "roteiros"), executar=executar)
+
+    assert chamadas == []
 
 
 def test_tts_desliga_comfy_quando_free_nao_esvazia_heap():

@@ -1,7 +1,7 @@
 """Ciclo de vida do `audiocpp_server`: um processo residente por backend.
 
-O `audiocpp_cli` é um processo por lote e paga ~8 s de carga do Higgs a cada
-chamada. O servidor carrega o modelo uma vez e atende um pedido HTTP por
+O `audiocpp_cli` (usado até 2026-11) era um processo por lote e pagava ~8 s de
+carga do Higgs a cada chamada. O servidor carrega o modelo uma vez e atende um pedido HTTP por
 trecho; a saída é idêntica byte a byte à do CLI com a mesma semente (medido em
 2026-11-23 na RX 580).
 

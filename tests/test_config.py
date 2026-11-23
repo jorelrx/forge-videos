@@ -117,24 +117,22 @@ def test_audio_generation_defaults_and_resolved_paths_stay_under_tool_dir():
 
     assert s.audio_generate_dir == Path(r"C:\\dev\\audio-generate")
     assert s.tts_seed == 42
-    assert s.tts_batch_size == 3
     assert s.tts_item_timeout == 900
-    assert s.tts_batch_timeout == 3600
     assert s.tts_sample_rate == 24000
-    for path in (s.resolved_tts_binary, s.resolved_tts_model, s.resolved_tts_voice_reference):
+    for path in (s.resolved_tts_server_binary, s.resolved_tts_model, s.resolved_tts_voice_reference):
         assert path.is_relative_to(s.audio_generate_dir)
 
 
 def test_audio_generation_resolved_paths_preserve_explicit_overrides(tmp_path):
     binary, model, voice = tmp_path / "bin.exe", tmp_path / "model.gguf", tmp_path / "voice.wav"
-    s = Settings(_env_file=None, tts_binary=binary, tts_model=model, tts_voice_reference=voice)
+    s = Settings(_env_file=None, tts_server_binary=binary, tts_model=model, tts_voice_reference=voice)
 
-    assert (s.resolved_tts_binary, s.resolved_tts_model, s.resolved_tts_voice_reference) == (
+    assert (s.resolved_tts_server_binary, s.resolved_tts_model, s.resolved_tts_voice_reference) == (
         binary, model, voice,
     )
 
 
-@pytest.mark.parametrize("field, value", [("tts_batch_size", 0), ("tts_batch_size", 9), ("tts_item_timeout", 0), ("tts_batch_timeout", 0), ("tts_sample_rate", 0)])
+@pytest.mark.parametrize("field, value", [("tts_item_timeout", 0), ("tts_server_start_timeout", 0), ("tts_cpu_threads", 0), ("tts_sample_rate", 0)])
 def test_audio_generation_limits_are_validated(field, value):
     import pydantic
 

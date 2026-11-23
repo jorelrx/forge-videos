@@ -384,9 +384,80 @@ def _vram_livre(cliente: httpx.Client, settings: Settings) -> bool | None:
     return livre >= settings.comfy_vram_livre_min
 
 
-def liberar_tts(settings: Settings) -> None:
-    """O audiocpp_cli é um processo por trecho: sai e devolve a VRAM sozinho."""
-    return None
+def _linha_de_comando(
+    pid: int, settings: Settings, executar: Callable[..., subprocess.CompletedProcess],
+) -> str | None:
+    """Linha de comando de um PID vivo, ou None se ele não existe mais."""
+    try:
+        if os.name == "nt":
+            proc = executar(
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    f"Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}' | "
+                    "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+                ],
+                capture_output=True, text=True, timeout=settings.comfy_process_timeout,
+            )
+            saida = (proc.stdout or "").strip()
+            if not saida:
+                return None
+            dados = json.loads(saida)
+            if isinstance(dados, list):
+                dados = dados[0] if dados else {}
+            return str(dados.get("CommandLine") or "")
+        proc = executar(
+            ["ps", "-p", str(int(pid)), "-o", "args="],
+            capture_output=True, text=True, timeout=settings.comfy_process_timeout,
+        )
+        saida = (proc.stdout or "").strip()
+        return saida or None
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        logger.warning("Não foi possível consultar o processo TTS", pid=pid, error=str(e))
+        return None
+
+
+def liberar_tts(
+    settings: Settings,
+    *,
+    executar: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Encerra `audiocpp_server` órfão registrado e confirma que saiu.
+
+    No caminho feliz o executor de áudio já encerrou o servidor. Isto é a rede
+    para o worker que morreu no meio da etapa: o servidor continuaria segurando
+    os 4,75 GB do Higgs na VRAM. Só mata PID cuja linha de comando ainda é um
+    `audiocpp_server` — o Windows reaproveita PIDs.
+    """
+    # Import local: o executor importa o broker (via liberadores) no topo.
+    from forge.executors.audiocpp_server import caminho_registro, gravar_registro, ler_registro
+
+    caminho = caminho_registro(settings)
+    entradas = ler_registro(caminho)
+    if not entradas:
+        return
+    for entrada in entradas:
+        pid = int(entrada.get("pid") or 0)
+        if pid <= 0:
+            continue
+        linha = _linha_de_comando(pid, settings, executar)
+        if linha is None:
+            continue
+        if "audiocpp_server" not in linha:
+            logger.warning("PID registrado não é mais o servidor TTS", pid=pid)
+            continue
+        logger.warning("Encerrando servidor TTS órfão", pid=pid, backend=entrada.get("backend"))
+        try:
+            if os.name == "nt":
+                executar(["taskkill", "/PID", str(pid), "/T", "/F"],
+                         capture_output=True, text=True,
+                         timeout=settings.comfy_process_timeout)
+            else:
+                executar(["kill", "-9", str(pid)], capture_output=True, text=True,
+                         timeout=settings.comfy_process_timeout)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise LiberacaoFalhou(f"servidor TTS (pid {pid}) não encerrou: {e}") from e
+        _esperar(settings, "tts", lambda: _linha_de_comando(pid, settings, executar) is None)
+    gravar_registro(caminho, [])
 
 
 def _esperar(settings: Settings, recurso: str, checar: Callable[[], bool | None]) -> None:

@@ -145,6 +145,20 @@ residente por vez (`llm`, `tts`, `imagem`), com lock de arquivo em
 reais estão em [gpu/liberadores.py](src/forge/gpu/liberadores.py) e confirmam a
 VRAM de volta antes de devolver o slot.
 
+**TTS** ([executors/audio.py](src/forge/executors/audio.py),
+[executors/audiocpp_server.py](src/forge/executors/audiocpp_server.py)): a etapa
+de áudio sobe um `audiocpp_server` residente (o Higgs carrega uma vez, ~8 s na
+RX 580) e faz um pedido HTTP por trecho, com as sementes `tts_seed`, 1042, 2042.
+Trecho que esgota as sementes na GPU vai para uma thread de CPU com servidor
+próprio, em paralelo — a GPU segue nos trechos seguintes; só a thread principal
+emite eventos. Queda ou OOM do servidor reinicia o processo uma vez por
+backend; erro 500 genérico falha o trecho na hora. Armadilha do contrato:
+`voice_ref`/`reference_text` vão no nível de cima do JSON — dentro de `options`
+o servidor os ignora e devolve 200 com voz não clonada; cada subida faz uma
+sonda que exige 500 para um `voice_ref` inexistente. Os PIDs ficam em
+`output/.tts-servidor.json`, e `liberar_tts` encerra o servidor órfão (só se a
+linha de comando ainda for `audiocpp_server`).
+
 [services/manifesto.py](src/forge/services/manifesto.py) dá estado próprio a cada
 bloco e cada beat; [services/runner.py](src/forge/services/runner.py) consome os
 pendentes agrupados por tipo, tomando o slot uma vez por grupo e regravando o

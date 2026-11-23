@@ -59,7 +59,7 @@ def test_exemplo_de_env_cobre_as_variaveis_do_studio() -> None:
         "FORGE_STUDIO_RUNS_DIR",
         "FORGE_STUDIO_API_PORT",
         "FORGE_STUDIO_WORKER_POLL_SECONDS",
-        "FORGE_TTS_BINARY",
+        "FORGE_TTS_SERVER_BINARY",
         "FORGE_COMFY_DIR",
         "FORGE_YOUTUBE_CLIENT_SECRETS",
         "FORGE_YOUTUBE_CANAIS_DIR",

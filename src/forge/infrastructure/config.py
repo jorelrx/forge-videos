@@ -163,7 +163,7 @@ class Settings(BaseSettings):
     studio_sse_keepalive_seconds: float = Field(default=15.0, gt=0)
     studio_worker_poll_seconds: float = Field(default=1.0, gt=0)
     tts_backend: Literal["vulkan", "cpu"] = "vulkan"
-    # O audiocpp_cli exige --family além de --task: é ela que resolve o
+    # O audiocpp_server exige `family` no config do modelo: é ela que resolve o
     # package-spec do modelo. Ver runtime/bin/model_specs no audio-generate.
     tts_family: str = "higgs_audio_tts"
     audio_generate_dir: Path = Path(r"C:\dev\audio-generate")
@@ -171,19 +171,16 @@ class Settings(BaseSettings):
     # `runtime/models`) e guarda a referência de voz na raiz do repo. Derivar
     # `<dir>/audio-generate.exe` (a forma plana antiga) resolvia para paths que
     # não existem: o doctor reprovava o TTS e a etapa de áudio não tinha como
-    # rodar. `tts_binary`, `tts_model` e `tts_voice_reference` continuam
+    # rodar. `tts_server_binary`, `tts_model` e `tts_voice_reference` continuam
     # sobrepondo qualquer default.
-    tts_binary: Path | None = None
     tts_model: Path | None = None
     tts_voice_reference: Path | None = None
     tts_reference_text: str = (
         "A vida moderna é um exercício de divisão que não começamos deliberadamente."
     )
     tts_seed: int = 42
-    tts_batch_size: int = Field(default=3, ge=1, le=8)
     # Timeout de cada pedido HTTP ao audiocpp_server (um trecho por pedido).
     tts_item_timeout: float = Field(default=900, gt=0)
-    tts_batch_timeout: float = Field(default=3600, gt=0)
     # O audiocpp_server mantém o modelo carregado durante a etapa de áudio: a
     # carga (~8 s na RX 580) é paga uma vez por backend, não por trecho.
     tts_server_binary: Path | None = None
@@ -248,10 +245,6 @@ class Settings(BaseSettings):
                 "worker_heartbeat_seconds must be less than worker_lease_seconds"
             )
         return self
-
-    @property
-    def resolved_tts_binary(self) -> Path:
-        return self.tts_binary or self.audio_generate_dir / "runtime" / "bin" / "audiocpp_cli.exe"
 
     @property
     def resolved_tts_server_binary(self) -> Path:

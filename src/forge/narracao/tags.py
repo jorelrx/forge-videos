@@ -2,8 +2,8 @@
 
 Espelho de `C:\\dev\\audio-generate\\src\\audio_generate\\tags.py`. É cópia, não
 import: aquele pacote expõe `synthesize` no `__init__`, então importar qualquer
-coisa dele arrasta torch e transformers — que o caminho GPU (subprocess para o
-audiocpp_cli) não usa. O catálogo é dado, não lógica; ao mudar lá, mudar aqui.
+coisa dele arrasta torch e transformers — que o caminho GPU (HTTP para o
+audiocpp_server) não usa. O catálogo é dado, não lógica; ao mudar lá, mudar aqui.
 
 Sintaxe do modelo: `<|categoria:nome|>`. Emoção, estilo e prosódia de frase vão
 no começo da sentença; pausa e efeito sonoro são inline.

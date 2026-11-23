@@ -307,7 +307,7 @@ Parâmetros do launcher:
 Armadilhas de configuração que já custaram uma run parada:
 
 - **paths no `.env` usam barras normais** (`C:/dev/...`): o parser do dotenv interpreta `\a`, `\b` e `\v` como escapes e corrompe o caminho em silêncio;
-- **os paths do TTS derivam do layout do `audio-generate`** (`runtime/bin/audiocpp_cli.exe`, `runtime/models/<gguf>`, `ref.wav`); apontar para a forma plana antiga resolve para arquivo inexistente e o TTS aparece indisponível;
+- **os paths do TTS derivam do layout do `audio-generate`** (`runtime/bin/audiocpp_server.exe`, `runtime/models/<gguf>`, `ref.wav`); apontar para a forma plana antiga resolve para arquivo inexistente e o TTS aparece indisponível;
 - **`FORGE_COMFY_DIR` precisa conter `main.py`** — sem ele `garantir_comfy` não sobe o ComfyUI e o slot de imagem encontra o servidor morto;
 - **prazo da etapa `roteiro`**: o laço de review do modelo local leva ~15 min por passada; `FORGE_LOCAL_STAGE_TIMEOUT_MULTIPLIER` e `FORGE_MAX_REVIEW_ROUNDS` são a calibração (sem ela a etapa morre em `subprocess_timeout`).
 
@@ -333,7 +333,7 @@ Um serviço fora do ar vira `SKIP` com o endpoint/caminho exato e a ação para 
 
 Nesta máquina (RX 580 8 GB) os consumidores não cabem juntos: **LLM → TTS → ComfyUI → ffmpeg**. O broker ([`gpu/broker.py`](src/forge/gpu/broker.py)) mantém um residente por vez e troca por fase. Duas consequências práticas:
 
-- o TTS exige o LLM descarregado — com o modelo carregado no LM Studio o `audiocpp_cli` falha com `ErrorOutOfDeviceMemory`;
+- o TTS exige o LLM descarregado — com o modelo carregado no LM Studio o `audiocpp_server` falha com `ErrorOutOfDeviceMemory`;
 - antes do TTS o forge pede `/free {unload_models, free_memory}` ao ComfyUI e **confirma a VRAM livre** antes de sintetizar. Medido nesta máquina: com o SDXL residente, `/free` devolveu 8,59 GB e o TTS rodou. O encerramento do ComfyUI é o último recurso para o caso em que `/free` não basta — e `shutdown_comfy` só encerra a árvore lançada pelo próprio forge, nunca um processo alheio; por isso o slot de imagem o sobe de novo quando precisa (`FORGE_COMFY_AUTO_START`, ligado por padrão).
 
 ## Desenvolvimento

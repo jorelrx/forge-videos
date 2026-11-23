@@ -90,7 +90,7 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
         audio_generate_dir=audio,
-        tts_binary=audio / "bin.exe",
+        tts_server_binary=audio / "bin.exe",
         tts_model=audio / "model.gguf",
         tts_voice_reference=audio / "voice.wav",
         studio_db_path=tmp_path / "data" / "forge.db",
